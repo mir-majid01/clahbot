@@ -1,0 +1,29 @@
+# Gradle / build output
+.gradle/
+build/
+local.properties
+
+# Android Studio / IntelliJ
+*.iml
+.idea/
+.DS_Store
+captures/
+
+# Native build
+.externalNativeBuild/
+.cxx/
+
+# APK / AAB artifacts
+*.apk
+*.ap_
+*.aab
+
+# Local secrets and scratch files — never commit
+supabase-pass.txt
+*-pass.txt
+*.jks
+*.keystore
+.env
+
+# Unrelated local scratch file (Steam depot script, contains account hashes)
+516750.lua

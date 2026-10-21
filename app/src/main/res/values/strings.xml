@@ -1,0 +1,13 @@
+<resources>
+    <string name="app_name">ClahBOT</string>
+    <string name="accessibility_service_description">ClahBOT uses accessibility to simulate human-like taps and swipes for game automation. Educational use only.</string>
+    <string name="notification_channel_name">Automation Service</string>
+    <string name="notification_channel_desc">Keeps ClahBOT running in the background</string>
+    <string name="notification_title">ClahBOT Active</string>
+    <string name="notification_text">Automation is running</string>
+    <string name="action_pause">Pause</string>
+    <string name="action_collect">Collect Now</string>
+    <string name="action_stop">Stop</string>
+    <string name="disclaimer_title">Educational Use Only</string>
+    <string name="disclaimer_body">Using automation tools may violate Clash of Clans Terms of Service and result in account bans. This app is for educational purposes only. Use at your own risk.</string>
+</resources>

@@ -1,0 +1,108 @@
+# Technical Specifications and Product Requirements Document: Advanced Autonomous Gameplay Automation Engine
+## Systems Architecture and Decoupled Threading Models
+Modern mobile gameplay automation requires an architectural shift away from legacy, single-threaded execution loops that couple image parsing directly with input simulation. In typical legacy designs, such as AutoIt-based frameworks, any delay in screenshot retrieval or image processing causes immediate timing stalls in input delivery. To resolve these timing issues and achieve high-performance automation, the system uses a decoupled, multi-threaded architecture. This design splits execution into three main asynchronous threads: the Vision Parsing Thread, the Execution Orchestration Thread, and the System Monitor and Host Watchdog Thread.
+The Vision Parsing Thread continuously captures, preprocesses, and analyzes frame buffers from the emulated client. It isolates coordinates for targets like resource collectors, menu elements, and deployment boundaries, and stores them in a thread-safe memory buffer. The Execution Orchestration Thread runs the behavioral state machine. It retrieves coordinates from the vision buffer and translates them into simulated movements using high-performance command streams. The System Monitor and Host Watchdog Thread runs in parallel on the host operating system. It monitors the main threads, checking memory usage, tracking active process states, and resetting the emulator environment if it detects a freeze.
+```
++---------------------------------------------------------------------------------------------------------+
+|                                              HOST SYSTEM                                                |
+|                                                                                                         |
+|  +---------------------------+   Frame Stream (exec-out)   +-----------------------------------------+  |
+|  |   Vision Parsing Thread   +---------------------------->|     Execution Orchestration Thread      |  |
+|  |  - OpenCV Asset Detection |                             |  - Behavioral State Machine             |  |
+|  |  - Morphological Closing  |                             |  - Bézier Curve Motion Generator        |  |
+|  |  - easyOCR UI Reader      |                             |  - Low-Level Input Command Dispatcher   |  |
+|  +-------------+-------------+                             +--------------------+--------------------+  |
+|                |                                                                |                       |
+|                | Safe Shared Buffer (Coordinates & UI States)                   |                       |
+|                v                                                                |                       |
+|  +-------------+-------------+                                                  |                       |
+|  |     Shared Memory         |                                                  |                       |
+|  |  - Target Coordinates     |<-------------------------------------------------+                       |
+|  |  - Frame States           |                                                  |                       |
+|  +---------------------------+                                                  |                       |
+|                                                                                 |                       |
+|  +---------------------------+       Monitor Process / Kill / Cold Boot         |                       |
+|  | System Monitor / Watchdog |<-------------------------------------------------+                       |
+|  +-------------+-------------+                                                                          |
+|                |                                                                                        |
+|                | ADB Command Bridge (dd / motionevent / am instrument)                                  |
+|                v
+
+Updated Product Requirements Document (PRD)
+Version: 1.1 (Added Native Android Device Support)
+Date: July 13, 2026
+All previous content from the original PRD remains unchanged (Systems Architecture, Decoupled Threading Models, diagrams, etc.). The following is newly added as dedicated sections to make the product a fully functional native Android app that works perfectly on physical Android devices (no PC/emulator required for core operation).
+11. Native Android Device Support (Primary Deployment Target)
+11.1 Overview
+The automation engine will be implemented as a native Android application (.apk) that runs directly on physical Android phones/tablets. This allows users to run full auto-farming without a PC or emulator. The app will overlay controls on top of Clash of Clans, read the game screen in real-time, and simulate human-like interactions.
+Key Benefits for Android Devices:
+True portability — run anywhere with your phone.
+No ADB dependency for end-users (though ADB fallback supported for debugging).
+Background/foreground service support for long sessions.
+Lower hardware barrier (works on mid-range phones).
+Limitations (Clearly Documented in App):
+Higher battery/heat usage (mitigated with smart throttling).
+Requires specific permissions (Accessibility, Screen Capture, Overlay).
+Slightly reduced processing power vs PC (addressed via optimized on-device ML and efficient vision).
+11.2 Core Architecture Adaptations for Android
+The existing decoupled multi-threaded architecture (Vision Parsing, Execution Orchestration, System Monitor) is preserved but adapted to Android constraints:
+Vision Parsing Thread → Runs as part of a Foreground Service using MediaProjection API for secure screen capture (no root required).
+Preprocessing with OpenCV Android SDK (or RenderScript for speed).
+On-device OCR: ML Kit Text Recognition or lightweight Tesseract/TFLite model.
+Frame analysis at adaptive rates (e.g., 1-5 FPS when idle, higher during attacks).
+Execution Orchestration Thread → Uses AccessibilityService for reliable UI detection and input simulation.
+Combines with MotionEvent injection and Gesture APIs for Bézier-curve human-like swipes/taps.
+Randomized jitter, variable delays, and natural touch variation built-in.
+System Monitor / Watchdog → Android WorkManager + ForegroundService + Battery/thermal monitoring via PowerManager and ThermalStatus. Auto-pauses on low battery, overheating, or Doze mode.
+Shared Memory → Android LiveData / ViewModel + Thread-safe queues (or ConcurrentHashMap).
+ADB Fallback (Optional): For advanced users or debugging, the app can connect to a local ADB server or paired PC.
+11.3 Required Permissions & Setup Flow
+Accessibility Service (Core for input & UI reading).
+MediaProjection (Screen capture — user grants via prompt).
+SYSTEM_ALERT_WINDOW (Overlay controls / floating dashboard).
+Foreground Service (Persistent running with notification).
+Battery Optimization Exemption (Request via ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS).
+Internet (Optional: for updates, cloud templates, or multi-device sync — off by default).
+Onboarding Wizard in App:
+Step-by-step permission granting.
+CoC resolution calibration (test screen capture on 720p/1080p/1440p).
+Template training mode (user captures game UI elements for custom matching).
+Test run with safe “Search Only” mode.
+11.4 Feature Implementation on Android
+All original features (auto-collect, smart search, loot OCR, troop deployment, upgrades, etc.) are fully supported with these adaptations:
+Human-Like Behavior: GestureBuilder for curved swipes, random tap offsets (±5-15px), Gaussian delays, session-based variability.
+Smart Attacks: Real-time red-line detection via OpenCV contour finding; adaptive wave deployment using on-device object detection (TFLite model trained on CoC troops/buildings).
+Resource & Loot Detection: Optimized OCR + template matching on cropped screen regions to reduce CPU.
+Upgrades & Management: Periodic scans of builder timers, storage levels, and shop.
+Power Efficiency:
+Adaptive FPS based on game state.
+Pause during calls, screen off (with WakeLock if enabled).
+Work-Rest cycles configurable (e.g., 45 min farm / 15 min break).
+Multi-Account: App supports switching CoC accounts via overlay or Accessibility (or run multiple instances if device supports split-screen).
+Builder Base & Other Modes: Dedicated lightweight threads/modes to avoid interfering with main village.
+11.5 Technical Stack for Android App
+Language: Kotlin (primary) + Java interoperability.
+Vision: OpenCV 4.x Android SDK + Google ML Kit / TFLite.
+UI/Overlay: Jetpack Compose or XML with WindowManager for floating controls + real-time game mirror preview (optional low-res).
+Background: ForegroundService + WorkManager + AlarmManager for scheduling.
+Persistence: Room DB for configs, templates, logs, and farm statistics.
+Testing: Instrumented tests on emulators + real devices; UI Automator for integration.
+Distribution: APK sideloading (recommended due to policy) + optional Play Store (limited features version).
+11.6 Safety, Reliability & Anti-Detection on Device
+Detection Mitigation: Same humanization as PC version + device-specific randomization (sensor noise simulation, touch pressure variation if available).
+Fail-Safes: Auto-pause on suspicious CoC screens (e.g., ban warnings detected via OCR), resource caps, session limits.
+Logging: Local encrypted logs + optional anonymous crash reporting.
+Thermal/Battery Guard: Real-time monitoring — throttle or stop before device throttles itself.
+Permissions Revocation Handling: Graceful degradation (e.g., fall back to basic macro mode).
+11.7 User Experience on Phone
+Floating Dashboard: Semi-transparent overlay with Start/Pause, Status (loot/hour, current state), Quick Config.
+Notification Controls: Persistent notification with actions (Pause, Collect Now, etc.).
+Background Running: Continues even when screen is off (with limitations on capture — use partial wake locks wisely).
+Calibration & Customization: In-app template editor and macro recorder for user-defined strategies.
+Performance Targets: Stable 2-5M+ resources/hour on modern mid-range phones (e.g., Snapdragon 7xx series) with good cooling.
+11.8 Development & Maintenance Notes
+Game Update Resilience: Cloud-updatable template/ML models (user opt-in).
+Root Support (Optional Advanced Mode): For users with rooted devices — direct frame buffer access or enhanced input.
+Testing Strategy: Validate on multiple Android versions (10–16), screen densities, and CoC versions.
+Legal Disclaimers: Prominent warnings on every launch about TOS violation and ban risks. Include “Educational Use Only” messaging.
+This completes the addition. The original technical architecture (decoupled threads, vision/execution separation, watchdog, etc.) is retained and now explicitly adapted for native Android execution. The app will work seamlessly on physical devices while preserving all previously defined capabilities.

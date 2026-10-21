@@ -1,0 +1,753 @@
+Choose:
+
+PORT FRIENDS TO FIRESTORE.
+
+Do NOT remove the friends system and do NOT leave it as a future task.
+
+I want ChatZ to ultimately have ONE backend architecture:
+
+Firebase Authentication
+    ↓
+Firebase UID
+    ↓
+Cloud Firestore
+    ├── user profiles
+    ├── handles/user search
+    ├── friend requests
+    ├── friendships
+    ├── friend relationships
+    └── social/profile data
+
+Use Firebase Realtime Database only if it is genuinely necessary for realtime presence/live-state functionality.
+
+==================================================
+FRIENDS SYSTEM MIGRATION
+==================================================
+
+The existing Supabase friends system currently provides:
+
+- Handle search
+- Friend requests
+- Accept/reject requests
+- Mutual friendships
+- Friends list
+- Viewing friends' screen-time/usage information
+
+Port this functionality to Firebase rather than deleting it.
+
+Before changing anything, inspect the existing Supabase implementation and document exactly how each feature currently works.
+
+Do NOT blindly rewrite it.
+
+==================================================
+IDENTITY
+==================================================
+
+Firebase Authentication UID must become the canonical user ID everywhere.
+
+Do not use:
+- email as the primary ID
+- handle as the primary ID
+- Supabase UUIDs
+- locally generated user IDs
+
+Every user should map to:
+
+users/{firebaseUid}
+
+If the old Supabase user ID is referenced anywhere in the friends code, replace that relationship with Firebase UID.
+
+==================================================
+USER PROFILE
+==================================================
+
+Firestore:
+
+users/{uid}
+
+Example fields:
+
+uid
+email
+name
+handle
+dateOfBirth
+education
+bio
+photoUrl
+profileCompleted
+createdAt
+updatedAt
+
+The handle should be searchable.
+
+Do not create duplicate user profiles.
+
+==================================================
+HANDLE SEARCH
+==================================================
+
+Port handle search from Supabase to Firestore.
+
+A user's handle must be associated with their Firebase UID.
+
+If handles must be unique, implement a proper uniqueness mechanism.
+
+Do NOT rely only on:
+
+query users where handle == X
+
+followed by:
+
+"if no result, allow creation"
+
+because two users could attempt to claim the same handle simultaneously.
+
+Use a transaction/reservation mechanism or a dedicated handle document such as:
+
+handles/{normalizedHandle}
+
+{
+    uid: "firebaseUid"
+}
+
+The exact implementation should fit the existing architecture.
+
+Normalize handles consistently for searching and uniqueness.
+
+For example:
+
+@JohnDoe
+@johndoe
+@JOHNDOE
+
+should not accidentally become three different accounts if the application's intended behavior is case-insensitive.
+
+==================================================
+FRIEND REQUESTS
+==================================================
+
+Port friend requests to Firestore.
+
+A reasonable structure is:
+
+friendRequests/{requestId}
+
+{
+    senderId,
+    receiverId,
+    status,
+    createdAt,
+    updatedAt
+}
+
+or another structure if your audit of the existing implementation shows a better design.
+
+Statuses can include:
+
+pending
+accepted
+rejected
+cancelled
+
+Do not duplicate contradictory friendship state across many documents.
+
+When a request is accepted, create the friendship relationship atomically.
+
+==================================================
+FRIENDSHIPS
+==================================================
+
+Represent an accepted friendship using Firebase UIDs.
+
+Example:
+
+friendships/{friendshipId}
+
+{
+    userA,
+    userB,
+    createdAt
+}
+
+Use a deterministic friendship ID based on the two UIDs so the same two users cannot accidentally create duplicate friendships.
+
+For example, conceptually:
+
+friendshipId = sorted(uid1, uid2).join("_")
+
+Do not use random IDs for friendships unless there is a strong reason.
+
+==================================================
+MUTUAL FRIENDSHIPS
+==================================================
+
+Preserve the existing mutual-friend behavior.
+
+A friendship should only exist after both users have accepted the relationship according to the application's existing logic.
+
+Do not expose pending requests as friendships.
+
+Do not allow one user to manually create a friendship document for another user.
+
+Firestore Security Rules must enforce the relationship permissions.
+
+==================================================
+FRIENDS LIST
+==================================================
+
+The friends screen should retrieve the authenticated user's friendships using Firebase UID.
+
+Then resolve the corresponding user profiles from:
+
+users/{uid}
+
+Do not use email matching.
+
+Do not use handles as relationship identifiers.
+
+==================================================
+LIVE SCREEN-TIME
+==================================================
+
+This part needs special attention.
+
+Do NOT put continuously changing screen-time data into the permanent user profile document.
+
+User profile:
+
+users/{uid}
+
+should contain relatively stable profile information.
+
+Live/device state should be separate.
+
+For example, use Firebase Realtime Database for realtime state if appropriate:
+
+presence/{uid}
+
+{
+    online: true,
+    lastSeen: ...,
+    deviceActive: true,
+    updatedAt: ...
+}
+
+And usage information can have a separate structure appropriate to the application's requirements.
+
+The exact schema should be based on how the existing ChatZ implementation calculates and displays screen-time.
+
+Do not send private information such as:
+- screen contents
+- screenshots
+- browser history
+- messages
+- passwords
+
+The feature should only expose the usage statistics that ChatZ is explicitly designed to share.
+
+==================================================
+FIRESTORE + REALTIME DATABASE
+==================================================
+
+Do NOT interpret "remove Supabase" as "everything must go into Firestore."
+
+Use the right Firebase service for the right job.
+
+Recommended architecture:
+
+Firebase Authentication
+→ identity/login
+
+Cloud Firestore
+→ user profiles
+→ handles
+→ friend requests
+→ friendships
+→ social relationships
+
+Realtime Database
+→ realtime presence/device activity
+→ rapidly changing live state where necessary
+
+This is still a Firebase-only backend and removes the unnecessary Supabase dependency.
+
+==================================================
+SECURITY
+==================================================
+
+This is critical.
+
+Do NOT use:
+
+allow read, write: if true;
+
+Friend requests must only be writable by authorized users.
+
+Users must not be able to modify another user's friendship state arbitrarily.
+
+Users must not be able to impersonate another UID.
+
+A user must not be able to submit:
+
+senderId = someoneElse
+
+and create a request pretending to be another person.
+
+Always validate the authenticated Firebase UID using:
+
+request.auth.uid
+
+where appropriate.
+
+Similarly, realtime presence must not allow arbitrary users to modify someone else's presence.
+
+==================================================
+MIGRATION
+==================================================
+
+Before removing Supabase, inspect whether there is existing development data that needs to be preserved.
+
+If there are existing Supabase users/friendships:
+
+DO NOT silently delete them.
+
+First determine whether they can be migrated.
+
+If this is only development/test data and migration is unnecessary, document that clearly.
+
+Do not create a complicated migration system if there is no real existing production data.
+
+==================================================
+AUTHENTICATION + FRIENDS FLOW
+==================================================
+
+Final flow should be:
+
+Google Sign-In
+↓
+Firebase Authentication
+↓
+Firebase UID
+↓
+Firestore user profile
+↓
+Friend system uses Firebase UID
+↓
+Friend requests
+↓
+Accepted friendship
+↓
+Friend's profile
+↓
+Friend's shared screen-time/device state
+
+There must be no dependency on Supabase anywhere in this chain.
+
+==================================================
+SUPABASE REMOVAL
+==================================================
+
+After the migration is complete:
+
+Search the entire project for:
+
+Supabase
+supabase
+SupabaseClient
+Supabase Auth
+Supabase database calls
+Supabase storage
+Supabase URLs
+Supabase keys
+Supabase dependencies
+old Supabase UUID references
+
+Remove them only after their functionality has been replaced.
+
+The project must compile without Supabase.
+
+==================================================
+DO NOT BREAK EXISTING FEATURES
+==================================================
+
+The following features must still work after migration:
+
+1. Google Sign-In
+2. First-time profile creation
+3. Returning-user login
+4. Profile editing
+5. Handle search
+6. Sending friend requests
+7. Receiving friend requests
+8. Accepting requests
+9. Rejecting requests
+10. Friends list
+11. Mutual friendship behavior
+12. Viewing a friend's shared screen-time
+13. Device/activity state where already implemented
+14. Logout/login
+15. App restart/session restoration
+
+Do not remove any of these just to make the migration easier.
+
+==================================================
+IMPORTANT IMPLEMENTATION ORDER
+==================================================
+
+Do this in stages:
+
+STAGE 1
+Audit current Supabase architecture.
+
+STAGE 2
+Implement Firebase Authentication + Google Sign-In correctly.
+
+STAGE 3
+Implement Firestore user profiles.
+
+STAGE 4
+Implement handle uniqueness/search.
+
+STAGE 5
+Port friend requests.
+
+STAGE 6
+Port friendships.
+
+STAGE 7
+Port friends list/mutual-friend functionality.
+
+STAGE 8
+Port realtime presence/device state using Firestore or Realtime Database where appropriate.
+
+STAGE 9
+Test all social functionality.
+
+STAGE 10
+Remove Supabase completely.
+
+Do not delete Supabase first and then attempt to rebuild the features from memory.
+
+==================================================
+FINAL REPORT
+==================================================
+
+After implementation, report:
+
+- Current Firebase architecture
+- Firestore collections/documents
+- Realtime Database paths, if used
+- Authentication flow
+- Handle-search implementation
+- Friend-request implementation
+- Friendship implementation
+- Live screen-time implementation
+- Security Rules implemented
+- Supabase components removed
+- Files changed
+- Firebase Console configuration required
+- Any remaining limitations
+- Exact tests performed
+2
+Choose: KEEP NATIVE BACKGROUND SYNC.
+
+Keep the existing native Kotlin WorkManager implementation that synchronizes screen-time statistics approximately every 15 minutes, even when ChatZ is closed.
+
+Replace the Supabase write operation with Firebase Firestore.
+
+Add the Firebase Firestore Android SDK to the native Kotlin application.
+
+Architecture:
+
+UsageStatsManager
+    ↓
+WorkManager
+    ↓
+Local aggregation/calculation
+    ↓
+Firestore
+    ↓
+Friends can retrieve the latest shared statistics
+
+Do NOT make screen-time synchronization dependent on the ChatZ UI being open.
+
+Do NOT replace WorkManager with foreground-only synchronization.
+
+Do NOT create a foreground service merely to synchronize every 15 minutes.
+
+The worker should:
+1. Run according to Android WorkManager constraints.
+2. Read UsageStats locally.
+3. Calculate the required statistics.
+4. Upload only the latest necessary snapshot to Firestore.
+5. Avoid uploading unchanged data when possible.
+6. Handle offline/network failures gracefully.
+7. Retry using WorkManager's retry mechanism.
+8. Never store raw/private device data unnecessarily.
+
+Use Firebase UID as the user identity.
+
+Keep rapidly changing/live presence separate from the 15-minute screen-time snapshot if necessary.
+
+Example conceptual structure:
+
+users/{uid}
+    → profile data
+
+usageStats/{uid}
+    → today's screen-time
+    → app usage summary
+    → data usage if currently supported
+    → lastUpdated
+
+presence/{uid}
+    → online/device-active state
+    → lastSeen
+
+Do NOT write every few seconds.
+
+The 15-minute WorkManager synchronization should remain the primary background statistics sync.
+
+Also inspect Android battery/background restrictions and make sure the Worker is configured correctly for modern Android, but do not use unsupported permission hacks.
+
+After migration, verify:
+- Worker executes while the app UI is closed.
+- Worker can authenticate using Firebase's existing authenticated user/session.
+- Firestore write succeeds.
+- A friend can retrieve the latest snapshot.
+- Offline execution does not corrupt data.
+- Failed uploads retry correctly.
+- Supabase is no longer required for this workflow.
+3
+For profile photos, do NOT use Google profile photos, Base64 images, or Firebase Storage.
+
+I want to remove user-uploaded profile photos entirely.
+
+Instead, ChatZ should have a built-in collection of creative, cute, polished profile avatars that users can choose from.
+
+==================================================
+PROFILE AVATAR SYSTEM
+==================================================
+
+Replace the current profile-photo upload functionality with a selectable avatar system.
+
+The user should see something like:
+
+"Choose your avatar"
+
+Then display a visually polished grid of ready-made avatars.
+
+The avatars should feel:
+- creative
+- cute
+- modern
+- friendly
+- varied
+- suitable for a social app
+- consistent with ChatZ's visual identity
+
+Include enough choices that users don't feel like everyone has the same avatar.
+
+Possible categories:
+
+- Cute characters
+- Animals
+- Fantasy
+- Minimal characters
+- Space
+- Gaming-inspired
+- Nature
+- Funny/quirky
+- Abstract
+- Different color/style variations
+
+Do NOT use real people's photographs.
+
+==================================================
+DATA MODEL
+==================================================
+
+Do not store image data in Firestore.
+
+Store only an avatar identifier.
+
+For example:
+
+users/{uid}
+
+{
+    ...
+    avatarId: "avatar_017",
+    ...
+}
+
+The actual avatar assets should be bundled with the application or otherwise served as static application assets.
+
+The database should contain only:
+
+avatarId
+
+NOT:
+
+base64 image data
+large image URLs
+binary image data
+
+==================================================
+AVATAR ASSETS
+==================================================
+
+Prefer bundling the avatar assets with the Android application if the collection is reasonably small.
+
+For example:
+
+res/drawable/
+or
+assets/avatars/
+
+The application maps:
+
+avatar_001
+avatar_002
+avatar_003
+...
+
+to the corresponding local asset.
+
+This means:
+- no Firebase Storage cost
+- no Firestore document bloat
+- no image upload system
+- no broken external image URLs
+- no privacy concerns from profile-photo uploads
+- fast loading
+- consistent visual quality
+
+If the final avatar collection becomes too large for the APK, discuss a static CDN approach before implementing it.
+
+Do NOT introduce Firebase Storage just for avatars.
+
+==================================================
+PROFILE EDITING
+==================================================
+
+The user should be able to change their avatar later.
+
+Profile:
+
+Edit Profile
+→ Change Avatar
+→ avatar grid
+→ select avatar
+→ Save
+→ update avatarId in Firestore
+
+The existing profile screen should display the selected avatar.
+
+==================================================
+GOOGLE ACCOUNT PHOTO
+==================================================
+
+Do NOT automatically use:
+
+FirebaseAuth.currentUser.photoUrl
+
+as the ChatZ profile photo.
+
+Google authentication is only for identity/login.
+
+ChatZ's profile identity should use:
+
+name
+handle
+avatarId
+bio
+etc.
+
+This keeps the profile system independent from the user's Google account.
+
+==================================================
+FIRESTORE
+==================================================
+
+The Firestore user document should contain:
+
+avatarId: "avatar_017"
+
+rather than an actual image.
+
+Example:
+
+users/{uid}
+
+{
+    uid: "...",
+    email: "...",
+    name: "...",
+    handle: "...",
+    avatarId: "avatar_017",
+    dateOfBirth: "...",
+    education: "...",
+    bio: "...",
+    profileCompleted: true,
+    createdAt: ...,
+    updatedAt: ...
+}
+
+==================================================
+UI REQUIREMENT
+==================================================
+
+Make the avatar selector feel like an actual part of ChatZ rather than a boring settings list.
+
+Use:
+- clean grid
+- rounded avatar cards
+- clear selected state
+- smooth selection feedback
+- good spacing
+- consistent sizing
+- accessible labels
+
+Do not make the screen unnecessarily complicated.
+
+The selected avatar should immediately appear in the profile preview.
+
+==================================================
+IMPORTANT
+==================================================
+
+Remove all existing Base64 profile-photo storage.
+
+Search the entire project for:
+- Base64 image conversion
+- data:image/
+- profile photo upload
+- image-to-string conversion
+- Supabase profile image storage
+- Firebase Storage profile-photo code
+- Google photo URL being stored as the ChatZ profile image
+
+Remove obsolete code after replacing it with avatarId.
+
+Do not leave dead photo-upload code or unused dependencies.
+
+==================================================
+FINAL RESULT
+==================================================
+
+Authentication:
+Google → Firebase Auth
+
+Profile:
+Firebase UID → Firestore
+
+Profile avatar:
+avatarId → bundled ChatZ avatar asset
+
+No:
+- Base64 profile photos
+- user photo uploads
+- Firebase Storage for avatars
+- Google account photo dependency

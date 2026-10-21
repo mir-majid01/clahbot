@@ -1,0 +1,156 @@
+Product Requirements Document (PRD): Auto-Farming Bot for Clash of Clans
+Version: 1.0 (Detailed Research-Based)
+Date: July 2026
+Author: Grok (xAI) – Compiled from extensive research on existing bots, game mechanics, technical implementations, and best practices.
+Status: Comprehensive specification for an AI agent / developer team to build a robust, maintainable auto-farming application.17c69d,03382c
+LinkedIn +1
+1. Executive Summary
+This PRD outlines a full-featured auto-farming bot for Clash of Clans (CoC), a Supercell mobile strategy game. The app automates repetitive tasks like resource collection, troop training, base searching, raiding for loot, upgrades, and more—allowing users to progress efficiently while offline or AFK.
+Core Value Proposition: Maximize loot/resources per hour with minimal user intervention, while prioritizing account safety through human-like behaviors. Target users: Dedicated players seeking efficiency without constant manual play.7b743c
+Mobirise
+Key Differentiators (vs. existing bots like ClashFarmer, MyBot, AutoClash):
+Modular, extensible architecture (e.g., plugin support for new troops/strategies).
+Advanced anti-detection (randomization, behavioral mimicry).
+Multi-account support and scheduling.
+Cross-platform (primarily Android emulators + potential mobile integration).
+User-friendly GUI with real-time monitoring, config profiles, and logging.
+Compliance awareness (note: botting violates Supercell TOS—include strong disclaimers).4edb47,1784f7
+Supercell +1
+Expected Outcomes: 10M+ resources/hour in optimal setups (e.g., Builder Base macros), smart dead-base targeting, wall upgrades, etc.
+Risks: High ban risk from Supercell (permanent bans common in waves). Emphasize education on risks; no guarantees of undetectability.3ce2ca
+YouTube
+2. Research Summary: How Existing Auto-Farming Apps/Bots Work
+From deep analysis of open-source (e.g., ClAsHbOt), commercial (ClashFarmer, AutoClash), and community projects:
+Core Mechanism (Pixel/Vision-Based Automation):
+No Official API for gameplay automation (Supercell's public API is limited to clan/player data, leaderboards—not for bot control).fc394a
+developer.clashofclans
+Runs on Android emulators (BlueStacks, LDPlayer, Nox) for easy ADB control.
+Screenshot + Computer Vision Loop:
+Capture screen via ADB (adb exec-out screencap).
+Use OpenCV for template matching (buttons, troops, buildings, red attack lines).
+OCR (EasyOCR, Tesseract, or OCR.space) for loot amounts, troop counts, timers, TH level. Preprocess images (grayscale, thresholding) for accuracy.5c8fac,d018b2
+LinkedIn +1
+Input Simulation: ADB taps/swipes (adb shell input tap/swipe). For multi-touch (e.g., 2-finger deployment), use advanced ADB or emulator APIs.
+State Machine: Detect current screen (main village, attack search, battle, shop) via templates/OCR. Transition intelligently.031476
+LinkedIn
+Typical Farming Loop:
+Collect resources (collectors, cart, tombstones).
+Train troops/army (check barracks, spell factory).
+Search for bases (next button).
+Evaluate loot (OCR gold/elixir/DE; skip if below thresholds).
+Attack: Deploy troops near "red lines" (deployment indicators), heroes, spells with timing/waves.
+End battle (surrender or wait for %/loot).
+Repeat; upgrade when resources allow (builders, walls prioritized).593419
+Clashfarmer
+Advanced Features in Top Bots:
+Dead base detection (inactive-looking bases with full collectors).
+Custom attack strategies (BAM, GiBarch, Dragon/Loon, Super troops).
+Wall upgrades, auto-donate/request, clan games.
+Human-like: Randomized delays, jittered taps, variable deployment order/paths, work-rest cycles.ff2e6c
+TikTok
+Multi-device/account rotation.
+Tech Stack Examples: Python (OpenCV, EasyOCR, ADB, PyQt for GUI), sometimes C# DLLs or macro recorders.910c25
+GitHub
+Game Mechanics for Farming (Key for Logic):
+Dead Bases: Abandoned/inactive villages with full collectors/storages, weak/no defenses. Prioritize in lower leagues (Gold-Crystal).97849a
+clashofclans.fandom
+Loot bonuses by league; shield after attacks.
+Strategies: Sneaky Goblins for collectors; balanced armies for storages. TH sniping or full raids.
+Builder Base separate automation for extra resources.7bb253
+YouTube
+3. User Personas & Use Cases
+Casual Farmer: Runs 24/7 on emulator, collects loot/upgrades passively.
+Multi-Accounter: Manages 5+ accounts, rotates on full storages.
+Advanced User: Custom strategies, ML for base evaluation, logs for analysis.
+Primary Use Cases:
+Full auto-farm cycle.
+Manual override / pause.
+Config profiles per TH level/league.
+Post-attack cleanup & upgrades.
+Notifications (e.g., full storages, errors, ban risk indicators).
+4. Functional Requirements
+4.1 Core Modules
+Screen State Detection: Continuous polling (every 1-5s) using templates + OCR. States: Village, Attack Search, Battle, Menu, Shop, etc.
+Resource Management:
+Auto-collect (collectors, cart, clan castle, tombstones).
+OCR storage/loot levels; stop/rotate when full.
+Army & Training:
+Auto-train troops, spells, siege machines based on config.
+Handle barracks queues, lab research notifications.
+Base Searching & Evaluation:
+Set min loot thresholds (Gold/Elixir/DE).
+Filter by TH level, dead base indicators (visual: empty core, full collectors via OCR/templates).
+Skip/re-search logic.
+Attack Automation:
+Troop/spell/hero deployment with customizable order, waves, timing.
+Smart funneling, red-line accuracy, 2-finger multi-deploy.
+Hero abilities at optimal times.
+Randomized paths/delays for human-likeness.
+Support common strategies (editable via config/JSON).
+Upgrades:
+Prioritize walls, builders, key buildings when resources allow.
+Bulk wall upgrades.2f6279
+Clashfarmer
+Clan & Social:
+Auto-request/donate (keyword-based).
+Clan Capital, games, events (future).
+Builder Base / Capital: Separate modes or integrated.
+4.2 Advanced Features
+Humanization Engine: Variable delays (Gaussian distribution), jittered coordinates (±5-10px), random pauses, work-rest scheduler (e.g., 4h on/1h off), mouse-curve simulation if applicable.
+Anti-Detection: No fixed patterns; session variability; occasional "human" actions (open chat randomly?); proxy/VPN support for IP rotation.
+Multi-Account: Profile switching, emulator instance management.
+ML Enhancements (Phase 2): Object detection (YOLO/Roboflow for buildings/troops) for smarter decisions.7dfc08
+Reddit
+Logging & Analytics: Detailed logs, stats (loot/hour, success rate), screenshots on errors.
+Safety: Auto-stop on suspicious screens (ban warning), resource caps, manual confirm for sensitive actions.
+4.3 User Interface
+Desktop GUI (PyQt/Electron): Dashboard with live preview (screen mirror), config tabs, logs, status.
+Mobile companion? (Notifications via push).
+Config: Thresholds, army comps, schedules, strategy presets.
+Visual templates manager (user can add/update images for new game versions).
+4.4 Integration & Extensibility
+Plugin system for new troops/strategies.
+Config files (YAML/JSON) for easy editing.
+ADB/emulator abstraction layer for portability.
+5. Non-Functional Requirements
+Performance: Low CPU (efficient screenshot/processing); handle 24/7 runs.
+Reliability: Error recovery (reconnect, retry), crash resilience.
+Security: Sandboxed; no unnecessary permissions; user data local-only.
+Scalability: Multi-emulator instances.
+Compatibility: Latest CoC versions; handle UI changes via robust templates/OCR fallback. Support major emulators.
+Accessibility: Configurable resolution (e.g., 1280x720 for consistency).
+6. Technical Architecture
+Frontend: GUI framework.
+Backend: Python core.
+OpenCV + NumPy for vision.
+EasyOCR / alternatives.
+ADB wrapper (pure-python-adb or subprocess).
+State machine (e.g., finite state or behavior trees).
+Data: Templates folder, configs, logs.
+Deployment: Packaged executable (PyInstaller), or APK wrapper for direct device (advanced, requires root/automation apps).
+Testing: Unit tests for modules; integration with emulators; simulation of game states.
+Update Handling: Game updates break templates—design for easy retraining (user-capturable templates).
+7. Legal, Ethical & Safety Considerations
+Strong Disclaimers: Violates Supercell TOS/Fair Play Policy. Risk of permanent bans. Provide educational warnings on first launch.fccd58
+Supercell
+No Distribution of Cheats: Open-source core optional; commercial with licensing.
+Privacy: No data collection beyond local logs.
+Age/Compliance: Target adults; no promotion to minors.
+Mitigation: Rate limiting, session limits, encourage legitimate play.
+8. Success Metrics & Testing
+Loot efficiency (compare to manual).
+Uptime >95%.
+Detection evasion in simulated tests (monitor ban reports).
+User testing: Config ease, reliability across TH levels.
+9. Roadmap & Phasing
+MVP: Basic collect/train/search/attack loop with OCR loot check and simple deployment.
+Phase 2: Upgrades, humanization, multi-acc, GUI.
+Phase 3: ML, Builder Base, events, analytics dashboard.
+Maintenance: Template updates post-game patches.
+10. Dependencies & Assumptions
+Emulator access (ADB).
+User provides game account (no account sharing).
+Regular maintenance for game updates.
+Hardware: Decent PC for emulator(s).
+This PRD is exhaustive to guide full implementation. Start with vision pipeline prototyping. For specifics (e.g., sample code snippets or template creation), provide more details. Always prioritize ethical use—botting carries real risks. If building, focus on robustness and adaptability.d7e4c1
+LinkedIn
