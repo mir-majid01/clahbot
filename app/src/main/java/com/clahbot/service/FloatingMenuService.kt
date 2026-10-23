@@ -662,7 +662,7 @@ class FloatingMenuService : Service() {
         // coordinates and use those for both storage and injection, so a window
         // that is not anchored at (0,0) cannot shift the macro.
         val origin = IntArray(2)
-        view.getLocationOnScreen(origin)
+        captureView?.getLocationOnScreen(origin)
         val screenPoints = if (origin[0] == 0 && origin[1] == 0) {
             sampled
         } else {
