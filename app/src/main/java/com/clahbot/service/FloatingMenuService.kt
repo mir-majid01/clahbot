@@ -23,7 +23,10 @@ import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
 import android.text.Editable
+import android.text.Spannable
+import android.text.SpannableStringBuilder
 import android.text.TextWatcher
+import android.text.style.ImageSpan
 import android.util.DisplayMetrics
 import android.util.Log
 import android.view.Gravity
@@ -46,6 +49,7 @@ import com.clahbot.data.AttackRepository
 import com.clahbot.data.BotState
 import com.clahbot.data.models.AttackRecord
 import com.clahbot.data.models.AttackStats
+import com.clahbot.data.models.AttackSummary
 import com.clahbot.data.ControllerState
 import com.clahbot.data.MacroRepository
 import com.clahbot.data.MacroSelection
@@ -98,7 +102,10 @@ class FloatingMenuService : Service() {
 
     private var recording: Boolean = false
     private var injecting: Boolean = false
+    private var injectedEventSeen: Boolean = false
+    private var retryUsed: Boolean = false
     private var injectToken: Int = 0
+    private var lastNotificationMs: Long = 0L
     private var recorded = mutableListOf<RecordedGesture>()
     private var recordStartMs: Long = 0L
     private var pausedAccumMs: Long = 0L
@@ -589,7 +596,10 @@ class FloatingMenuService : Service() {
 
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                if (injecting) return true
+                if (injecting) {
+                    injectedEventSeen = true
+                    return true
+                }
                 downTime = now
                 pathPoints = mutableListOf(GesturePoint(event.x, event.y, 0L))
                 return true
@@ -666,11 +676,16 @@ class FloatingMenuService : Service() {
             points = normalized
         )
         recorded.add(gesture)
-        BotState.setRecordedCount(recorded.size)
-        BotState.setStatus("Recording — ${recorded.size} gesture(s)")
-        updateRecordingNotification()
-        updateRecordingInfo()
+        // Inject first. Notification updates and view lookups used to run before
+        // this and added tens of milliseconds to every gesture.
         injectRecordedGesture(sampled, type, durationMs)
+        BotState.setRecordedCount(recorded.size)
+        updateRecordingInfo()
+        val now = SystemClock.uptimeMillis()
+        if (now - lastNotificationMs > NOTIFICATION_THROTTLE_MS) {
+            lastNotificationMs = now
+            updateRecordingNotification()
+        }
     }
 
     /**
@@ -700,29 +715,61 @@ class FloatingMenuService : Service() {
 
         val token = ++injectToken
         injecting = true
+        injectedEventSeen = false
+        retryUsed = false
         setCaptureTouchable(false)
+        // No artificial delay: dispatch on the next loop iteration. If the window
+        // flag has not applied yet the injection lands on our own surface, which
+        // sets injectedEventSeen and triggers exactly one re-dispatch.
+        handler.post { dispatchPath(service, token, path, duration) }
+        handler.postDelayed({ restoreCaptureTouch(token) }, duration + 900L)
+    }
 
-        handler.postDelayed({
-            if (!recording || token != injectToken) {
-                restoreCaptureTouch(token)
-                return@postDelayed
+    private fun dispatchPath(
+        service: ClahAccessibilityService,
+        token: Int,
+        path: Path,
+        duration: Long
+    ) {
+        if (!recording || token != injectToken) {
+            restoreCaptureTouch(token)
+            return
+        }
+        val stroke = GestureDescription.StrokeDescription(path, 0L, duration)
+        val description = GestureDescription.Builder().addStroke(stroke).build()
+        val callback = object : AccessibilityService.GestureResultCallback() {
+            override fun onCompleted(gestureDescription: GestureDescription?) {
+                afterDispatch(service, token, path, duration)
             }
-            val stroke = GestureDescription.StrokeDescription(path, 0L, duration)
-            val description = GestureDescription.Builder().addStroke(stroke).build()
-            val callback = object : AccessibilityService.GestureResultCallback() {
-                override fun onCompleted(gestureDescription: GestureDescription?) {
-                    restoreCaptureTouch(token)
-                }
 
-                override fun onCancelled(gestureDescription: GestureDescription?) {
-                    restoreCaptureTouch(token)
-                }
+            override fun onCancelled(gestureDescription: GestureDescription?) {
+                afterDispatch(service, token, path, duration)
             }
-            val accepted = service.dispatchGesture(description, callback, null)
-            if (!accepted) restoreCaptureTouch(token)
-        }, INJECT_DELAY_MS)
+        }
+        val accepted = service.dispatchGesture(description, callback, null)
+        if (!accepted) afterDispatch(service, token, path, duration)
+    }
 
-        handler.postDelayed({ restoreCaptureTouch(token) }, INJECT_DELAY_MS + duration + 700L)
+    /**
+     * If our own capture surface saw the injected gesture, the game never got it.
+     * Re-dispatch once so a fast tap is not silently swallowed.
+     */
+    private fun afterDispatch(
+        service: ClahAccessibilityService,
+        token: Int,
+        path: Path,
+        duration: Long
+    ) {
+        if (token != injectToken) return
+        if (injectedEventSeen && !retryUsed) {
+            retryUsed = true
+            injectedEventSeen = false
+            handler.postDelayed({
+                if (token == injectToken) dispatchPath(service, token, path, duration)
+            }, 32L)
+            return
+        }
+        restoreCaptureTouch(token)
     }
 
     private fun setCaptureTouchable(touchable: Boolean) {
@@ -899,12 +946,7 @@ class FloatingMenuService : Service() {
         }
         view.findViewById<TextView>(R.id.tvStatsDetail).text =
             if (state.isPlayback) BotState.status.value else "No attack in progress"
-        view.findViewById<TextView>(R.id.tvStatsTotals).text = buildString {
-            append("Attacks: ").append(summary.count).append("\n")
-            append("Gold: ").append(lootText(summary.gold, summary.lootedCount)).append("\n")
-            append("Elixir: ").append(lootText(summary.elixir, summary.lootedCount)).append("\n")
-            append("Dark elixir: ").append(lootText(summary.darkElixir, summary.lootedCount))
-        }
+        view.findViewById<TextView>(R.id.tvStatsTotals).text = lootTotalsText(summary)
         view.findViewById<TextView>(R.id.tvStatsTime).text =
             "Measured " + formatDuration(summary.totalDurationMs) +
                 " · avg " + formatDuration(summary.averageDurationMs)
@@ -915,6 +957,32 @@ class FloatingMenuService : Service() {
                 formatClockOfDay(r.startedAt) + " · " + formatDuration(r.durationMs) + " · " + lootLabel(r)
             }
         }
+    }
+
+    private fun lootTotalsText(summary: AttackSummary): CharSequence {
+        val rows = listOf(
+            Triple(R.drawable.ic_gold, "Gold", lootText(summary.gold, summary.lootedCount)),
+            Triple(R.drawable.ic_elixir, "Elixir", lootText(summary.elixir, summary.lootedCount)),
+            Triple(R.drawable.ic_dark, "Dark", lootText(summary.darkElixir, summary.lootedCount))
+        )
+        val builder = SpannableStringBuilder("Attacks: " + summary.count)
+        rows.forEach { row ->
+            builder.append("\n")
+            val start = builder.length
+            builder.append(" ")
+            val drawable = ContextCompat.getDrawable(this, row.first)?.mutate()
+            if (drawable != null) {
+                drawable.setBounds(0, 0, dp(11), dp(11))
+                builder.setSpan(
+                    ImageSpan(drawable),
+                    start,
+                    start + 1,
+                    Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
+                )
+            }
+            builder.append(" " + row.second + ": " + row.third)
+        }
+        return builder
     }
 
     private fun lootText(value: Long, lootedCount: Int): String =
@@ -1430,7 +1498,7 @@ class FloatingMenuService : Service() {
         private const val TAG = "AutoClashController"
         private const val CHANNEL_ID = "autoclash_controller"
         private const val NOTIFICATION_ID = 1001
-        private const val INJECT_DELAY_MS = 16L
+        private const val NOTIFICATION_THROTTLE_MS = 900L
         private const val EXTRA_MACRO_ID = "macro_id"
 
         const val ACTION_PLAY = "com.clahbot.action.PLAY"

@@ -498,13 +498,28 @@ private fun AttackSummaryCard(records: List<AttackRecord>) {
     ) {
         Column(modifier = Modifier.padding(14.dp)) {
             Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                SummaryStat("Attacks", summary.count.toString(), Modifier.weight(1f))
-                SummaryStat("Gold", if (summary.lootedCount == 0) "—" else formatNumber(summary.gold), Modifier.weight(1f))
+                SummaryStat("Attacks", summary.count.toString(), modifier = Modifier.weight(1f))
+                SummaryStat(
+                    "Gold",
+                    if (summary.lootedCount == 0) "—" else formatNumber(summary.gold),
+                    iconRes = R.drawable.ic_gold,
+                    modifier = Modifier.weight(1f)
+                )
             }
             Spacer(Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                SummaryStat("Elixir", if (summary.lootedCount == 0) "—" else formatNumber(summary.elixir), Modifier.weight(1f))
-                SummaryStat("Dark", if (summary.lootedCount == 0) "—" else formatNumber(summary.darkElixir), Modifier.weight(1f))
+                SummaryStat(
+                    "Elixir",
+                    if (summary.lootedCount == 0) "—" else formatNumber(summary.elixir),
+                    iconRes = R.drawable.ic_elixir,
+                    modifier = Modifier.weight(1f)
+                )
+                SummaryStat(
+                    "Dark",
+                    if (summary.lootedCount == 0) "—" else formatNumber(summary.darkElixir),
+                    iconRes = R.drawable.ic_dark,
+                    modifier = Modifier.weight(1f)
+                )
             }
             Spacer(Modifier.height(8.dp))
             Text(
@@ -525,17 +540,32 @@ private fun AttackSummaryCard(records: List<AttackRecord>) {
 }
 
 @Composable
-private fun SummaryStat(label: String, value: String, modifier: Modifier = Modifier) {
+private fun SummaryStat(
+    label: String,
+    value: String,
+    iconRes: Int? = null,
+    modifier: Modifier = Modifier
+) {
     Column(modifier = modifier) {
         Text(label, fontSize = 10.sp, color = TextMuted)
-        Text(
-            value,
-            fontSize = 16.sp,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.onSurface,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (iconRes != null) {
+                androidx.compose.foundation.Image(
+                    painter = painterResource(iconRes),
+                    contentDescription = null,
+                    modifier = Modifier.size(13.dp)
+                )
+                Spacer(Modifier.width(4.dp))
+            }
+            Text(
+                value,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
     }
 }
 
@@ -614,17 +644,22 @@ private fun AttackHistoryRow(record: AttackRecord, onEdit: () -> Unit, onDelete:
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    if (record.hasLoot) {
-                        "G ${record.gold ?: 0} · E ${record.elixir ?: 0} · DE ${record.darkElixir ?: 0}" +
-                            if (record.verified) " · edited" else ""
-                    } else {
-                        "Loot not captured"
-                    },
-                    fontSize = 10.sp,
-                    color = if (record.hasLoot) ReadyGreen else TextMuted
-                )
+                Spacer(Modifier.height(3.dp))
+                if (record.hasLoot) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(9.dp)
+                    ) {
+                        LootChip(R.drawable.ic_gold, record.gold ?: 0L)
+                        LootChip(R.drawable.ic_elixir, record.elixir ?: 0L)
+                        LootChip(R.drawable.ic_dark, record.darkElixir ?: 0L)
+                        if (record.verified) {
+                            Text("edited", fontSize = 9.sp, color = TextMuted)
+                        }
+                    }
+                } else {
+                    Text("Loot not captured", fontSize = 10.sp, color = TextMuted)
+                }
             }
             IconButton(onClick = onEdit, modifier = Modifier.size(36.dp)) {
                 Icon(
@@ -643,6 +678,19 @@ private fun AttackHistoryRow(record: AttackRecord, onEdit: () -> Unit, onDelete:
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun LootChip(iconRes: Int, value: Long) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        androidx.compose.foundation.Image(
+            painter = painterResource(iconRes),
+            contentDescription = null,
+            modifier = Modifier.size(12.dp)
+        )
+        Spacer(Modifier.width(3.dp))
+        Text(formatNumber(value), fontSize = 10.sp, color = ReadyGreen)
     }
 }
 
