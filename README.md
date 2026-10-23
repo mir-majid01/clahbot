@@ -63,6 +63,23 @@ sampled, then re-injected through the accessibility service; the surface is made
 `FLAG_NOT_TOUCHABLE` during each injection so the injected gesture reaches the game
 instead of our own overlay.
 
+## Attack history
+
+Playback opens an attack session. When it completes, is stopped, the macro is
+deleted, or the app is closed, one record is written to `attacks.json` with the
+start/end timestamps, measured duration, macro name snapshot, speed and repeat.
+History is stored separately from macros, so deleting a macro never deletes its
+past attacks.
+
+Loot fields (gold, elixir, dark elixir) are nullable and are **not read from the
+screen** — the app has no screenshot pipeline and never invents a number. The
+dashboard lets you add or correct them, after which the record is marked
+`manual`/verified. Totals only count values that actually exist; unobserved loot
+is shown as "—", not zero.
+
+The floating controller has a Controller/Stats page switch that reads the same
+repository, so it never disagrees with the dashboard.
+
 ## Settings
 
 - Recording & playback: default speed, default repeat (Once / Loop / 3×), haptics,
@@ -88,6 +105,10 @@ therefore **intercepts and re-injects**:
 - Coordinates are normalized to the recording display; a very different aspect ratio
   will land in the wrong place. Rotating stops the recording.
 - Speed changes apply to the next playback run.
+- Loot is not captured automatically. Only attack timing is measured; resource
+  values are manual. OCR/screenshot capture is not implemented.
+- Playback pauses when Clash of Clans is not the foreground app and the session
+  is marked interrupted; resume is manual.
 
 ## Build
 

@@ -13,7 +13,7 @@ com.clahbot/
 ├── service/            FloatingMenuService (controller + recorder + player),
 │                       ClahAccessibilityService (gesture injection)
 ├── execution/          MacroPlayer, MacroTimeline (pure timing/geometry)
-├── data/               BotState, MacroRepository, SettingsStore, models
+├── data/               BotState, MacroRepository, AttackRepository, SettingsStore, models
 └── util/               PermissionHelper
 ```
 
@@ -50,6 +50,11 @@ line. `MacroRepository.macros` is a `StateFlow` and the single authoritative lis
 the dashboard and controller never keep private copies.
 
 Settings live in `SharedPreferences` behind `SettingsStore.settings: StateFlow`.
+
+Attack history lives in `filesDir/attacks.json` (`AttackRepository`) with the same
+atomic-write pattern. Loot is nullable: `null` means not observed. Playback opens a
+session and writes exactly one record when it ends; deleting a macro does not touch
+history.
 
 ## Branding
 
