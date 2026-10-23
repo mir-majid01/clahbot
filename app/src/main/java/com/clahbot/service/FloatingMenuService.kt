@@ -658,9 +658,19 @@ class FloatingMenuService : Service() {
         if (rawPoints.isEmpty()) return
 
         val sampled = MacroTimeline.decimate(rawPoints)
-        val deviation = MacroTimeline.maxDeviationPx(sampled)
+        // event.x/y are relative to the capture view. Convert once to screen
+        // coordinates and use those for both storage and injection, so a window
+        // that is not anchored at (0,0) cannot shift the macro.
+        val origin = IntArray(2)
+        view.getLocationOnScreen(origin)
+        val screenPoints = if (origin[0] == 0 && origin[1] == 0) {
+            sampled
+        } else {
+            sampled.map { GesturePoint(it.x + origin[0], it.y + origin[1], it.t) }
+        }
+        val deviation = MacroTimeline.maxDeviationPx(screenPoints)
         val type = MacroTimeline.classify(deviation, durationMs)
-        val normalized = MacroTimeline.normalize(sampled, width, height)
+        val normalized = MacroTimeline.normalize(screenPoints, width, height)
         if (normalized.isEmpty()) return
 
         val startInRecording = (downTime - recordStartMs - pausedAccumMs).coerceAtLeast(0L)
@@ -678,7 +688,7 @@ class FloatingMenuService : Service() {
         recorded.add(gesture)
         // Inject first. Notification updates and view lookups used to run before
         // this and added tens of milliseconds to every gesture.
-        injectRecordedGesture(sampled, type, durationMs)
+        injectRecordedGesture(screenPoints, type, durationMs)
         BotState.setRecordedCount(recorded.size)
         updateRecordingInfo()
         val now = SystemClock.uptimeMillis()
