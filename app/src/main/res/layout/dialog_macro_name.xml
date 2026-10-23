@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="@drawable/bg_dialog"
+    android:orientation="vertical"
+    android:padding="18dp">
+
+    <TextView
+        android:id="@+id/tvDialogTitle"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Save attack macro"
+        android:textColor="#F1F5F9"
+        android:textSize="16sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="3dp"
+        android:text="Name this recording so you can find it later."
+        android:textColor="#94A3B8"
+        android:textSize="10sp" />
+
+    <EditText
+        android:id="@+id/etDialogName"
+        android:layout_width="match_parent"
+        android:layout_height="44dp"
+        android:layout_marginTop="12dp"
+        android:backgroundTint="#3B82F6"
+        android:inputType="textCapSentences"
+        android:maxLength="40"
+        android:singleLine="true"
+        android:textColor="#F1F5F9"
+        android:textColorHint="#64748B"
+        android:textSize="14sp"
+        android:importantForAutofill="no" />
+
+    <TextView
+        android:id="@+id/tvDialogCount"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="end"
+        android:text="0/40"
+        android:textColor="#64748B"
+        android:textSize="9sp" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="44dp"
+        android:layout_marginTop="10dp"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/btnDialogCancel"
+            android:layout_width="0dp"
+            android:layout_height="44dp"
+            android:layout_weight="1"
+            android:backgroundTint="#1E293B"
+            android:text="Cancel"
+            android:textColor="#E2E8F0"
+            android:textSize="12sp" />
+
+        <Button
+            android:id="@+id/btnDialogSave"
+            android:layout_width="0dp"
+            android:layout_height="44dp"
+            android:layout_marginStart="8dp"
+            android:layout_weight="1"
+            android:backgroundTint="#3B82F6"
+            android:text="Save"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+    </LinearLayout>
+</LinearLayout>

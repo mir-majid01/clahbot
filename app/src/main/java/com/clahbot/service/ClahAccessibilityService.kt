@@ -10,7 +10,13 @@ class ClahAccessibilityService : AccessibilityService() {
         instance = this
     }
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (event?.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            val pkg = event.packageName?.toString() ?: return
+            // Ignore our own overlay windows; only remember other apps.
+            if (pkg != packageName) foregroundPackage = pkg
+        }
+    }
 
     override fun onInterrupt() {}
 
@@ -24,6 +30,15 @@ class ClahAccessibilityService : AccessibilityService() {
         var instance: ClahAccessibilityService? = null
             private set
 
+        @Volatile
+        private var foregroundPackage: String? = null
+
         fun isEnabled(): Boolean = instance != null
+
+        /** Unknown (no events yet) counts as the game so we never pause falsely. */
+        fun isGameForeground(): Boolean {
+            val pkg = foregroundPackage ?: return true
+            return pkg.startsWith("com.supercell")
+        }
     }
 }

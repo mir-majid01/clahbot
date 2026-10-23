@@ -23,7 +23,7 @@
                 android:layout_width="22dp"
                 android:layout_height="22dp"
                 android:contentDescription="@string/app_name"
-                android:src="@drawable/ic_autoclash_logo" />
+                android:src="@drawable/ic_autoclash_mark" />
 
             <TextView
                 android:layout_width="wrap_content"
@@ -67,6 +67,35 @@
                 android:src="@drawable/ic_close" />
         </LinearLayout>
 
+
+        <LinearLayout
+            android:id="@+id/pageTabs"
+            android:layout_width="match_parent"
+            android:layout_height="32dp"
+            android:layout_marginTop="6dp"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/btnPageController"
+                android:layout_width="0dp"
+                android:layout_height="32dp"
+                android:layout_weight="1"
+                android:backgroundTint="#1E293B"
+                android:text="Controller"
+                android:textColor="#E2E8F0"
+                android:textSize="10sp" />
+
+            <Button
+                android:id="@+id/btnPageStats"
+                android:layout_width="0dp"
+                android:layout_height="32dp"
+                android:layout_marginStart="6dp"
+                android:layout_weight="1"
+                android:backgroundTint="#1E293B"
+                android:text="Stats"
+                android:textColor="#E2E8F0"
+                android:textSize="10sp" />
+        </LinearLayout>
         <FrameLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -400,6 +429,67 @@
                         android:textSize="10sp" />
                 </LinearLayout>
             </LinearLayout>
+
+            <ScrollView
+                android:id="@+id/statsPanel"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:maxHeight="300dp"
+                android:visibility="gone">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical">
+
+                    <TextView
+                        android:id="@+id/tvStatsState"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:text="Idle"
+                        android:textColor="#E2E8F0"
+                        android:textSize="12sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/tvStatsDetail"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="3dp"
+                        android:text="No attack in progress"
+                        android:textColor="#94A3B8"
+                        android:textSize="10sp" />
+
+                    <TextView
+                        android:id="@+id/tvStatsTotals"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:lineSpacingExtra="3dp"
+                        android:text="Attacks 0"
+                        android:textColor="#E2E8F0"
+                        android:textSize="11sp" />
+
+                    <TextView
+                        android:id="@+id/tvStatsTime"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:text=""
+                        android:textColor="#94A3B8"
+                        android:textSize="10sp" />
+
+                    <TextView
+                        android:id="@+id/tvStatsRecent"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="10dp"
+                        android:lineSpacingExtra="3dp"
+                        android:text=""
+                        android:textColor="#94A3B8"
+                        android:textSize="10sp" />
+                </LinearLayout>
+            </ScrollView>
         </FrameLayout>
     </LinearLayout>
 
@@ -415,7 +505,7 @@
             android:layout_height="30dp"
             android:layout_gravity="center"
             android:contentDescription="@string/app_name"
-            android:src="@drawable/ic_autoclash_logo" />
+            android:src="@drawable/ic_autoclash_mark" />
 
         <TextView
             android:id="@+id/bubbleStatus"

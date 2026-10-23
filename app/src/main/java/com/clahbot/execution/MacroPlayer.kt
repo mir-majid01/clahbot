@@ -38,7 +38,7 @@ class MacroPlayer(
     @Volatile
     private var stopped = false
 
-    fun play(macro: Macro, scope: CoroutineScope) {
+    fun play(macro: Macro, scope: CoroutineScope, onFinished: (() -> Unit)? = null) {
         active?.let { if (it !== this) it.stop() }
         stopInternal()
 
@@ -76,6 +76,12 @@ class MacroPlayer(
                     var lastTimestamp = 0L
                     for (gesture in gestures) {
                         if (!isActive || stopped) break
+                        if (!ClahAccessibilityService.isGameForeground()) {
+                            BotState.setInterrupted(true)
+                            paused = true
+                            BotState.setState(ControllerState.PLAYBACK_PAUSED)
+                            BotState.setStatus("Paused — Clash of Clans is not in front")
+                        }
                         awaitResume()
 
                         val gap = MacroTimeline.gapMillis(
@@ -107,6 +113,7 @@ class MacroPlayer(
                     BotState.clearActiveMacro()
                     BotState.setState(ControllerState.READY)
                     BotState.setStatus("Playback complete")
+                    onFinished?.invoke()
                 }
             } catch (_: CancellationException) {
                 // Stopping is a normal exit path.

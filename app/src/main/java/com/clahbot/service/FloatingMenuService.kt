@@ -2,7 +2,7 @@ package com.clahbot.service
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
-import android.app.AlertDialog
+import android.app.Dialog
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -15,12 +15,15 @@ import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Path
+import android.graphics.drawable.ColorDrawable
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
+import android.text.Editable
+import android.text.TextWatcher
 import android.util.DisplayMetrics
 import android.util.Log
 import android.view.Gravity
@@ -38,7 +41,11 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.clahbot.R
+import android.content.res.ColorStateList
+import com.clahbot.data.AttackRepository
 import com.clahbot.data.BotState
+import com.clahbot.data.models.AttackRecord
+import com.clahbot.data.models.AttackStats
 import com.clahbot.data.ControllerState
 import com.clahbot.data.MacroRepository
 import com.clahbot.data.MacroSelection
@@ -73,6 +80,7 @@ class FloatingMenuService : Service() {
     private lateinit var windowManager: WindowManager
     private lateinit var repository: MacroRepository
     private lateinit var settingsStore: SettingsStore
+    private lateinit var attackRepository: AttackRepository
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val handler = Handler(Looper.getMainLooper())
 
@@ -105,6 +113,8 @@ class FloatingMenuService : Service() {
 
     private var notificationStarted: Boolean = false
     private var collapsed: Boolean = false
+    private var page: Int = PAGE_CONTROLLER
+    private var session: AttackSession? = null
 
     private val timerRunnable = object : Runnable {
         override fun run() {
@@ -120,10 +130,13 @@ class FloatingMenuService : Service() {
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         repository = MacroRepository.get(this)
         settingsStore = SettingsStore.get(this)
+        attackRepository = AttackRepository.get(this)
         updateScreenSize()
         startForegroundCompat(getString(R.string.notification_idle))
 
         scope.launch { repository.refresh() }
+        scope.launch { attackRepository.refresh() }
+        scope.launch { attackRepository.records.collect { renderStats() } }
         scope.launch { repository.macros.collect { onMacrosChanged(it) } }
         scope.launch { BotState.state.collect { refreshUi() } }
         scope.launch { BotState.status.collect { onStatusChanged(it) } }
@@ -182,6 +195,7 @@ class FloatingMenuService : Service() {
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
+        BotState.setInterrupted(true)
         stopPlayback()
         stopRecording(silent = true)
         removeCapture()
@@ -210,6 +224,7 @@ class FloatingMenuService : Service() {
         val activeId = BotState.activeMacroId.value
         if (activeId > 0 && list.none { it.id == activeId }) {
             // The macro being played was deleted elsewhere: stop and do not resume.
+            BotState.setInterrupted(true)
             stopPlayback()
             BotState.setState(ControllerState.READY)
             BotState.setStatus("The playing macro was deleted")
@@ -277,6 +292,7 @@ class FloatingMenuService : Service() {
         BotState.setStatus("Controller ready")
         refreshUi()
         refreshMacros()
+        scope.launch { attackRepository.refresh() }
     }
 
     private fun removeController() {
@@ -309,6 +325,8 @@ class FloatingMenuService : Service() {
             startRecording()
         }
         view.findViewById<Button>(R.id.btnPlay).setOnClickListener { playSelected() }
+        view.findViewById<Button>(R.id.btnPageController).setOnClickListener { setPage(PAGE_CONTROLLER) }
+        view.findViewById<Button>(R.id.btnPageStats).setOnClickListener { setPage(PAGE_STATS) }
         view.findViewById<ImageButton>(R.id.btnRename).setOnClickListener { renameSelected() }
         view.findViewById<ImageButton>(R.id.btnDelete).setOnClickListener { deleteSelected() }
         view.findViewById<ImageButton>(R.id.btnSpeedDown).setOnClickListener { changeSpeed(-1) }
@@ -465,8 +483,10 @@ class FloatingMenuService : Service() {
         pausedAtMs = 0L
         downTime = 0L
         recordStartMs = SystemClock.uptimeMillis()
+        injectToken++
         injecting = false
         recording = true
+        updateScreenSize()
 
         BotState.clearRecording()
         BotState.setState(ControllerState.RECORDING)
@@ -611,9 +631,13 @@ class FloatingMenuService : Service() {
 
     private fun commitGesture(durationMs: Long) {
         if (!recording) return
-        val view = captureView ?: return
-        val width = view.width.takeIf { it > 0 } ?: screenWidth
-        val height = view.height.takeIf { it > 0 } ?: screenHeight
+        if (captureView == null) return
+        // Normalize against the same display bounds playback will scale by.
+        // Using the capture view's measured size here was the coordinate drift:
+        // its frame can be inset by system bars/cutout while playback scales by
+        // WindowMetrics.bounds, so every stored point was slightly displaced.
+        val width = screenWidth
+        val height = screenHeight
         if (width <= 0 || height <= 0) {
             pathPoints.clear()
             return
@@ -794,10 +818,21 @@ class FloatingMenuService : Service() {
             BotState.setStatus("Warning: macro was recorded in ${adjusted.orientation}")
         }
 
+        endAttackSession(interrupted = false)
+        BotState.setInterrupted(false)
         player?.stop()
         val newPlayer = MacroPlayer(screenWidth, screenHeight)
         player = newPlayer
-        newPlayer.play(adjusted, scope)
+        newPlayer.play(adjusted, scope) { endAttackSession(interrupted = false) }
+        if (newPlayer.isRunning()) {
+            session = AttackSession(
+                startedAt = System.currentTimeMillis(),
+                macroId = macro.id,
+                macroName = macro.name,
+                speed = speed,
+                repeat = repeatMode
+            )
+        }
         updateNotification(getString(R.string.notification_playing, macro.name))
         refreshUi()
     }
@@ -813,11 +848,86 @@ class FloatingMenuService : Service() {
     }
 
     private fun stopPlayback() {
+        val interrupted = BotState.interrupted.value
         player?.stop()
         player = null
+        endAttackSession(interrupted)
         updateNotification(getString(R.string.notification_idle))
         refreshUi()
     }
+
+    private fun setPage(next: Int) {
+        page = next
+        refreshUi()
+        if (next == PAGE_STATS) renderStats()
+    }
+
+    private fun endAttackSession(interrupted: Boolean) {
+        val current = session ?: return
+        session = null
+        val now = System.currentTimeMillis()
+        val record = AttackRecord(
+            id = nextAttackId(),
+            startedAt = current.startedAt,
+            endedAt = now,
+            durationMs = (now - current.startedAt).coerceAtLeast(0L),
+            macroId = current.macroId,
+            macroName = current.macroName,
+            speedMultiplier = current.speed,
+            repeatMode = current.repeat,
+            result = if (interrupted) AttackRecord.RESULT_INTERRUPTED else AttackRecord.RESULT_COMPLETED,
+            complete = !interrupted
+        )
+        scope.launch { attackRepository.add(record) }
+        BotState.setInterrupted(false)
+    }
+
+    private fun nextAttackId(): Long {
+        val highest = attackRepository.records.value.maxOfOrNull { it.id } ?: 0L
+        return maxOf(System.currentTimeMillis(), highest + 1L)
+    }
+
+    private fun renderStats() {
+        val view = controllerView ?: return
+        val records = attackRepository.records.value
+        val summary = AttackStats.summarize(records)
+        val state = BotState.state.value
+        view.findViewById<TextView>(R.id.tvStatsState).text = when {
+            state.isPlayback -> BotState.activeMacroName.value?.let { "Playing: " + it } ?: "Playing"
+            state.isRecording -> "Recording"
+            else -> "Idle"
+        }
+        view.findViewById<TextView>(R.id.tvStatsDetail).text =
+            if (state.isPlayback) BotState.status.value else "No attack in progress"
+        view.findViewById<TextView>(R.id.tvStatsTotals).text = buildString {
+            append("Attacks: ").append(summary.count).append("\n")
+            append("Gold: ").append(lootText(summary.gold, summary.lootedCount)).append("\n")
+            append("Elixir: ").append(lootText(summary.elixir, summary.lootedCount)).append("\n")
+            append("Dark elixir: ").append(lootText(summary.darkElixir, summary.lootedCount))
+        }
+        view.findViewById<TextView>(R.id.tvStatsTime).text =
+            "Measured " + formatDuration(summary.totalDurationMs) +
+                " · avg " + formatDuration(summary.averageDurationMs)
+        view.findViewById<TextView>(R.id.tvStatsRecent).text = if (records.isEmpty()) {
+            "No attacks yet. Play a macro to start history."
+        } else {
+            records.take(4).joinToString("\n") { r ->
+                formatClockOfDay(r.startedAt) + " · " + formatDuration(r.durationMs) + " · " + lootLabel(r)
+            }
+        }
+    }
+
+    private fun lootText(value: Long, lootedCount: Int): String =
+        if (lootedCount == 0) "not captured" else value.toString()
+
+    private fun lootLabel(record: AttackRecord): String {
+        if (!record.hasLoot) return "loot not captured"
+        return "G " + (record.gold ?: 0) + " · E " + (record.elixir ?: 0) +
+            " · DE " + (record.darkElixir ?: 0)
+    }
+
+    private fun formatClockOfDay(timestamp: Long): String =
+        SimpleDateFormat("HH:mm", Locale.US).format(Date(timestamp))
 
     private fun changeSpeed(direction: Int) {
         speed = MacroTimeline.stepSpeed(speed, direction)
@@ -988,10 +1098,18 @@ class FloatingMenuService : Service() {
         val showPlaying = state == ControllerState.PLAYING || state == ControllerState.PLAYBACK_PAUSED
         val showReady = !showRecording && !showReview && !showPlaying
 
-        view.findViewById<View>(R.id.readyPanel).visibility = if (showReady) View.VISIBLE else View.GONE
-        view.findViewById<View>(R.id.recordingPanel).visibility = if (showRecording) View.VISIBLE else View.GONE
-        view.findViewById<View>(R.id.reviewPanel).visibility = if (showReview) View.VISIBLE else View.GONE
-        view.findViewById<View>(R.id.playingPanel).visibility = if (showPlaying) View.VISIBLE else View.GONE
+        val statsVisible = page == PAGE_STATS
+        view.findViewById<View>(R.id.statsPanel).visibility = if (statsVisible) View.VISIBLE else View.GONE
+        view.findViewById<View>(R.id.readyPanel).visibility = if (!statsVisible && showReady) View.VISIBLE else View.GONE
+        view.findViewById<View>(R.id.recordingPanel).visibility = if (!statsVisible && showRecording) View.VISIBLE else View.GONE
+        view.findViewById<View>(R.id.reviewPanel).visibility = if (!statsVisible && showReview) View.VISIBLE else View.GONE
+        view.findViewById<View>(R.id.playingPanel).visibility = if (!statsVisible && showPlaying) View.VISIBLE else View.GONE
+        val tabActive = 0xFF3B82F6.toInt()
+        val tabIdle = 0xFF1E293B.toInt()
+        view.findViewById<Button>(R.id.btnPageController).backgroundTintList =
+            ColorStateList.valueOf(if (statsVisible) tabIdle else tabActive)
+        view.findViewById<Button>(R.id.btnPageStats).backgroundTintList =
+            ColorStateList.valueOf(if (statsVisible) tabActive else tabIdle)
 
         view.findViewById<TextView>(R.id.tvSpeed).text = MacroTimeline.formatSpeed(speed)
         view.findViewById<Button>(R.id.btnRepeat).text = MacroTimeline.repeatLabel(repeatMode)
@@ -1081,35 +1199,48 @@ class FloatingMenuService : Service() {
     }
 
     private fun showInputDialog(title: String, initial: String, onConfirm: (String) -> Unit) {
-        val input = EditText(this).apply {
-            setText(initial)
-            setSelection(text.length)
-            setSingleLine()
+        val view = LayoutInflater.from(this).inflate(R.layout.dialog_macro_name, null)
+        val dialog = Dialog(this).apply {
+            setContentView(view)
+            window?.setType(overlayType())
+            window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+            window?.setLayout(dp(300), WindowManager.LayoutParams.WRAP_CONTENT)
+            window?.setSoftInputMode(
+                WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE or
+                    WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE
+            )
+            setCanceledOnTouchOutside(false)
         }
-        val dialog = AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-            .setTitle(title)
-            .setView(input)
-            .setPositiveButton("OK", null)
-            .setNegativeButton("Cancel", null)
-            .create()
-        dialog.window?.setType(overlayType())
-        dialog.window?.setLayout(
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.WRAP_CONTENT
-        )
-        dialog.setOnShowListener {
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                val value = input.text.toString().trim()
-                if (value.isEmpty()) {
-                    input.error = "Name cannot be empty"
-                    return@setOnClickListener
-                }
+        view.findViewById<TextView>(R.id.tvDialogTitle).text = title
+        val input = view.findViewById<EditText>(R.id.etDialogName)
+        val save = view.findViewById<Button>(R.id.btnDialogSave)
+        val counter = view.findViewById<TextView>(R.id.tvDialogCount)
+        input.setText(initial)
+        input.setSelection(input.text.length)
+        val refresh = {
+            val length = input.text.length
+            counter.text = "$length/40"
+            save.isEnabled = input.text.toString().isNotBlank()
+        }
+        input.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
+            override fun afterTextChanged(s: Editable?) = refresh()
+        })
+        save.setOnClickListener {
+            val value = input.text.toString().trim()
+            if (value.isNotEmpty()) {
                 dialog.dismiss()
                 onConfirm(value)
             }
         }
+        view.findViewById<Button>(R.id.btnDialogCancel).setOnClickListener {
+            dialog.dismiss()
+        }
+        refresh()
         try {
             dialog.show()
+            input.requestFocus()
         } catch (e: Exception) {
             Log.e(TAG, "Input dialog failed", e)
             toast("Could not open dialog")
@@ -1122,13 +1253,26 @@ class FloatingMenuService : Service() {
         positive: String,
         onConfirm: () -> Unit
     ) {
-        val dialog = AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-            .setTitle(title)
-            .setMessage(message)
-            .setPositiveButton(positive) { _, _ -> onConfirm() }
-            .setNegativeButton("Cancel", null)
-            .create()
-        dialog.window?.setType(overlayType())
+        val view = LayoutInflater.from(this).inflate(R.layout.dialog_confirm, null)
+        val dialog = Dialog(this).apply {
+            setContentView(view)
+            window?.setType(overlayType())
+            window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+            window?.setLayout(dp(300), WindowManager.LayoutParams.WRAP_CONTENT)
+            setCanceledOnTouchOutside(true)
+        }
+        view.findViewById<TextView>(R.id.tvConfirmTitle).text = title
+        view.findViewById<TextView>(R.id.tvConfirmMessage).text = message
+        view.findViewById<Button>(R.id.btnConfirmOk).apply {
+            text = positive
+            setOnClickListener {
+                dialog.dismiss()
+                onConfirm()
+            }
+        }
+        view.findViewById<Button>(R.id.btnConfirmCancel).setOnClickListener {
+            dialog.dismiss()
+        }
         try {
             dialog.show()
         } catch (e: Exception) {
@@ -1272,11 +1416,21 @@ class FloatingMenuService : Service() {
         }
     }
 
+    private data class AttackSession(
+        val startedAt: Long,
+        val macroId: Long,
+        val macroName: String,
+        val speed: Float,
+        val repeat: String
+    )
+
     companion object {
+        private const val PAGE_CONTROLLER = 0
+        private const val PAGE_STATS = 1
         private const val TAG = "AutoClashController"
         private const val CHANNEL_ID = "autoclash_controller"
         private const val NOTIFICATION_ID = 1001
-        private const val INJECT_DELAY_MS = 24L
+        private const val INJECT_DELAY_MS = 16L
         private const val EXTRA_MACRO_ID = "macro_id"
 
         const val ACTION_PLAY = "com.clahbot.action.PLAY"

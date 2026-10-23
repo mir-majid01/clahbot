@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -41,6 +42,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -48,6 +50,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -59,18 +62,25 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.graphics.drawable.toBitmap
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 
 import com.clahbot.R
+import com.clahbot.data.AttackRepository
 import com.clahbot.data.BotState
+import com.clahbot.data.models.AttackRecord
+import com.clahbot.data.models.AttackStats
 import com.clahbot.data.ControllerState
 import com.clahbot.data.MacroRepository
 import com.clahbot.data.SettingsStore
@@ -87,6 +97,7 @@ import com.clahbot.ui.theme.SurfaceRaised
 import com.clahbot.ui.theme.TextMuted
 import com.clahbot.util.PermissionHelper
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -203,6 +214,9 @@ fun DashboardScreen(
     onRequestNotificationPermission: () -> Unit
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val attackRepository = remember { AttackRepository.get(context) }
+    val attacks by attackRepository.records.collectAsState()
     val macros by viewModel.macros.collectAsState()
     val selectedId by BotState.selectedMacroId.collectAsState()
     val controllerState by BotState.state.collectAsState()
@@ -211,6 +225,11 @@ fun DashboardScreen(
     var editing by remember { mutableStateOf<Macro?>(null) }
     var deleting by remember { mutableStateOf<Macro?>(null) }
     var showStoreDialog by remember { mutableStateOf(false) }
+    var historyFilter by remember { mutableStateOf(0) }
+    var lootEditing by remember { mutableStateOf<AttackRecord?>(null) }
+    var deletingAttack by remember { mutableStateOf<AttackRecord?>(null) }
+
+    LaunchedEffect(Unit) { attackRepository.refresh() }
 
     LaunchedEffect(Unit) {
         while (true) {
@@ -230,7 +249,28 @@ fun DashboardScreen(
     val accessibilityOk = remember(tick) { PermissionHelper.isAccessibilityEnabled(context) }
     val notificationsOk = remember(tick) { PermissionHelper.canPostNotifications(context) }
     val gamePackage = remember(tick) { installedClashPackage(context.packageManager) }
+    val gameIcon: ImageBitmap? = remember(gamePackage) {
+        gamePackage?.let { pkg ->
+            runCatching {
+                context.packageManager.getApplicationIcon(pkg)
+                    .toBitmap(96, 96)
+                    .asImageBitmap()
+            }.getOrNull()
+        }
+    }
     val controllerActive = controllerState != ControllerState.INACTIVE
+
+    val historySince = remember(historyFilter, tick) {
+        val now = System.currentTimeMillis()
+        when (historyFilter) {
+            1 -> now - 7L * 24L * 60L * 60L * 1000L
+            2 -> now - (now % (24L * 60L * 60L * 1000L))
+            else -> null
+        }
+    }
+    val filteredAttacks = remember(attacks, historySince) {
+        AttackStats.filter(attacks, historySince)
+    }
 
     val launchGame: () -> Unit = {
         val pkg = installedClashPackage(context.packageManager)
@@ -321,6 +361,7 @@ fun DashboardScreen(
             item {
                 GameCard(
                     installedPackage = gamePackage,
+                    gameIcon = gameIcon,
                     controllerActive = controllerActive,
                     onLaunchGame = launchGame
                 )
@@ -374,9 +415,289 @@ fun DashboardScreen(
                     )
                 }
             }
+
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "Attack history",
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onBackground,
+                        modifier = Modifier.weight(1f)
+                    )
+                    Text("${attacks.size} recorded", fontSize = 11.sp, color = TextMuted)
+                }
+            }
+            item { AttackSummaryCard(attacks) }
+            item {
+                HistoryFilterRow(selected = historyFilter, onSelect = { historyFilter = it })
+            }
+            if (filteredAttacks.isEmpty()) {
+                item { HistoryEmpty(hasAny = attacks.isNotEmpty()) }
+            } else {
+                items(filteredAttacks.take(25), key = { "attack-${it.id}" }) { record ->
+                    AttackHistoryRow(
+                        record = record,
+                        onEdit = { lootEditing = record },
+                        onDelete = { deletingAttack = record }
+                    )
+                }
+            }
+        }
+    }
+
+    lootEditing?.let { record ->
+        LootEditDialog(
+            record = record,
+            onDismiss = { lootEditing = null },
+            onSave = { gold, elixir, dark ->
+                scope.launch {
+                    attackRepository.update(
+                        record.copy(
+                            gold = gold,
+                            elixir = elixir,
+                            darkElixir = dark,
+                            lootSource = AttackRecord.LOOT_MANUAL,
+                            verified = gold != null || elixir != null || dark != null
+                        )
+                    )
+                }
+                lootEditing = null
+            }
+        )
+    }
+
+    deletingAttack?.let { record ->
+        AlertDialog(
+            onDismissRequest = { deletingAttack = null },
+            title = { Text("Delete attack record?") },
+            text = { Text("The history entry will be removed. Saved macros are not affected.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    scope.launch { attackRepository.delete(record.id) }
+                    deletingAttack = null
+                }) { Text("Delete", color = RecordRed) }
+            },
+            dismissButton = {
+                TextButton(onClick = { deletingAttack = null }) { Text("Cancel") }
+            }
+        )
+    }
+}
+
+@Composable
+private fun AttackSummaryCard(records: List<AttackRecord>) {
+    val summary = remember(records) { AttackStats.summarize(records) }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
+        Column(modifier = Modifier.padding(14.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                SummaryStat("Attacks", summary.count.toString(), Modifier.weight(1f))
+                SummaryStat("Gold", if (summary.lootedCount == 0) "—" else formatNumber(summary.gold), Modifier.weight(1f))
+            }
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                SummaryStat("Elixir", if (summary.lootedCount == 0) "—" else formatNumber(summary.elixir), Modifier.weight(1f))
+                SummaryStat("Dark", if (summary.lootedCount == 0) "—" else formatNumber(summary.darkElixir), Modifier.weight(1f))
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Measured ${formatDuration(summary.totalDurationMs)} · average ${formatDuration(summary.averageDurationMs)}",
+                fontSize = 10.sp,
+                color = TextMuted
+            )
+            if (summary.count > 0 && summary.lootedCount == 0) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "Loot is not read automatically. Attack timing is measured; tap a record to add gold, elixir or dark elixir.",
+                    fontSize = 10.sp,
+                    color = PauseAmber
+                )
+            }
         }
     }
 }
+
+@Composable
+private fun SummaryStat(label: String, value: String, modifier: Modifier = Modifier) {
+    Column(modifier = modifier) {
+        Text(label, fontSize = 10.sp, color = TextMuted)
+        Text(
+            value,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun HistoryFilterRow(selected: Int, onSelect: (Int) -> Unit) {
+    val labels = listOf("All", "7 days", "Today")
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        labels.forEachIndexed { index, label ->
+            FilterChip(
+                selected = selected == index,
+                onClick = { onSelect(index) },
+                label = { Text(label, fontSize = 11.sp) }
+            )
+        }
+    }
+}
+
+@Composable
+private fun HistoryEmpty(hasAny: Boolean) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
+        Text(
+            if (hasAny) "No attacks in this range." else "No attacks recorded yet. Play a saved macro to start the timeline.",
+            fontSize = 11.sp,
+            color = TextMuted,
+            modifier = Modifier.padding(16.dp)
+        )
+    }
+}
+
+@Composable
+private fun AttackHistoryRow(record: AttackRecord, onEdit: () -> Unit, onDelete: () -> Unit) {
+    val dateStr = remember(record.startedAt) {
+        SimpleDateFormat("MM/dd HH:mm", Locale.US).format(Date(record.startedAt))
+    }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                Modifier
+                    .size(7.dp)
+                    .clip(CircleShape)
+                    .background(
+                        when (record.result) {
+                            AttackRecord.RESULT_INTERRUPTED -> PauseAmber
+                            AttackRecord.RESULT_COMPLETED -> ReadyGreen
+                            else -> TextMuted
+                        }
+                    )
+            )
+            Spacer(Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    "$dateStr · ${formatDuration(record.durationMs)}",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    record.macroName + " · " + MacroTimeline.formatSpeed(record.speedMultiplier) +
+                        " · " + record.result.replaceFirstChar { it.uppercase() },
+                    fontSize = 10.sp,
+                    color = TextMuted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    if (record.hasLoot) {
+                        "G ${record.gold ?: 0} · E ${record.elixir ?: 0} · DE ${record.darkElixir ?: 0}" +
+                            if (record.verified) " · edited" else ""
+                    } else {
+                        "Loot not captured"
+                    },
+                    fontSize = 10.sp,
+                    color = if (record.hasLoot) ReadyGreen else TextMuted
+                )
+            }
+            IconButton(onClick = onEdit, modifier = Modifier.size(36.dp)) {
+                Icon(
+                    Icons.Default.Edit,
+                    contentDescription = "Edit loot",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+            IconButton(onClick = onDelete, modifier = Modifier.size(36.dp)) {
+                Icon(
+                    Icons.Default.Delete,
+                    contentDescription = "Delete attack record",
+                    tint = RecordRed,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun LootEditDialog(
+    record: AttackRecord,
+    onDismiss: () -> Unit,
+    onSave: (Long?, Long?, Long?) -> Unit
+) {
+    fun initial(value: Long?) = value?.toString() ?: ""
+    var gold by remember(record.id) { mutableStateOf(initial(record.gold)) }
+    var elixir by remember(record.id) { mutableStateOf(initial(record.elixir)) }
+    var dark by remember(record.id) { mutableStateOf(initial(record.darkElixir)) }
+
+    fun parse(value: String): Long? = value.trim().toLongOrNull()?.takeIf { it >= 0 }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Attack loot") },
+        text = {
+            Column {
+                Text(
+                    "Enter what the result screen showed. Leave a field empty if you did not read it.",
+                    fontSize = 11.sp,
+                    color = TextMuted
+                )
+                Spacer(Modifier.height(10.dp))
+                listOf(
+                    Triple("Gold", gold) { v: String -> gold = v },
+                    Triple("Elixir", elixir) { v: String -> elixir = v },
+                    Triple("Dark elixir", dark) { v: String -> dark = v }
+                ).forEach { (label, value, setter) ->
+                    OutlinedTextField(
+                        value = value,
+                        onValueChange = setter,
+                        label = { Text(label) },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(8.dp))
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onSave(parse(gold), parse(elixir), parse(dark)) }) {
+                Text("Save")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
+}
+
 
 @Composable
 private fun DashboardHeader(controllerActive: Boolean, onOpenSettings: () -> Unit) {
@@ -388,7 +709,7 @@ private fun DashboardHeader(controllerActive: Boolean, onOpenSettings: () -> Uni
         verticalAlignment = Alignment.CenterVertically
     ) {
         androidx.compose.foundation.Image(
-            painter = painterResource(R.drawable.ic_autoclash_logo),
+            painter = painterResource(R.drawable.ic_autoclash_mark),
             contentDescription = null,
             modifier = Modifier.size(34.dp)
         )
@@ -426,6 +747,7 @@ private fun DashboardHeader(controllerActive: Boolean, onOpenSettings: () -> Uni
 @Composable
 private fun GameCard(
     installedPackage: String?,
+    gameIcon: ImageBitmap?,
     controllerActive: Boolean,
     onLaunchGame: () -> Unit
 ) {
@@ -443,11 +765,19 @@ private fun GameCard(
                         .background(SurfaceRaised),
                     contentAlignment = Alignment.Center
                 ) {
-                    androidx.compose.foundation.Image(
-                        painter = painterResource(R.drawable.ic_game_clash),
-                        contentDescription = null,
-                        modifier = Modifier.size(30.dp)
-                    )
+                    if (gameIcon != null) {
+                        androidx.compose.foundation.Image(
+                            bitmap = gameIcon,
+                            contentDescription = null,
+                            modifier = Modifier.size(32.dp)
+                        )
+                    } else {
+                        androidx.compose.foundation.Image(
+                            painter = painterResource(R.drawable.ic_game_clash),
+                            contentDescription = null,
+                            modifier = Modifier.size(30.dp)
+                        )
+                    }
                 }
                 Spacer(Modifier.width(12.dp))
                 Column(modifier = Modifier.weight(1f)) {
@@ -621,7 +951,7 @@ private fun EmptyLibrary(onStartController: () -> Unit) {
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             androidx.compose.foundation.Image(
-                painter = painterResource(R.drawable.ic_autoclash_logo),
+                painter = painterResource(R.drawable.ic_autoclash_mark),
                 contentDescription = null,
                 modifier = Modifier.size(44.dp)
             )
@@ -788,3 +1118,5 @@ private fun formatDuration(ms: Long): String {
 
 private fun formatDate(timestamp: Long): String =
     SimpleDateFormat("MM/dd", Locale.US).format(Date(timestamp))
+
+private fun formatNumber(value: Long): String = String.format(Locale.US, "%,d", value)

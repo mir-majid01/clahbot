@@ -47,6 +47,9 @@ object BotState {
     private val _activeMacroName = MutableStateFlow<String?>(null)
     val activeMacroName: StateFlow<String?> = _activeMacroName.asStateFlow()
 
+    private val _interrupted = MutableStateFlow(false)
+    val interrupted: StateFlow<Boolean> = _interrupted.asStateFlow()
+
     private val _recordedGestureCount = MutableStateFlow(0)
     val recordedGestureCount: StateFlow<Int> = _recordedGestureCount.asStateFlow()
 
@@ -70,6 +73,10 @@ object BotState {
     fun clearActiveMacro() {
         _activeMacroId.value = -1L
         _activeMacroName.value = null
+    }
+
+    fun setInterrupted(value: Boolean) {
+        _interrupted.value = value
     }
 
     fun setRecordedCount(count: Int) {
