@@ -203,6 +203,7 @@
                         android:layout_weight="1"
                         android:backgroundTint="#1E293B"
                         android:text="Once"
+                        android:textColor="#E2E8F0"
                         android:textSize="11sp" />
                 </LinearLayout>
             </LinearLayout>
