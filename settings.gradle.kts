@@ -13,5 +13,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "ClahBOT"
+rootProject.name = "AutoClash"
 include(":app")

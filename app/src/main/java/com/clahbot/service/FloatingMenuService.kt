@@ -24,12 +24,14 @@ import android.provider.Settings
 import android.util.DisplayMetrics
 import android.util.Log
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.LayoutInflater
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.widget.Button
 import android.widget.EditText
+import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.core.app.NotificationCompat
@@ -39,6 +41,8 @@ import com.clahbot.R
 import com.clahbot.data.BotState
 import com.clahbot.data.ControllerState
 import com.clahbot.data.MacroRepository
+import com.clahbot.data.MacroSelection
+import com.clahbot.data.SettingsStore
 import com.clahbot.data.models.GesturePoint
 import com.clahbot.data.models.Macro
 import com.clahbot.data.models.RecordedGesture
@@ -59,15 +63,16 @@ import kotlin.math.abs
 /**
  * Owns the floating controller, the touch recorder and macro playback.
  *
- * Window layering is deliberate: the touch capture surface is a full screen
- * window, and the controller is re-added after it so the controller is always
- * the topmost window. A gesture on a controller button therefore never reaches
- * the capture surface and is never recorded as gameplay input.
+ * Window layering: the touch capture surface is a full screen window, and the
+ * controller is re-added after it so the controller is always topmost. A touch
+ * on a controller control therefore never reaches the capture surface and is
+ * never recorded as gameplay input.
  */
 class FloatingMenuService : Service() {
 
     private lateinit var windowManager: WindowManager
     private lateinit var repository: MacroRepository
+    private lateinit var settingsStore: SettingsStore
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val handler = Handler(Looper.getMainLooper())
 
@@ -81,13 +86,15 @@ class FloatingMenuService : Service() {
     private var macros: List<Macro> = emptyList()
     private var selectedId: Long = -1L
     private var speed: Float = 1f
-    private var looping: Boolean = true
+    private var repeatMode: String = Macro.REPEAT_ONCE
 
     private var recording: Boolean = false
     private var injecting: Boolean = false
     private var injectToken: Int = 0
     private var recorded = mutableListOf<RecordedGesture>()
     private var recordStartMs: Long = 0L
+    private var pausedAccumMs: Long = 0L
+    private var pausedAtMs: Long = 0L
     private var gestureSeq: Int = 0
 
     private var downTime: Long = 0L
@@ -97,15 +104,43 @@ class FloatingMenuService : Service() {
     private var screenHeight: Int = 0
 
     private var notificationStarted: Boolean = false
+    private var collapsed: Boolean = false
+
+    private val timerRunnable = object : Runnable {
+        override fun run() {
+            if (!recording) return
+            controllerView?.findViewById<TextView>(R.id.tvRecTimer)?.text =
+                formatClock(elapsedRecordingMs())
+            handler.postDelayed(this, 500L)
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         repository = MacroRepository.get(this)
+        settingsStore = SettingsStore.get(this)
         updateScreenSize()
         startForegroundCompat(getString(R.string.notification_idle))
+
+        scope.launch { repository.refresh() }
+        scope.launch { repository.macros.collect { onMacrosChanged(it) } }
         scope.launch { BotState.state.collect { refreshUi() } }
         scope.launch { BotState.status.collect { onStatusChanged(it) } }
+        scope.launch {
+            settingsStore.settings.collect { settings ->
+                val params = controllerParams ?: return@collect
+                val view = controllerView ?: return@collect
+                if (params.alpha != settings.controllerAlpha) {
+                    params.alpha = settings.controllerAlpha
+                    try {
+                        windowManager.updateViewLayout(view, params)
+                    } catch (_: Exception) {
+                        // Window detached.
+                    }
+                }
+            }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -126,7 +161,8 @@ class FloatingMenuService : Service() {
                 }
             }
 
-            ACTION_CLOSE -> closeEverything()
+            ACTION_RESET_POSITION -> resetControllerPosition()
+            ACTION_CLOSE -> requestClose()
             else -> ensureController()
         }
         return START_NOT_STICKY
@@ -137,6 +173,7 @@ class FloatingMenuService : Service() {
         updateScreenSize()
         if (recording) {
             stopRecording()
+            BotState.setStatus("Screen changed — recording stopped")
             toast("Recording stopped: screen changed")
         }
     }
@@ -144,12 +181,42 @@ class FloatingMenuService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        handler.removeCallbacksAndMessages(null)
         stopPlayback()
         stopRecording(silent = true)
         removeCapture()
         removeController()
         scope.cancel()
         super.onDestroy()
+    }
+
+    // ------------------------------------------------------------ macro sync
+
+    private fun onMacrosChanged(list: List<Macro>) {
+        macros = list
+        // Adopt a selection made on the dashboard, then validate it against the
+        // library so a deleted macro can never stay selected.
+        val desired = if (selectedId > 0) selectedId else BotState.selectedMacroId.value
+        val reconciled = MacroSelection.reconcile(desired, list)
+        if (reconciled != selectedId) {
+            selectedId = reconciled
+            BotState.setSelectedMacroId(reconciled)
+            list.firstOrNull { it.id == reconciled }?.let { macro ->
+                speed = MacroTimeline.clampSpeed(macro.speedMultiplier)
+                repeatMode = macro.repeatMode
+            }
+        }
+
+        val activeId = BotState.activeMacroId.value
+        if (activeId > 0 && list.none { it.id == activeId }) {
+            // The macro being played was deleted elsewhere: stop and do not resume.
+            stopPlayback()
+            BotState.setState(ControllerState.READY)
+            BotState.setStatus("The playing macro was deleted")
+        }
+
+        renderMacroList()
+        refreshUi()
     }
 
     // ---------------------------------------------------------------- windows
@@ -174,6 +241,7 @@ class FloatingMenuService : Service() {
         }
 
         val view = LayoutInflater.from(this).inflate(R.layout.overlay_controller, null)
+        val prefs = settingsStore.settings.value
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -184,7 +252,8 @@ class FloatingMenuService : Service() {
         ).apply {
             gravity = Gravity.TOP or Gravity.START
             x = dp(12)
-            y = dp(88)
+            y = dp(96)
+            alpha = prefs.controllerAlpha
         }
 
         try {
@@ -197,6 +266,15 @@ class FloatingMenuService : Service() {
         controllerView = view
         controllerParams = params
         bindController(view)
+
+        if (selectedId <= 0) {
+            speed = MacroTimeline.clampSpeed(prefs.defaultSpeed)
+            repeatMode = prefs.defaultRepeat
+        }
+        if (prefs.startMinimized) collapseController()
+
+        BotState.setState(ControllerState.READY)
+        BotState.setStatus("Controller ready")
         refreshUi()
         refreshMacros()
     }
@@ -205,6 +283,7 @@ class FloatingMenuService : Service() {
         val view = controllerView ?: return
         controllerView = null
         controllerParams = null
+        collapsed = false
         try {
             windowManager.removeView(view)
         } catch (_: Exception) {
@@ -214,25 +293,52 @@ class FloatingMenuService : Service() {
 
     private fun bindController(view: View) {
         val params = controllerParams ?: return
+
         view.findViewById<View>(R.id.controllerHeader)
             .setOnTouchListener(dragListener(params, onTap = {}))
         view.findViewById<View>(R.id.bubble)
             .setOnTouchListener(dragListener(params, onTap = { expandController() }))
 
-        view.findViewById<Button>(R.id.btnMinimize).setOnClickListener { collapseController() }
-        view.findViewById<Button>(R.id.btnCloseController).setOnClickListener { closeEverything() }
-        view.findViewById<Button>(R.id.btnRecord).setOnClickListener { startRecording() }
-        view.findViewById<Button>(R.id.btnStopRecording).setOnClickListener { stopRecording() }
+        view.findViewById<ImageButton>(R.id.btnMinimize).setOnClickListener {
+            haptic()
+            collapseController()
+        }
+        view.findViewById<ImageButton>(R.id.btnClose).setOnClickListener { requestClose() }
+        view.findViewById<Button>(R.id.btnRecord).setOnClickListener {
+            haptic()
+            startRecording()
+        }
         view.findViewById<Button>(R.id.btnPlay).setOnClickListener { playSelected() }
-        view.findViewById<Button>(R.id.btnPause).setOnClickListener { togglePause() }
-        view.findViewById<Button>(R.id.btnStopPlayback).setOnClickListener { stopPlayback() }
-        view.findViewById<Button>(R.id.btnLoop).setOnClickListener { toggleLoop() }
-        view.findViewById<Button>(R.id.btnSpeedDown).setOnClickListener { changeSpeed(-1) }
-        view.findViewById<Button>(R.id.btnSpeedUp).setOnClickListener { changeSpeed(1) }
+        view.findViewById<ImageButton>(R.id.btnRename).setOnClickListener { renameSelected() }
+        view.findViewById<ImageButton>(R.id.btnDelete).setOnClickListener { deleteSelected() }
+        view.findViewById<ImageButton>(R.id.btnSpeedDown).setOnClickListener { changeSpeed(-1) }
+        view.findViewById<ImageButton>(R.id.btnSpeedUp).setOnClickListener { changeSpeed(1) }
+        view.findViewById<Button>(R.id.btnRepeat).setOnClickListener { cycleRepeat() }
+
+        view.findViewById<Button>(R.id.btnRecPause).setOnClickListener { toggleRecordingPause() }
+        view.findViewById<Button>(R.id.btnRecFinish).setOnClickListener {
+            haptic()
+            stopRecording()
+        }
+
+        view.findViewById<Button>(R.id.btnRecordAgain).setOnClickListener {
+            haptic()
+            discardRecording(quiet = true)
+            startRecording()
+        }
+        view.findViewById<Button>(R.id.btnDiscard).setOnClickListener {
+            haptic()
+            discardRecording()
+        }
         view.findViewById<Button>(R.id.btnSave).setOnClickListener { saveRecording() }
-        view.findViewById<Button>(R.id.btnDiscard).setOnClickListener { discardRecording() }
-        view.findViewById<Button>(R.id.btnRename).setOnClickListener { renameSelected() }
-        view.findViewById<Button>(R.id.btnDelete).setOnClickListener { deleteSelected() }
+
+        view.findViewById<Button>(R.id.btnPlayPause).setOnClickListener { togglePlaybackPause() }
+        view.findViewById<Button>(R.id.btnStopPlayback).setOnClickListener {
+            haptic()
+            stopPlayback()
+            BotState.setState(ControllerState.READY)
+            BotState.setStatus("Playback stopped")
+        }
     }
 
     private fun dragListener(
@@ -299,20 +405,22 @@ class FloatingMenuService : Service() {
     private fun collapseController() {
         val view = controllerView ?: return
         val params = controllerParams ?: return
+        collapsed = true
         view.findViewById<View>(R.id.panel).visibility = View.GONE
         view.findViewById<View>(R.id.bubble).visibility = View.VISIBLE
-        val width = controllerView?.width ?: 0
-        if (width > 0) params.x = clampX(params.x)
+        if ((controllerView?.width ?: 0) > 0) params.x = clampX(params.x)
         try {
             windowManager.updateViewLayout(view, params)
         } catch (_: Exception) {
             // Ignore.
         }
+        refreshUi()
     }
 
     private fun expandController() {
         val view = controllerView ?: return
         val params = controllerParams ?: return
+        collapsed = false
         view.findViewById<View>(R.id.bubble).visibility = View.GONE
         view.findViewById<View>(R.id.panel).visibility = View.VISIBLE
         try {
@@ -320,6 +428,20 @@ class FloatingMenuService : Service() {
         } catch (_: Exception) {
             // Ignore.
         }
+        refreshUi()
+    }
+
+    private fun resetControllerPosition() {
+        val view = controllerView ?: return
+        val params = controllerParams ?: return
+        params.x = dp(12)
+        params.y = dp(96)
+        try {
+            windowManager.updateViewLayout(view, params)
+        } catch (_: Exception) {
+            // Ignore.
+        }
+        toast("Controller position reset")
     }
 
     // -------------------------------------------------------------- recording
@@ -327,42 +449,82 @@ class FloatingMenuService : Service() {
     private fun startRecording() {
         if (recording) return
         if (ClahAccessibilityService.instance == null) {
-            toast("Enable the ClahBOT accessibility service first")
+            toast("Enable the AutoClash accessibility service first")
             return
         }
-        if (BotState.isBusy()) stopPlayback()
+        if (BotState.state.value.isPlayback) {
+            stopPlayback()
+        }
         if (controllerView == null) ensureController()
         if (controllerView == null) return
 
         recorded.clear()
         pathPoints.clear()
         gestureSeq = 0
+        pausedAccumMs = 0L
+        pausedAtMs = 0L
+        downTime = 0L
         recordStartMs = SystemClock.uptimeMillis()
         injecting = false
         recording = true
+
         BotState.clearRecording()
         BotState.setState(ControllerState.RECORDING)
-        BotState.setStatus("Recording — play normally")
+        BotState.setStatus("Recording")
         attachCaptureSurface()
+        handler.removeCallbacks(timerRunnable)
+        handler.post(timerRunnable)
         refreshUi()
+    }
+
+    private fun toggleRecordingPause() {
+        when (BotState.state.value) {
+            ControllerState.RECORDING -> {
+                pausedAtMs = SystemClock.uptimeMillis()
+                BotState.setState(ControllerState.RECORDING_PAUSED)
+                BotState.setStatus("Recording paused")
+                pathPoints.clear()
+                if (!injecting) setCaptureTouchable(false)
+            }
+
+            ControllerState.RECORDING_PAUSED -> {
+                pausedAccumMs += SystemClock.uptimeMillis() - pausedAtMs
+                pausedAtMs = 0L
+                BotState.setState(ControllerState.RECORDING)
+                BotState.setStatus("Recording")
+                if (!injecting) setCaptureTouchable(true)
+            }
+
+            else -> return
+        }
+        updateRecordingNotification()
+        refreshUi()
+    }
+
+    private fun elapsedRecordingMs(): Long {
+        val end = if (pausedAtMs > 0L) pausedAtMs else SystemClock.uptimeMillis()
+        return (end - recordStartMs - pausedAccumMs).coerceAtLeast(0L)
     }
 
     /**
      * Adds the full screen capture window and then re-adds the controller so
-     * the controller stays above it. Touches on controller buttons never enter
-     * the capture surface.
+     * the controller stays above it.
      */
     private fun attachCaptureSurface() {
         if (captureView == null) {
+            val keepAwake = settingsStore.settings.value.keepScreenAwake
             val view = View(this).apply { setBackgroundColor(Color.TRANSPARENT) }
             view.setOnTouchListener { _, event -> onCaptureTouch(event) }
+            var flags = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+            if (keepAwake) {
+                flags = flags or WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+            }
             val params = WindowManager.LayoutParams(
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.MATCH_PARENT,
                 overlayType(),
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                    WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON,
+                flags,
                 PixelFormat.TRANSLUCENT
             ).apply { gravity = Gravity.TOP or Gravity.START }
             try {
@@ -370,7 +532,7 @@ class FloatingMenuService : Service() {
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to add capture window", e)
                 recording = false
-                BotState.setState(ControllerState.IDLE)
+                BotState.setState(ControllerState.READY)
                 BotState.setStatus("Could not start recording")
                 toast("Could not start recording")
                 return
@@ -402,6 +564,7 @@ class FloatingMenuService : Service() {
 
     private fun onCaptureTouch(event: MotionEvent): Boolean {
         if (!recording) return false
+        if (BotState.state.value != ControllerState.RECORDING) return true
         val now = SystemClock.uptimeMillis()
 
         when (event.actionMasked) {
@@ -466,9 +629,10 @@ class FloatingMenuService : Service() {
         val normalized = MacroTimeline.normalize(sampled, width, height)
         if (normalized.isEmpty()) return
 
+        val startInRecording = (downTime - recordStartMs - pausedAccumMs).coerceAtLeast(0L)
         val gesture = RecordedGesture(
             id = ++gestureSeq,
-            timestampMs = (downTime - recordStartMs).coerceAtLeast(0L),
+            timestampMs = startInRecording,
             gestureType = type,
             durationMs = durationMs.coerceIn(1L, MacroTimeline.MAX_STROKE_MS),
             normalizedStartX = normalized.first().x,
@@ -480,8 +644,8 @@ class FloatingMenuService : Service() {
         recorded.add(gesture)
         BotState.setRecordedCount(recorded.size)
         BotState.setStatus("Recording — ${recorded.size} gesture(s)")
-        refreshUi()
-
+        updateRecordingNotification()
+        updateRecordingInfo()
         injectRecordedGesture(sampled, type, durationMs)
     }
 
@@ -555,7 +719,9 @@ class FloatingMenuService : Service() {
         if (token != injectToken) return
         if (!injecting) return
         injecting = false
-        if (recording) setCaptureTouchable(true)
+        if (recording && BotState.state.value == ControllerState.RECORDING) {
+            setCaptureTouchable(true)
+        }
     }
 
     private fun stopRecording(silent: Boolean = false) {
@@ -564,16 +730,36 @@ class FloatingMenuService : Service() {
         injecting = false
         injectToken++
         pathPoints.clear()
+        handler.removeCallbacks(timerRunnable)
         removeCapture()
+
+        if (silent) {
+            recorded.clear()
+            BotState.clearRecording()
+            return
+        }
+
         BotState.setRecordedCount(recorded.size)
         if (recorded.isEmpty()) {
-            BotState.setState(ControllerState.IDLE)
-            BotState.setStatus("Nothing recorded")
-            if (!silent) toast("No gestures recorded")
-        } else {
             BotState.setState(ControllerState.READY)
-            BotState.setStatus("${recorded.size} gesture(s) — save or discard")
+            BotState.setStatus("Nothing recorded")
+            toast("No gestures recorded")
+        } else {
+            BotState.setState(ControllerState.REVIEW)
+            BotState.setStatus("Review recording")
+            haptic()
         }
+        updateNotification(getString(R.string.notification_idle))
+        refreshUi()
+    }
+
+    private fun discardRecording(quiet: Boolean = false) {
+        recorded.clear()
+        pathPoints.clear()
+        BotState.clearRecording()
+        BotState.setState(ControllerState.READY)
+        BotState.setStatus("Recording discarded")
+        if (!quiet) toast("Discarded")
         refreshUi()
     }
 
@@ -590,11 +776,11 @@ class FloatingMenuService : Service() {
 
     private fun startPlayback(macro: Macro) {
         if (recording) {
-            toast("Stop recording first")
+            toast("Finish the recording first")
             return
         }
         if (ClahAccessibilityService.instance == null) {
-            toast("Enable the ClahBOT accessibility service")
+            toast("Enable the AutoClash accessibility service")
             return
         }
         updateScreenSize()
@@ -603,10 +789,7 @@ class FloatingMenuService : Service() {
             return
         }
 
-        val adjusted = macro.copy(
-            speedMultiplier = speed,
-            repeatMode = if (looping) Macro.REPEAT_INFINITE else Macro.REPEAT_ONCE
-        )
+        val adjusted = macro.copy(speedMultiplier = speed, repeatMode = repeatMode)
         if (adjusted.orientation != currentOrientation()) {
             BotState.setStatus("Warning: macro was recorded in ${adjusted.orientation}")
         }
@@ -619,9 +802,13 @@ class FloatingMenuService : Service() {
         refreshUi()
     }
 
-    private fun togglePause() {
+    private fun togglePlaybackPause() {
         val active = player ?: return
         if (active.isPaused()) active.resume() else active.pause()
+        updateNotification(
+            if (active.isPaused()) getString(R.string.notification_paused)
+            else getString(R.string.notification_idle)
+        )
         refreshUi()
     }
 
@@ -632,14 +819,14 @@ class FloatingMenuService : Service() {
         refreshUi()
     }
 
-    private fun toggleLoop() {
-        looping = !looping
+    private fun changeSpeed(direction: Int) {
+        speed = MacroTimeline.stepSpeed(speed, direction)
         persistPlaybackSettings()
         refreshUi()
     }
 
-    private fun changeSpeed(direction: Int) {
-        speed = MacroTimeline.stepSpeed(speed, direction)
+    private fun cycleRepeat() {
+        repeatMode = MacroTimeline.nextRepeat(repeatMode)
         persistPlaybackSettings()
         refreshUi()
     }
@@ -647,33 +834,19 @@ class FloatingMenuService : Service() {
     private fun persistPlaybackSettings() {
         val id = selectedId
         if (id <= 0) return
-        val repeat = if (looping) Macro.REPEAT_INFINITE else Macro.REPEAT_ONCE
-        scope.launch {
-            val updated = repository.updatePlayback(id, speed, repeat)
-            if (updated != null) {
-                macros = macros.map { if (it.id == updated.id) updated else it }
-                renderMacroList()
-            }
-        }
+        scope.launch { repository.updatePlayback(id, speed, repeatMode) }
     }
 
-    // ----------------------------------------------------------- macro storage
+    // ----------------------------------------------------------- macro library
 
     private fun refreshMacros() {
-        scope.launch {
-            macros = repository.load()
-            if (selectedId <= 0) {
-                BotState.setSelectedMacroId(selectedId)
-            }
-            renderMacroList()
-            refreshUi()
-        }
+        scope.launch { repository.refresh() }
     }
 
     private fun selectMacro(macro: Macro) {
         selectedId = macro.id
         speed = MacroTimeline.clampSpeed(macro.speedMultiplier)
-        looping = macro.loops
+        repeatMode = macro.repeatMode
         BotState.setSelectedMacroId(macro.id)
         renderMacroList()
         refreshUi()
@@ -684,12 +857,15 @@ class FloatingMenuService : Service() {
         val container = view.findViewById<LinearLayout>(R.id.macroList) ?: return
         container.removeAllViews()
 
+        view.findViewById<TextView>(R.id.tvLibraryLabel)?.text =
+            if (macros.isEmpty()) "Macros" else "Macros · ${macros.size}"
+
         if (macros.isEmpty()) {
             container.addView(TextView(this).apply {
-                text = "No macros yet"
-                setTextColor(0xFF888888.toInt())
+                text = "No macros yet. Record one to get started."
+                setTextColor(0xFF94A3B8.toInt())
                 textSize = 10f
-                setPadding(dp(8), dp(6), dp(8), dp(6))
+                setPadding(dp(6), dp(8), dp(6), dp(8))
             })
             return
         }
@@ -697,18 +873,21 @@ class FloatingMenuService : Service() {
         for (macro in macros) {
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
-                setPadding(dp(8), dp(5), dp(8), dp(5))
-                setBackgroundColor(if (macro.id == selectedId) 0x334CAF50 else Color.TRANSPARENT)
+                setPadding(dp(8), dp(6), dp(8), dp(6))
+                setBackgroundColor(if (macro.id == selectedId) 0x2E3B82F6 else Color.TRANSPARENT)
             }
             row.addView(TextView(this).apply {
                 text = macro.name
-                setTextColor(0xFFFFFFFF.toInt())
+                setTextColor(0xFFE2E8F0.toInt())
                 textSize = 12f
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
             })
             row.addView(TextView(this).apply {
                 text = "${macro.gestures.size} gestures · ${formatDuration(macro.durationMs)} · " +
-                    MacroTimeline.formatSpeed(macro.speedMultiplier)
-                setTextColor(0xFFAAAAAA.toInt())
+                    MacroTimeline.formatSpeed(macro.speedMultiplier) + " · " +
+                    MacroTimeline.repeatLabel(macro.repeatMode)
+                setTextColor(0xFF94A3B8.toInt())
                 textSize = 9f
             })
             row.setOnClickListener { selectMacro(macro) }
@@ -733,7 +912,7 @@ class FloatingMenuService : Service() {
                 deviceHeight = screenHeight,
                 orientation = currentOrientation(),
                 gestures = gestures,
-                repeatMode = if (looping) Macro.REPEAT_INFINITE else Macro.REPEAT_ONCE,
+                repeatMode = repeatMode,
                 speedMultiplier = speed
             )
             scope.launch {
@@ -746,30 +925,11 @@ class FloatingMenuService : Service() {
                 BotState.clearRecording()
                 selectedId = saved.id
                 BotState.setSelectedMacroId(saved.id)
-                BotState.setState(ControllerState.IDLE)
+                BotState.setState(ControllerState.READY)
                 BotState.setStatus("Saved \"${saved.name}\"")
-                refreshMacros()
+                refreshUi()
                 toast("Macro saved")
             }
-        }
-    }
-
-    private fun discardRecording() {
-        if (recorded.isEmpty()) {
-            BotState.setState(ControllerState.IDLE)
-            refreshUi()
-            return
-        }
-        showConfirmDialog(
-            title = "Discard recording?",
-            message = "${recorded.size} gesture(s) will be lost.",
-            positive = "Discard"
-        ) {
-            recorded.clear()
-            BotState.clearRecording()
-            BotState.setState(ControllerState.IDLE)
-            BotState.setStatus("Recording discarded")
-            refreshUi()
         }
     }
 
@@ -780,11 +940,10 @@ class FloatingMenuService : Service() {
         }
         showInputDialog("Rename macro", macro.name) { name ->
             scope.launch {
-                val updated = repository.rename(macro.id, name)
-                if (updated == null) {
+                if (repository.rename(macro.id, name) == null) {
                     toast("Rename failed")
                 } else {
-                    refreshMacros()
+                    BotState.setStatus("Renamed to \"$name\"")
                     toast("Renamed")
                 }
             }
@@ -802,12 +961,8 @@ class FloatingMenuService : Service() {
             positive = "Delete"
         ) {
             scope.launch {
-                val removed = repository.delete(macro.id)
-                if (removed) {
-                    selectedId = -1L
-                    BotState.setSelectedMacroId(-1L)
+                if (repository.delete(macro.id)) {
                     BotState.setStatus("Deleted \"${macro.name}\"")
-                    refreshMacros()
                 } else {
                     toast("Delete failed")
                 }
@@ -828,59 +983,102 @@ class FloatingMenuService : Service() {
         val state = BotState.state.value
         val count = BotState.recordedGestureCount.value
 
+        val showRecording = state == ControllerState.RECORDING || state == ControllerState.RECORDING_PAUSED
+        val showReview = state == ControllerState.REVIEW
+        val showPlaying = state == ControllerState.PLAYING || state == ControllerState.PLAYBACK_PAUSED
+        val showReady = !showRecording && !showReview && !showPlaying
+
+        view.findViewById<View>(R.id.readyPanel).visibility = if (showReady) View.VISIBLE else View.GONE
+        view.findViewById<View>(R.id.recordingPanel).visibility = if (showRecording) View.VISIBLE else View.GONE
+        view.findViewById<View>(R.id.reviewPanel).visibility = if (showReview) View.VISIBLE else View.GONE
+        view.findViewById<View>(R.id.playingPanel).visibility = if (showPlaying) View.VISIBLE else View.GONE
+
         view.findViewById<TextView>(R.id.tvSpeed).text = MacroTimeline.formatSpeed(speed)
-        view.findViewById<Button>(R.id.btnLoop).text = if (looping) "Loop: On" else "Loop: Once"
+        view.findViewById<Button>(R.id.btnRepeat).text = MacroTimeline.repeatLabel(repeatMode)
 
-        val isRecording = recording || state == ControllerState.RECORDING
-        val isReady = state == ControllerState.READY && count > 0
-        val isPlaying = state == ControllerState.PLAYING
-        val isPaused = state == ControllerState.PAUSED
-        val busy = isPlaying || isPaused
+        view.findViewById<Button>(R.id.btnPlay).isEnabled = selectedId > 0
+        view.findViewById<ImageButton>(R.id.btnRename).isEnabled = selectedId > 0
+        view.findViewById<ImageButton>(R.id.btnDelete).isEnabled = selectedId > 0
 
-        view.findViewById<Button>(R.id.btnRecord).visibility =
-            if (isRecording) View.GONE else View.VISIBLE
-        view.findViewById<Button>(R.id.btnStopRecording).visibility =
-            if (isRecording) View.VISIBLE else View.GONE
+        view.findViewById<TextView>(R.id.tvRecState).text =
+            if (state == ControllerState.RECORDING_PAUSED) "PAUSED" else "REC"
+        view.findViewById<Button>(R.id.btnRecPause).text =
+            if (state == ControllerState.RECORDING_PAUSED) "Resume" else "Pause"
+        view.findViewById<TextView>(R.id.tvRecTimer).text = formatClock(elapsedRecordingMs())
 
-        view.findViewById<Button>(R.id.btnPlay).isEnabled = !isRecording && !busy && selectedId > 0
-        view.findViewById<Button>(R.id.btnPause).isEnabled = busy
-        view.findViewById<Button>(R.id.btnPause).text = if (isPaused) "Resume" else "Pause"
-        view.findViewById<Button>(R.id.btnStopPlayback).isEnabled = busy
-        view.findViewById<Button>(R.id.btnRecord).isEnabled = !busy
+        view.findViewById<TextView>(R.id.tvReviewInfo).text =
+            "$count gesture(s) · ${formatDuration(MacroTimeline.totalDuration(recorded))}"
 
-        view.findViewById<Button>(R.id.btnLoop).isEnabled = !isRecording
-        view.findViewById<Button>(R.id.btnSpeedDown).isEnabled = !isRecording
-        view.findViewById<Button>(R.id.btnSpeedUp).isEnabled = !isRecording
-
-        view.findViewById<LinearLayout>(R.id.saveRow).visibility =
-            if (isReady) View.VISIBLE else View.GONE
-
-        val countView = view.findViewById<TextView>(R.id.tvRecordingCount)
-        countView.visibility = if (isRecording) View.VISIBLE else View.GONE
-        countView.text = "$count gesture(s) captured"
-
-        view.findViewById<Button>(R.id.btnRename).isEnabled = selectedId > 0 && !isRecording
-        view.findViewById<Button>(R.id.btnDelete).isEnabled = selectedId > 0 && !isRecording
+        view.findViewById<TextView>(R.id.tvPlayingName).text =
+            BotState.activeMacroName.value ?: "Macro"
+        view.findViewById<TextView>(R.id.tvPlayingStatus).text = BotState.status.value
+        view.findViewById<Button>(R.id.btnPlayPause).text =
+            if (state == ControllerState.PLAYBACK_PAUSED) "Resume" else "Pause"
+        view.findViewById<TextView>(R.id.tvPlayingSpeed).text =
+            "Speed ${MacroTimeline.formatSpeed(speed)}"
+        view.findViewById<TextView>(R.id.tvPlayingRepeat).text =
+            MacroTimeline.repeatLabel(repeatMode)
 
         val bubbleStatus = view.findViewById<TextView>(R.id.bubbleStatus)
-        bubbleStatus.text = when {
-            isRecording -> "REC"
-            isPlaying -> "PLAY"
-            isPaused -> "PAUSED"
+        bubbleStatus.text = when (state) {
+            ControllerState.RECORDING -> "REC"
+            ControllerState.RECORDING_PAUSED -> "PAUSED"
+            ControllerState.PLAYING -> "PLAY"
+            ControllerState.PLAYBACK_PAUSED -> "II"
             else -> ""
         }
+
+        if (collapsed) {
+            view.findViewById<View>(R.id.panel).visibility = View.GONE
+            view.findViewById<View>(R.id.bubble).visibility = View.VISIBLE
+        }
+    }
+
+    private fun updateRecordingInfo() {
+        val view = controllerView ?: return
+        val count = BotState.recordedGestureCount.value
+        view.findViewById<TextView>(R.id.tvReviewInfo).text =
+            "$count gesture(s) · ${formatDuration(MacroTimeline.totalDuration(recorded))}"
+        view.findViewById<TextView>(R.id.tvRecTimer).text = formatClock(elapsedRecordingMs())
     }
 
     private fun onStatusChanged(status: String) {
-        controllerView?.findViewById<TextView>(R.id.tvControllerStatus)?.text = status
-        if (BotState.state.value == ControllerState.PLAYING ||
-            BotState.state.value == ControllerState.PAUSED
-        ) {
-            updateNotification(status)
+        val view = controllerView ?: return
+        view.findViewById<TextView>(R.id.tvStatus).text = status
+        view.findViewById<TextView>(R.id.tvPlayingStatus).text = status
+    }
+
+    private fun updateRecordingNotification() {
+        val state = BotState.state.value
+        val count = BotState.recordedGestureCount.value
+        when (state) {
+            ControllerState.RECORDING ->
+                updateNotification(getString(R.string.notification_recording, count))
+
+            ControllerState.RECORDING_PAUSED ->
+                updateNotification("Recording paused")
+
+            else -> Unit
         }
     }
 
-    // ------------------------------------------------------------- dialogs
+    // --------------------------------------------------------------- dialogs
+
+    private fun requestClose() {
+        val state = BotState.state.value
+        val unsaved = state == ControllerState.RECORDING ||
+            state == ControllerState.RECORDING_PAUSED ||
+            (state == ControllerState.REVIEW && recorded.isNotEmpty())
+        if (!unsaved) {
+            closeEverything()
+            return
+        }
+        showConfirmDialog(
+            title = "Unsaved recording",
+            message = "Close the controller and lose the current recording?",
+            positive = "Discard and close"
+        ) { closeEverything() }
+    }
 
     private fun showInputDialog(title: String, initial: String, onConfirm: (String) -> Unit) {
         val input = EditText(this).apply {
@@ -918,7 +1116,12 @@ class FloatingMenuService : Service() {
         }
     }
 
-    private fun showConfirmDialog(title: String, message: String, positive: String, onConfirm: () -> Unit) {
+    private fun showConfirmDialog(
+        title: String,
+        message: String,
+        positive: String,
+        onConfirm: () -> Unit
+    ) {
         val dialog = AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
             .setTitle(title)
             .setMessage(message)
@@ -934,7 +1137,7 @@ class FloatingMenuService : Service() {
         }
     }
 
-    // -------------------------------------------------------- notification
+    // ---------------------------------------------------------- notification
 
     private fun ensureChannel() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
@@ -957,7 +1160,7 @@ class FloatingMenuService : Service() {
             PendingIntent.FLAG_IMMUTABLE
         )
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_launcher_foreground)
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(getString(R.string.notification_title))
             .setContentText(text)
             .setContentIntent(openIntent)
@@ -1007,7 +1210,9 @@ class FloatingMenuService : Service() {
         stopRecording(silent = true)
         removeCapture()
         removeController()
-        BotState.setState(ControllerState.IDLE)
+        BotState.clearActiveMacro()
+        BotState.clearRecording()
+        BotState.setState(ControllerState.INACTIVE)
         BotState.setStatus("Controller closed")
         try {
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -1041,7 +1246,23 @@ class FloatingMenuService : Service() {
         return String.format(Locale.US, "%dm %02ds", minutes, seconds)
     }
 
+    private fun formatClock(ms: Long): String {
+        val totalSeconds = ms / 1000
+        val seconds = totalSeconds % 60
+        val minutes = totalSeconds / 60
+        return String.format(Locale.US, "%02d:%02d", minutes, seconds)
+    }
+
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+
+    private fun haptic() {
+        if (!settingsStore.settings.value.hapticFeedback) return
+        try {
+            controllerView?.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+        } catch (_: Exception) {
+            // Haptics are best effort.
+        }
+    }
 
     private fun toast(message: String) {
         try {
@@ -1052,14 +1273,15 @@ class FloatingMenuService : Service() {
     }
 
     companion object {
-        private const val TAG = "ClahBotController"
-        private const val CHANNEL_ID = "clahbot_controller"
+        private const val TAG = "AutoClashController"
+        private const val CHANNEL_ID = "autoclash_controller"
         private const val NOTIFICATION_ID = 1001
         private const val INJECT_DELAY_MS = 24L
         private const val EXTRA_MACRO_ID = "macro_id"
 
         const val ACTION_PLAY = "com.clahbot.action.PLAY"
         const val ACTION_CLOSE = "com.clahbot.action.CLOSE"
+        const val ACTION_RESET_POSITION = "com.clahbot.action.RESET_POSITION"
 
         fun show(context: Context) {
             ContextCompat.startForegroundService(
@@ -1074,6 +1296,12 @@ class FloatingMenuService : Service() {
                 putExtra(EXTRA_MACRO_ID, macroId)
             }
             ContextCompat.startForegroundService(context, intent)
+        }
+
+        fun resetPosition(context: Context) {
+            context.startService(
+                Intent(context, FloatingMenuService::class.java).setAction(ACTION_RESET_POSITION)
+            )
         }
 
         fun close(context: Context) {

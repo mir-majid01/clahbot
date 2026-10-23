@@ -1,14 +1,14 @@
 <resources>
-    <string name="app_name">ClahBOT</string>
-    <string name="accessibility_service_description">ClahBOT replays recorded taps and swipes. It does not read screen content. Educational use only.</string>
-    <string name="notification_channel_name">ClahBOT Controller</string>
+    <string name="app_name">AutoClash</string>
+    <string name="accessibility_service_description">AutoClash replays the taps and swipes you record. It does not read screen content. Educational use only.</string>
+    <string name="notification_channel_name">AutoClash Controller</string>
     <string name="notification_channel_desc">Keeps the floating controller and macro playback alive</string>
-    <string name="notification_title">ClahBOT</string>
+    <string name="notification_title">AutoClash</string>
     <string name="notification_idle">Controller ready</string>
+    <string name="notification_recording">Recording — %1$d gesture(s)</string>
     <string name="notification_playing">Playing %1$s</string>
-    <string name="action_pause">Pause</string>
-    <string name="action_collect">Collect Now</string>
+    <string name="notification_paused">Playback paused</string>
     <string name="action_stop">Stop</string>
-    <string name="disclaimer_title">Educational Use Only</string>
-    <string name="disclaimer_body">Using automation tools may violate Clash of Clans Terms of Service and result in account bans. This app is for educational purposes only. Use at your own risk.</string>
+    <string name="disclaimer_title">Educational use only</string>
+    <string name="disclaimer_body">Automation may violate Clash of Clans\' Terms of Service and can result in an account ban. Use at your own risk.</string>
 </resources>

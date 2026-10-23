@@ -15,20 +15,27 @@
         <LinearLayout
             android:id="@+id/controllerHeader"
             android:layout_width="match_parent"
-            android:layout_height="34dp"
+            android:layout_height="36dp"
             android:gravity="center_vertical"
             android:orientation="horizontal">
+
+            <ImageView
+                android:layout_width="22dp"
+                android:layout_height="22dp"
+                android:contentDescription="@string/app_name"
+                android:src="@drawable/ic_autoclash_logo" />
 
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:text="ClahBOT"
-                android:textColor="#4CAF50"
-                android:textSize="15sp"
+                android:layout_marginStart="7dp"
+                android:text="@string/app_name"
+                android:textColor="#E2E8F0"
+                android:textSize="14sp"
                 android:textStyle="bold" />
 
             <TextView
-                android:id="@+id/tvControllerStatus"
+                android:id="@+id/tvStatus"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_marginStart="8dp"
@@ -36,227 +43,363 @@
                 android:ellipsize="end"
                 android:maxLines="1"
                 android:text="Ready"
-                android:textColor="#AAAAAA"
+                android:textColor="#94A3B8"
                 android:textSize="10sp" />
 
-            <Button
+            <ImageButton
                 android:id="@+id/btnMinimize"
-                android:layout_width="34dp"
-                android:layout_height="28dp"
-                android:backgroundTint="#37474F"
-                android:minWidth="0dp"
-                android:padding="0dp"
-                android:text="—"
-                android:textSize="12sp" />
+                android:layout_width="40dp"
+                android:layout_height="36dp"
+                android:background="?android:attr/selectableItemBackground"
+                android:contentDescription="Minimize controller"
+                android:padding="10dp"
+                android:scaleType="fitCenter"
+                android:src="@drawable/ic_minimize" />
 
-            <Button
-                android:id="@+id/btnCloseController"
-                android:layout_width="34dp"
-                android:layout_height="28dp"
-                android:layout_marginStart="4dp"
-                android:backgroundTint="#F44336"
-                android:minWidth="0dp"
-                android:padding="0dp"
-                android:text="✕"
-                android:textSize="11sp" />
+            <ImageButton
+                android:id="@+id/btnClose"
+                android:layout_width="40dp"
+                android:layout_height="36dp"
+                android:background="?android:attr/selectableItemBackground"
+                android:contentDescription="Close controller"
+                android:padding="10dp"
+                android:scaleType="fitCenter"
+                android:src="@drawable/ic_close" />
         </LinearLayout>
 
-        <LinearLayout
+        <FrameLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:orientation="horizontal">
+            android:layout_marginTop="8dp">
 
-            <Button
-                android:id="@+id/btnRecord"
-                android:layout_width="0dp"
-                android:layout_height="36dp"
-                android:layout_weight="1"
-                android:backgroundTint="#4CAF50"
-                android:text="Record"
-                android:textSize="11sp" />
-
-            <Button
-                android:id="@+id/btnStopRecording"
-                android:layout_width="0dp"
-                android:layout_height="36dp"
-                android:layout_marginStart="6dp"
-                android:layout_weight="1"
-                android:backgroundTint="#F44336"
-                android:text="Stop Rec"
-                android:textSize="11sp"
-                android:visibility="gone" />
-        </LinearLayout>
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:orientation="horizontal">
-
-            <Button
-                android:id="@+id/btnPlay"
-                android:layout_width="0dp"
-                android:layout_height="36dp"
-                android:layout_weight="1"
-                android:backgroundTint="#2196F3"
-                android:text="▶ Play"
-                android:textSize="11sp" />
-
-            <Button
-                android:id="@+id/btnPause"
-                android:layout_width="0dp"
-                android:layout_height="36dp"
-                android:layout_marginStart="6dp"
-                android:layout_weight="1"
-                android:backgroundTint="#FF9800"
-                android:text="Pause"
-                android:textSize="11sp" />
-
-            <Button
-                android:id="@+id/btnStopPlayback"
-                android:layout_width="0dp"
-                android:layout_height="36dp"
-                android:layout_marginStart="6dp"
-                android:layout_weight="1"
-                android:backgroundTint="#E53935"
-                android:text="■ Stop"
-                android:textSize="11sp" />
-        </LinearLayout>
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:gravity="center_vertical"
-            android:orientation="horizontal">
-
-            <Button
-                android:id="@+id/btnLoop"
-                android:layout_width="0dp"
-                android:layout_height="32dp"
-                android:layout_weight="1"
-                android:backgroundTint="#00897B"
-                android:text="Loop: On"
-                android:textSize="10sp" />
-
-            <Button
-                android:id="@+id/btnSpeedDown"
-                android:layout_width="36dp"
-                android:layout_height="32dp"
-                android:layout_marginStart="6dp"
-                android:backgroundTint="#455A64"
-                android:minWidth="0dp"
-                android:padding="0dp"
-                android:text="−"
-                android:textSize="13sp" />
-
-            <TextView
-                android:id="@+id/tvSpeed"
-                android:layout_width="52dp"
-                android:layout_height="wrap_content"
-                android:gravity="center"
-                android:text="1.0x"
-                android:textColor="#FFFFFF"
-                android:textSize="12sp"
-                android:textStyle="bold" />
-
-            <Button
-                android:id="@+id/btnSpeedUp"
-                android:layout_width="36dp"
-                android:layout_height="32dp"
-                android:backgroundTint="#455A64"
-                android:minWidth="0dp"
-                android:padding="0dp"
-                android:text="+"
-                android:textSize="13sp" />
-        </LinearLayout>
-
-        <LinearLayout
-            android:id="@+id/saveRow"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:orientation="horizontal"
-            android:visibility="gone">
-
-            <Button
-                android:id="@+id/btnSave"
-                android:layout_width="0dp"
-                android:layout_height="34dp"
-                android:layout_weight="1"
-                android:backgroundTint="#4CAF50"
-                android:text="Save Macro"
-                android:textSize="11sp" />
-
-            <Button
-                android:id="@+id/btnDiscard"
-                android:layout_width="0dp"
-                android:layout_height="34dp"
-                android:layout_marginStart="6dp"
-                android:layout_weight="1"
-                android:backgroundTint="#607D8B"
-                android:text="Discard"
-                android:textSize="11sp" />
-        </LinearLayout>
-
-        <TextView
-            android:id="@+id/tvRecordingCount"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:text=""
-            android:textColor="#FFCDD2"
-            android:textSize="10sp"
-            android:visibility="gone" />
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:text="Saved Macros"
-            android:textColor="#AAAAAA"
-            android:textSize="10sp" />
-
-        <ScrollView
-            android:id="@+id/macroScroll"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="2dp"
-            android:maxHeight="150dp">
-
+            <!-- READY -->
             <LinearLayout
-                android:id="@+id/macroList"
+                android:id="@+id/readyPanel"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:orientation="vertical" />
-        </ScrollView>
+                android:orientation="vertical">
 
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="4dp"
-            android:orientation="horizontal">
+                <Button
+                    android:id="@+id/btnRecord"
+                    android:layout_width="match_parent"
+                    android:layout_height="44dp"
+                    android:backgroundTint="#DC2626"
+                    android:text="●  Record"
+                    android:textSize="13sp"
+                    android:textStyle="bold" />
 
-            <Button
-                android:id="@+id/btnRename"
-                android:layout_width="0dp"
-                android:layout_height="32dp"
-                android:layout_weight="1"
-                android:backgroundTint="#5E35B1"
-                android:text="Rename"
-                android:textSize="10sp" />
+                <TextView
+                    android:id="@+id/tvLibraryLabel"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:text="Macros"
+                    android:textColor="#94A3B8"
+                    android:textSize="10sp" />
 
-            <Button
-                android:id="@+id/btnDelete"
-                android:layout_width="0dp"
-                android:layout_height="32dp"
-                android:layout_marginStart="6dp"
-                android:layout_weight="1"
-                android:backgroundTint="#B71C1C"
-                android:text="Delete"
-                android:textSize="10sp" />
-        </LinearLayout>
+                <ScrollView
+                    android:id="@+id/macroScroll"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="3dp"
+                    android:maxHeight="148dp">
+
+                    <LinearLayout
+                        android:id="@+id/macroList"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical" />
+                </ScrollView>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="44dp"
+                    android:layout_marginTop="8dp"
+                    android:orientation="horizontal">
+
+                    <Button
+                        android:id="@+id/btnPlay"
+                        android:layout_width="0dp"
+                        android:layout_height="44dp"
+                        android:layout_weight="1"
+                        android:backgroundTint="#3B82F6"
+                        android:text="▶  Play"
+                        android:textSize="12sp"
+                        android:textStyle="bold" />
+
+                    <ImageButton
+                        android:id="@+id/btnRename"
+                        android:layout_width="44dp"
+                        android:layout_height="44dp"
+                        android:layout_marginStart="6dp"
+                        android:background="@drawable/bg_icon_button"
+                        android:contentDescription="Rename macro"
+                        android:padding="11dp"
+                        android:scaleType="fitCenter"
+                        android:src="@drawable/ic_edit" />
+
+                    <ImageButton
+                        android:id="@+id/btnDelete"
+                        android:layout_width="44dp"
+                        android:layout_height="44dp"
+                        android:layout_marginStart="6dp"
+                        android:background="@drawable/bg_icon_button"
+                        android:contentDescription="Delete macro"
+                        android:padding="11dp"
+                        android:scaleType="fitCenter"
+                        android:src="@drawable/ic_delete" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="44dp"
+                    android:layout_marginTop="6dp"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Speed"
+                        android:textColor="#94A3B8"
+                        android:textSize="10sp" />
+
+                    <ImageButton
+                        android:id="@+id/btnSpeedDown"
+                        android:layout_width="40dp"
+                        android:layout_height="36dp"
+                        android:layout_marginStart="6dp"
+                        android:background="@drawable/bg_icon_button"
+                        android:contentDescription="Slower"
+                        android:padding="10dp"
+                        android:scaleType="fitCenter"
+                        android:src="@drawable/ic_minus" />
+
+                    <TextView
+                        android:id="@+id/tvSpeed"
+                        android:layout_width="46dp"
+                        android:layout_height="wrap_content"
+                        android:gravity="center"
+                        android:text="1.0x"
+                        android:textColor="#E2E8F0"
+                        android:textSize="12sp"
+                        android:textStyle="bold" />
+
+                    <ImageButton
+                        android:id="@+id/btnSpeedUp"
+                        android:layout_width="40dp"
+                        android:layout_height="36dp"
+                        android:background="@drawable/bg_icon_button"
+                        android:contentDescription="Faster"
+                        android:padding="10dp"
+                        android:scaleType="fitCenter"
+                        android:src="@drawable/ic_plus" />
+
+                    <Button
+                        android:id="@+id/btnRepeat"
+                        android:layout_width="0dp"
+                        android:layout_height="36dp"
+                        android:layout_marginStart="6dp"
+                        android:layout_weight="1"
+                        android:backgroundTint="#1E293B"
+                        android:text="Once"
+                        android:textSize="11sp" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- RECORDING -->
+            <LinearLayout
+                android:id="@+id/recordingPanel"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:background="@drawable/bg_recording"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:paddingHorizontal="10dp"
+                android:visibility="gone">
+
+                <View
+                    android:layout_width="9dp"
+                    android:layout_height="9dp"
+                    android:background="@drawable/bg_rec_dot" />
+
+                <TextView
+                    android:id="@+id/tvRecState"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="6dp"
+                    android:text="REC"
+                    android:textColor="#FECACA"
+                    android:textSize="11sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/tvRecTimer"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:layout_weight="1"
+                    android:text="00:00"
+                    android:textColor="#FFFFFF"
+                    android:textSize="13sp" />
+
+                <Button
+                    android:id="@+id/btnRecPause"
+                    android:layout_width="58dp"
+                    android:layout_height="36dp"
+                    android:backgroundTint="#F59E0B"
+                    android:minWidth="0dp"
+                    android:padding="0dp"
+                    android:text="Pause"
+                    android:textSize="10sp" />
+
+                <Button
+                    android:id="@+id/btnRecFinish"
+                    android:layout_width="58dp"
+                    android:layout_height="36dp"
+                    android:layout_marginStart="6dp"
+                    android:backgroundTint="#22C55E"
+                    android:minWidth="0dp"
+                    android:padding="0dp"
+                    android:text="Finish"
+                    android:textSize="10sp" />
+            </LinearLayout>
+
+            <!-- REVIEW -->
+            <LinearLayout
+                android:id="@+id/reviewPanel"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:visibility="gone">
+
+                <TextView
+                    android:id="@+id/tvReviewInfo"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="Recording review"
+                    android:textColor="#E2E8F0"
+                    android:textSize="11sp" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="44dp"
+                    android:layout_marginTop="8dp"
+                    android:orientation="horizontal">
+
+                    <Button
+                        android:id="@+id/btnRecordAgain"
+                        android:layout_width="0dp"
+                        android:layout_height="44dp"
+                        android:layout_weight="1"
+                        android:backgroundTint="#334155"
+                        android:text="Again"
+                        android:textSize="11sp" />
+
+                    <Button
+                        android:id="@+id/btnDiscard"
+                        android:layout_width="0dp"
+                        android:layout_height="44dp"
+                        android:layout_marginStart="6dp"
+                        android:layout_weight="1"
+                        android:backgroundTint="#64748B"
+                        android:text="Discard"
+                        android:textSize="11sp" />
+
+                    <Button
+                        android:id="@+id/btnSave"
+                        android:layout_width="0dp"
+                        android:layout_height="44dp"
+                        android:layout_marginStart="6dp"
+                        android:layout_weight="1"
+                        android:backgroundTint="#22C55E"
+                        android:text="Save"
+                        android:textSize="11sp"
+                        android:textStyle="bold" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- PLAYING -->
+            <LinearLayout
+                android:id="@+id/playingPanel"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:visibility="gone">
+
+                <TextView
+                    android:id="@+id/tvPlayingName"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:ellipsize="end"
+                    android:maxLines="1"
+                    android:text="Macro"
+                    android:textColor="#E2E8F0"
+                    android:textSize="12sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/tvPlayingStatus"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:ellipsize="end"
+                    android:maxLines="1"
+                    android:text="Playing"
+                    android:textColor="#94A3B8"
+                    android:textSize="10sp" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="44dp"
+                    android:layout_marginTop="8dp"
+                    android:orientation="horizontal">
+
+                    <Button
+                        android:id="@+id/btnPlayPause"
+                        android:layout_width="0dp"
+                        android:layout_height="44dp"
+                        android:layout_weight="1"
+                        android:backgroundTint="#F59E0B"
+                        android:text="Pause"
+                        android:textSize="12sp" />
+
+                    <Button
+                        android:id="@+id/btnStopPlayback"
+                        android:layout_width="0dp"
+                        android:layout_height="44dp"
+                        android:layout_marginStart="6dp"
+                        android:layout_weight="1"
+                        android:backgroundTint="#DC2626"
+                        android:text="■  Stop"
+                        android:textSize="12sp" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:id="@+id/tvPlayingSpeed"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Speed 1.0x"
+                        android:textColor="#94A3B8"
+                        android:textSize="10sp" />
+
+                    <TextView
+                        android:id="@+id/tvPlayingRepeat"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Once"
+                        android:textColor="#94A3B8"
+                        android:textSize="10sp" />
+                </LinearLayout>
+            </LinearLayout>
+        </FrameLayout>
     </LinearLayout>
 
     <FrameLayout
@@ -266,23 +409,22 @@
         android:background="@drawable/bg_bubble"
         android:visibility="gone">
 
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
+        <ImageView
+            android:layout_width="30dp"
+            android:layout_height="30dp"
             android:layout_gravity="center"
-            android:text="CB"
-            android:textColor="#4CAF50"
-            android:textSize="15sp"
-            android:textStyle="bold" />
+            android:contentDescription="@string/app_name"
+            android:src="@drawable/ic_autoclash_logo" />
 
         <TextView
             android:id="@+id/bubbleStatus"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_gravity="bottom|center_horizontal"
-            android:layout_marginBottom="4dp"
+            android:layout_marginBottom="3dp"
             android:text=""
-            android:textColor="#FFCDD2"
-            android:textSize="8sp" />
+            android:textColor="#FCA5A5"
+            android:textSize="7sp"
+            android:textStyle="bold" />
     </FrameLayout>
 </FrameLayout>

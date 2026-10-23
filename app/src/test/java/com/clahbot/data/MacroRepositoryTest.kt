@@ -144,6 +144,26 @@ class MacroRepositoryTest {
         assertEquals("One updated", loaded.first { it.id == 1L }.name)
     }
 
+    @Test
+    fun publishesMacroListOnEveryMutation() = runBlocking {
+        assertEquals(0, repository.macros.value.size)
+
+        repository.save(sampleMacro(id = 1, name = "One"))
+        assertEquals(1, repository.macros.value.size)
+
+        repository.save(sampleMacro(id = 2, name = "Two"))
+        assertEquals(2, repository.macros.value.size)
+
+        repository.rename(1, "Renamed")
+        assertEquals("Renamed", repository.macros.value.first { it.id == 1L }.name)
+
+        repository.delete(1)
+        assertEquals(1, repository.macros.value.size)
+
+        repository.clearAll()
+        assertEquals(0, repository.macros.value.size)
+    }
+
     private fun sampleMacro(
         id: Long = 1,
         name: String = "Test macro",

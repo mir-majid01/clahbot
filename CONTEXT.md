@@ -1,69 +1,63 @@
-# ClahBOT Project Context (V2)
+# AutoClash Project Context (V3)
 
 ## Overview
-ClahBOT records taps, long presses and drags over the game with a floating
-controller, then replays them through an accessibility service. Educational use
-only.
+AutoClash (formerly ClahBOT; application id intentionally stays `com.clahbot`)
+records taps, long presses and drags over the game with a floating controller and
+replays them through an accessibility service. Educational use only.
 
 ## Architecture
 
 ```
 com.clahbot/
-├── ui/                 MainActivity (dashboard), OnboardingActivity, SplashActivity
+├── ui/                 MainActivity (dashboard), SettingsActivity, theme/
 ├── service/            FloatingMenuService (controller + recorder + player),
 │                       ClahAccessibilityService (gesture injection)
-├── execution/          MacroPlayer (playback), MacroTimeline (pure timing/geometry)
-├── data/               BotState (state machine), MacroRepository (versioned JSON)
+├── execution/          MacroPlayer, MacroTimeline (pure timing/geometry)
+├── data/               BotState, MacroRepository, SettingsStore, models
 └── util/               PermissionHelper
 ```
 
-## Key data flow
+## State machine
 
-1. User grants overlay + accessibility (+ notifications on Android 13).
-2. **Start Floating** starts `FloatingMenuService` as a foreground service and
-   adds the controller window.
-3. **Record** adds a full-screen capture surface and re-adds the controller on
-   top so controller buttons stay above the recorder.
-4. Each touch on the capture surface is sampled into a `RecordedGesture` path and
-   re-injected into the game via `dispatchGesture`. The capture surface is
-   `FLAG_NOT_TOUCHABLE` while the injection is in flight so the injected gesture
-   reaches the game instead of our own overlay.
-5. **Stop Rec** removes the capture surface. With gestures captured the controller
-   moves to `READY` and offers **Save** or **Discard**.
-6. Saving writes a `Macro` through `MacroRepository` (versioned JSON, atomic write).
-7. Selecting a macro loads its speed and loop settings; **Play** starts
-   `MacroPlayer` with the controller's current speed and loop mode.
-8. **—** collapses the panel to a draggable logo inside the *same* window, so
-   minimizing never loses state or creates a second window.
+`INACTIVE → READY → RECORDING ⇄ RECORDING_PAUSED → REVIEW → READY`
+`READY → PLAYING ⇄ PLAYBACK_PAUSED → READY`
+`ERROR` for missing accessibility or unplayable macros; `STOPPING` transiently
+while playback is cancelled.
 
-## Recording format
+`BotState` is the only state source. The dashboard, controller and player read it.
 
-- `Macro`: stable id, name, schema version (2), gesture list, repeat mode, speed.
-- `RecordedGesture`: type (`tap` / `long_press` / `swipe`), relative timestamp,
-  duration, start/end, and the full `points` path.
-- `GesturePoint`: normalized x/y (0..1) plus milliseconds since gesture start.
+## Data flow
 
-Geometry is normalized to the recording display and scaled to the current display
-at playback. Paths are thinned to at most 240 points before saving.
-
-## Playback
-
-- Speed 0.25x–4.0x scales both inter-gesture delays and stroke duration.
-- Loop is a player feature (`repeatMode = "infinite"`), not a UI-only flag.
-- Stop cancels the coroutine job and any pending dispatch wait; a stale callback
-  cannot restart a stopped macro.
-- Pause stops scheduling new gestures; the gesture already dispatched completes
-  because Android cannot cancel a gesture mid-flight.
+1. Permissions: overlay + accessibility (+ notifications on Android 13).
+2. **Start floating controller** starts `FloatingMenuService` as a foreground
+   service and adds the controller window.
+3. **Record** adds a full-screen capture surface and re-adds the controller on top.
+4. Each touch is sampled into a `RecordedGesture` path and re-injected via
+   `dispatchGesture`; the surface is `FLAG_NOT_TOUCHABLE` during the injection.
+5. **Pause** makes the surface non-touchable and excludes paused time from gesture
+   timestamps.
+6. **Finish** removes the capture surface and moves to `REVIEW`.
+7. **Save** writes through `MacroRepository`, which publishes the new list to every
+   observer and selects the new macro.
+8. **Play** starts `MacroPlayer` with the controller's speed and repeat mode.
 
 ## Persistence
 
-`filesDir/macros.json` holds `{schemaVersion, macros[]}`. All writes go through a
-`Mutex`, are validated (non-empty gestures, clamped speed, monotonic timestamps),
-and are written to a temp file before replacing the original. A corrupt file is
-renamed to `macros.json.corrupt-<ts>` and the app starts with an empty list.
-Schema 1 macros without a path are upgraded by rebuilding a straight line from the
-stored start/end points.
+`filesDir/macros.json` holds `{schemaVersion, macros[]}`. Writes are serialized by a
+mutex, validated, and written to a temp file before replacing the original. Corrupt
+files are quarantined. Schema 1 macros without a path are upgraded with a straight
+line. `MacroRepository.macros` is a `StateFlow` and the single authoritative list;
+the dashboard and controller never keep private copies.
 
-## Building
-Build is done in GitHub Actions (`.github/workflows/android.yml`): unit tests,
-then `assembleDebug`, then the APK is uploaded as an artifact.
+Settings live in `SharedPreferences` behind `SettingsStore.settings: StateFlow`.
+
+## Branding
+
+AutoClash mark: hexagon + play triangle. Adaptive icon (`mipmap-anydpi-v26`),
+monochrome themed icon, splash icon, notification icon and floating logo all derive
+from it. Palette: navy `#0B1220`, electric blue `#3B82F6`, green `#22C55E`,
+red `#EF4444`, amber `#F59E0B`.
+
+## Build
+GitHub Actions (`.github/workflows/android.yml`): unit tests, then `assembleDebug`,
+then APK and test-report artifacts.

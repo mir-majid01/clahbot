@@ -7,26 +7,39 @@ import com.clahbot.data.models.RecordedGesture
 import com.clahbot.execution.MacroTimeline
 import com.google.gson.Gson
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
- * Versioned JSON store for macros.
+ * Versioned JSON store for macros and the single authoritative macro list.
  *
- * One file, one writer, serialized by a [Mutex], written via a temp file and a
- * rename so a crash cannot leave a half written macro list. Corrupt files are
- * quarantined instead of crashing the app.
+ * Every mutation publishes the new list through [macros], so the dashboard and
+ * the floating controller can never drift apart. One file, one writer,
+ * serialized by a [Mutex], written via a temp file and a rename so a crash
+ * cannot leave a half written library. Corrupt files are quarantined.
  */
 class MacroRepository(private val file: File) {
 
     private val mutex = Mutex()
     private val gson = Gson()
 
-    suspend fun load(): List<Macro> = withContext(Dispatchers.IO) {
-        mutex.withLock { readLocked() }
+    private val _macros = MutableStateFlow<List<Macro>>(emptyList())
+    val macros: StateFlow<List<Macro>> = _macros.asStateFlow()
+
+    suspend fun refresh(): List<Macro> = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            val list = readLocked().sortedByDescending { it.createdAt }
+            _macros.value = list
+            list
+        }
     }
+
+    suspend fun load(): List<Macro> = refresh()
 
     suspend fun get(id: Long): Macro? = withContext(Dispatchers.IO) {
         mutex.withLock { readLocked().firstOrNull { it.id == id } }
@@ -39,6 +52,7 @@ class MacroRepository(private val file: File) {
             val index = all.indexOfFirst { it.id == sanitized.id }
             if (index >= 0) all[index] = sanitized else all.add(sanitized)
             writeLocked(all)
+            publish(all)
             sanitized
         }
     }
@@ -47,8 +61,19 @@ class MacroRepository(private val file: File) {
         mutex.withLock {
             val all = readLocked().toMutableList()
             val removed = all.removeAll { it.id == id }
-            if (removed) writeLocked(all)
+            if (removed) {
+                writeLocked(all)
+                publish(all)
+            }
             removed
+        }
+    }
+
+    suspend fun clearAll(): Boolean = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            writeLocked(emptyList())
+            publish(emptyList())
+            true
         }
     }
 
@@ -62,6 +87,7 @@ class MacroRepository(private val file: File) {
             val updated = all[index].copy(name = trimmed)
             all[index] = updated
             writeLocked(all)
+            publish(all)
             updated
         }
     }
@@ -80,9 +106,17 @@ class MacroRepository(private val file: File) {
                 ) ?: return@withLock null
                 all[index] = updated
                 writeLocked(all)
+                publish(all)
                 updated
             }
         }
+
+    /** Size of the macro file on disk, for the storage section in Settings. */
+    fun storageBytes(): Long = if (file.exists()) file.length() else 0L
+
+    private fun publish(macros: List<Macro>) {
+        _macros.value = macros.sortedByDescending { it.createdAt }
+    }
 
     private fun readLocked(): List<Macro> {
         if (!file.exists()) return emptyList()
@@ -133,7 +167,7 @@ class MacroRepository(private val file: File) {
         try {
             file.renameTo(File(file.parentFile, "${file.name}.corrupt-${System.currentTimeMillis()}"))
         } catch (_: Exception) {
-            // Nothing useful to do; an unreadable file is treated as empty.
+            // An unreadable file is treated as empty.
         }
     }
 

@@ -7,18 +7,26 @@
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Explicit package visibility for Clash of Clans variants only; no QUERY_ALL_PACKAGES. -->
+    <queries>
+        <package android:name="com.supercell.clashofclans" />
+        <package android:name="com.supercell.clashofclans.overseas" />
+        <package android:name="com.supercell.clashofclans.kunlun" />
+        <package android:name="com.supercell.clashofclans.google" />
+    </queries>
+
     <application
         android:allowBackup="true"
-        android:icon="@drawable/ic_launcher_foreground"
+        android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
-        android:roundIcon="@drawable/ic_launcher_foreground"
+        android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@style/Theme.ClahBOT">
+        android:theme="@style/Theme.AutoClash">
 
         <activity
-            android:name=".ui.SplashActivity"
+            android:name=".ui.MainActivity"
             android:exported="true"
-            android:theme="@style/Theme.ClahBOT">
+            android:theme="@style/Theme.AutoClash.Splash">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -26,14 +34,10 @@
         </activity>
 
         <activity
-            android:name=".ui.MainActivity"
+            android:name=".ui.SettingsActivity"
             android:exported="false"
-            android:theme="@style/Theme.ClahBOT" />
-
-        <activity
-            android:name=".ui.OnboardingActivity"
-            android:exported="false"
-            android:theme="@style/Theme.ClahBOT" />
+            android:parentActivityName=".ui.MainActivity"
+            android:theme="@style/Theme.AutoClash" />
 
         <service
             android:name=".service.FloatingMenuService"

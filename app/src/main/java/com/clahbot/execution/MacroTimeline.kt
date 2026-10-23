@@ -73,6 +73,21 @@ object MacroTimeline {
         return repeatMode.trim().toIntOrNull()?.coerceIn(1, 10_000) ?: 1
     }
 
+    /** Repeat modes the controller cycles through. */
+    val REPEAT_CYCLE = listOf(Macro.REPEAT_ONCE, Macro.REPEAT_INFINITE, "3")
+
+    fun repeatLabel(repeatMode: String?): String = when {
+        repeatMode == Macro.REPEAT_INFINITE -> "Loop"
+        repeatMode == Macro.REPEAT_ONCE || repeatMode == null -> "Once"
+        else -> "${repeatMode}×"
+    }
+
+    fun nextRepeat(repeatMode: String?): String {
+        val index = REPEAT_CYCLE.indexOf(repeatMode)
+        if (index < 0) return REPEAT_CYCLE.first()
+        return REPEAT_CYCLE[(index + 1) % REPEAT_CYCLE.size]
+    }
+
     /** Distance from the start point to the furthest sampled point, in pixels. */
     fun maxDeviationPx(points: List<GesturePoint>): Float {
         if (points.isEmpty()) return 0f

@@ -57,7 +57,7 @@ class MacroPlayer(
         stopped = false
         paused = false
         active = this
-        BotState.setActiveMacro(macro.name)
+        BotState.setActiveMacro(macro.id, macro.name)
         BotState.setState(ControllerState.PLAYING)
         BotState.setStatus("Starting \"${macro.name}\"")
 
@@ -104,8 +104,8 @@ class MacroPlayer(
                 }
 
                 if (!stopped) {
-                    BotState.setActiveMacro(null)
-                    BotState.setState(ControllerState.IDLE)
+                    BotState.clearActiveMacro()
+                    BotState.setState(ControllerState.READY)
                     BotState.setStatus("Playback complete")
                 }
             } catch (_: CancellationException) {
@@ -170,7 +170,7 @@ class MacroPlayer(
     fun pause() {
         if (job == null) return
         paused = true
-        BotState.setState(ControllerState.PAUSED)
+        BotState.setState(ControllerState.PLAYBACK_PAUSED)
         BotState.setStatus("Paused")
     }
 
@@ -187,8 +187,8 @@ class MacroPlayer(
 
     fun stop() {
         stopInternal()
-        BotState.setActiveMacro(null)
-        BotState.setState(ControllerState.IDLE)
+        BotState.clearActiveMacro()
+        BotState.setState(ControllerState.STOPPING)
         BotState.setStatus("Playback stopped")
     }
 

@@ -1,26 +1,38 @@
 package com.clahbot.data
 
+import com.clahbot.data.models.Macro
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 enum class ControllerState {
-    IDLE,
-    RECORDING,
+    INACTIVE,
     READY,
+    RECORDING,
+    RECORDING_PAUSED,
+    REVIEW,
     PLAYING,
-    PAUSED,
+    PLAYBACK_PAUSED,
     STOPPING,
-    ERROR
+    ERROR;
+
+    val isRecording: Boolean
+        get() = this == RECORDING || this == RECORDING_PAUSED
+
+    val isPlayback: Boolean
+        get() = this == PLAYING || this == PLAYBACK_PAUSED
+
+    val isBusy: Boolean
+        get() = isRecording || isPlayback
 }
 
 /**
  * Single source of truth for what the controller and the player are doing.
- * Replaces the scattered isBuilding / isPlaying / isRecording flags.
+ * The dashboard, the floating controller and the player all read this.
  */
 object BotState {
 
-    private val _state = MutableStateFlow(ControllerState.IDLE)
+    private val _state = MutableStateFlow(ControllerState.INACTIVE)
     val state: StateFlow<ControllerState> = _state.asStateFlow()
 
     private val _status = MutableStateFlow("Ready")
@@ -29,14 +41,14 @@ object BotState {
     private val _selectedMacroId = MutableStateFlow(-1L)
     val selectedMacroId: StateFlow<Long> = _selectedMacroId.asStateFlow()
 
+    private val _activeMacroId = MutableStateFlow(-1L)
+    val activeMacroId: StateFlow<Long> = _activeMacroId.asStateFlow()
+
     private val _activeMacroName = MutableStateFlow<String?>(null)
     val activeMacroName: StateFlow<String?> = _activeMacroName.asStateFlow()
 
     private val _recordedGestureCount = MutableStateFlow(0)
     val recordedGestureCount: StateFlow<Int> = _recordedGestureCount.asStateFlow()
-
-    private val _canSave = MutableStateFlow(false)
-    val canSave: StateFlow<Boolean> = _canSave.asStateFlow()
 
     fun setState(value: ControllerState) {
         _state.value = value
@@ -50,21 +62,32 @@ object BotState {
         _selectedMacroId.value = id
     }
 
-    fun setActiveMacro(name: String?) {
+    fun setActiveMacro(id: Long, name: String?) {
+        _activeMacroId.value = id
         _activeMacroName.value = name
+    }
+
+    fun clearActiveMacro() {
+        _activeMacroId.value = -1L
+        _activeMacroName.value = null
     }
 
     fun setRecordedCount(count: Int) {
         _recordedGestureCount.value = count
-        _canSave.value = count > 0
     }
 
     fun clearRecording() {
         setRecordedCount(0)
     }
+}
 
-    fun isBusy(): Boolean {
-        val current = _state.value
-        return current == ControllerState.PLAYING || current == ControllerState.PAUSED
+/**
+ * Keeps a selection valid after the library changes. Returns -1 when the
+ * selected macro no longer exists so stale ids cannot be played.
+ */
+object MacroSelection {
+    fun reconcile(selectedId: Long, macros: List<Macro>): Long {
+        if (selectedId <= 0L) return -1L
+        return if (macros.any { it.id == selectedId }) selectedId else -1L
     }
 }

@@ -53,6 +53,18 @@ class MacroTimelineTest {
     }
 
     @Test
+    fun repeatCycleRotatesAndLabels() {
+        assertEquals(Macro.REPEAT_INFINITE, MacroTimeline.nextRepeat(Macro.REPEAT_ONCE))
+        assertEquals("3", MacroTimeline.nextRepeat(Macro.REPEAT_INFINITE))
+        assertEquals(Macro.REPEAT_ONCE, MacroTimeline.nextRepeat("3"))
+        assertEquals(Macro.REPEAT_ONCE, MacroTimeline.nextRepeat("unknown"))
+
+        assertEquals("Once", MacroTimeline.repeatLabel(Macro.REPEAT_ONCE))
+        assertEquals("Loop", MacroTimeline.repeatLabel(Macro.REPEAT_INFINITE))
+        assertEquals("3×", MacroTimeline.repeatLabel("3"))
+    }
+
+    @Test
     fun classifySeparatesTapDragAndHold() {
         assertEquals("tap", MacroTimeline.classify(2f, 120))
         assertEquals("long_press", MacroTimeline.classify(2f, 600))
