@@ -1,65 +1,69 @@
-# ClahBOT Project Context (V1 - Game Booster Mode)
+# ClahBOT Project Context (V2)
 
 ## Overview
-ClahBOT is an Android macro recorder for Clash of Clans (educational use only). V1 focuses on one job: **Record an attack → Save it → Play it back continuously**, like Infinix Game Booster.
+ClahBOT records taps, long presses and drags over the game with a floating
+controller, then replays them through an accessibility service. Educational use
+only.
 
-## Architecture (V1)
+## Architecture
 
 ```
 com.clahbot/
-├── ui/                 # MainActivity (macro list only), OnboardingActivity
-├── service/            # FloatingMenuService, AutomationForegroundService, RecordingService, ClahAccessibilityService, MediaProjectionHolder, FrameCaptureHolder
-├── execution/          # MacroPlayer (playback with coordinate scaling, speed, repeat)
-├── overlay/            # FloatingDashboard (playback progress overlay)
-├── data/               # ConfigRepository, SharedVisionBuffer, models (Macro, RecordedGesture)
-├── monitor/            # Battery/thermal watchdog
-└── vision/             # Deprecated - FrameProcessor (no longer used)
+├── ui/                 MainActivity (dashboard), OnboardingActivity, SplashActivity
+├── service/            FloatingMenuService (controller + recorder + player),
+│                       ClahAccessibilityService (gesture injection)
+├── execution/          MacroPlayer (playback), MacroTimeline (pure timing/geometry)
+├── data/               BotState (state machine), MacroRepository (versioned JSON)
+└── util/               PermissionHelper
 ```
 
-## Key Data Flow
-1. User grants screen capture + accessibility + overlay permissions
-2. User presses **Start Floating** → `FloatingMenuService` shows draggable floating menu
-3. User presses **Enter Game** → opens Clash of Clans
-4. User presses **Record** on floating menu → full-screen touch-capture overlay appears below floating menu
-5. Overlay intercepts all touches, records them with timestamps, re-injects via AccessibilityService (so the game responds)
-6. User presses **Stop** → recording ends, Save/Re-record buttons appear
-7. User presses **Save** → dialog asks for name → macro saved as JSON in Room (`bot_settings` table)
-8. To play: tap a macro in the list → press **Play Loop** → `AutomationForegroundService` starts with MacroPlayer
-9. `MacroPlayer` replays gestures with coordinate scaling, speed multiplier, and repeat count
+## Key data flow
 
-## Recording Format
-- Coordinates are normalized (0.0-1.0) for resolution independence
-- Timestamps are relative to recording start (milliseconds)
-- Gesture types: `tap`, `swipe`, `long_press`
-- Screen dimensions and orientation stored with each macro
+1. User grants overlay + accessibility (+ notifications on Android 13).
+2. **Start Floating** starts `FloatingMenuService` as a foreground service and
+   adds the controller window.
+3. **Record** adds a full-screen capture surface and re-adds the controller on
+   top so controller buttons stay above the recorder.
+4. Each touch on the capture surface is sampled into a `RecordedGesture` path and
+   re-injected into the game via `dispatchGesture`. The capture surface is
+   `FLAG_NOT_TOUCHABLE` while the injection is in flight so the injected gesture
+   reaches the game instead of our own overlay.
+5. **Stop Rec** removes the capture surface. With gestures captured the controller
+   moves to `READY` and offers **Save** or **Discard**.
+6. Saving writes a `Macro` through `MacroRepository` (versioned JSON, atomic write).
+7. Selecting a macro loads its speed and loop settings; **Play** starts
+   `MacroPlayer` with the controller's current speed and loop mode.
+8. **—** collapses the panel to a draggable logo inside the *same* window, so
+   minimizing never loses state or creates a second window.
 
-## Floating Menu Features
-- **Fully draggable** anywhere on screen by touch
-- **Record** → starts touch capture overlay (intercepts and re-injects touches)
-- **Stop** → stops recording, shows Save/Re-record
-- **Save** → asks for name via dialog, saves to Room DB
-- **Re-record** → discards and starts new recording
-- **Play Loop** → plays selected macro in infinite loop
-- **Delete** → deletes selected macro
-- **Close** → removes floating menu and stops service
-- **Macro List** → shows saved macros, tap to select
+## Recording format
 
-## Home Screen (MainActivity)
-- Title: "ClahBOT"
-- Top buttons: **Start Floating**, **Enter Game**
-- "Recorded Attacks" list: name, action count, duration, date, device info
-- Each macro has Play and Delete buttons
+- `Macro`: stable id, name, schema version (2), gesture list, repeat mode, speed.
+- `RecordedGesture`: type (`tap` / `long_press` / `swipe`), relative timestamp,
+  duration, start/end, and the full `points` path.
+- `GesturePoint`: normalized x/y (0..1) plus milliseconds since gesture start.
 
-## Playback Settings (stored per macro)
-- `repeatMode`: "once", number, or "infinite"
-- `speedMultiplier`: Float (1.0 = normal)
-- `randomOffset`: "off", "small" (4px), "medium" (12px)
+Geometry is normalized to the recording display and scaled to the current display
+at playback. Paths are thinned to at most 240 points before saving.
+
+## Playback
+
+- Speed 0.25x–4.0x scales both inter-gesture delays and stroke duration.
+- Loop is a player feature (`repeatMode = "infinite"`), not a UI-only flag.
+- Stop cancels the coroutine job and any pending dispatch wait; a stale callback
+  cannot restart a stopped macro.
+- Pause stops scheduling new gestures; the gesture already dispatched completes
+  because Android cannot cancel a gesture mid-flight.
+
+## Persistence
+
+`filesDir/macros.json` holds `{schemaVersion, macros[]}`. All writes go through a
+`Mutex`, are validated (non-empty gestures, clamped speed, monotonic timestamps),
+and are written to a temp file before replacing the original. A corrupt file is
+renamed to `macros.json.corrupt-<ts>` and the app starts with an empty list.
+Schema 1 macros without a path are upgraded by rebuilding a straight line from the
+stored start/end points.
 
 ## Building
-```powershell
-$env:JAVA_HOME = "C:\Program Files\Android\Android Studio\jbr"
-$env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk"
-.\gradlew.bat assembleDebug
-```
-
-**APK:** `app/build/outputs/apk/debug/app-debug.apk` (~58 MB)
+Build is done in GitHub Actions (`.github/workflows/android.yml`): unit tests,
+then `assembleDebug`, then the APK is uploaded as an artifact.
