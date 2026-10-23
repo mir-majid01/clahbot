@@ -24,9 +24,6 @@ class ClahAccessibilityService : AccessibilityService() {
         var instance: ClahAccessibilityService? = null
             private set
 
-        @Volatile
-        var touchCallback: ((android.view.MotionEvent) -> Unit)? = null
-
         fun isEnabled(): Boolean = instance != null
     }
 }

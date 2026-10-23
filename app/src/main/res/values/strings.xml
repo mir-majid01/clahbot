@@ -1,10 +1,11 @@
 <resources>
     <string name="app_name">ClahBOT</string>
-    <string name="accessibility_service_description">ClahBOT uses accessibility to simulate human-like taps and swipes for game automation. Educational use only.</string>
-    <string name="notification_channel_name">Automation Service</string>
-    <string name="notification_channel_desc">Keeps ClahBOT running in the background</string>
-    <string name="notification_title">ClahBOT Active</string>
-    <string name="notification_text">Automation is running</string>
+    <string name="accessibility_service_description">ClahBOT replays recorded taps and swipes. It does not read screen content. Educational use only.</string>
+    <string name="notification_channel_name">ClahBOT Controller</string>
+    <string name="notification_channel_desc">Keeps the floating controller and macro playback alive</string>
+    <string name="notification_title">ClahBOT</string>
+    <string name="notification_idle">Controller ready</string>
+    <string name="notification_playing">Playing %1$s</string>
     <string name="action_pause">Pause</string>
     <string name="action_collect">Collect Now</string>
     <string name="action_stop">Stop</string>

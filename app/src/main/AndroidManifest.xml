@@ -2,15 +2,12 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
-    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <uses-permission android:name="android.permission.INTERNET" />
 
     <application
-        android:name=".ClahBotApp"
         android:allowBackup="true"
         android:icon="@drawable/ic_launcher_foreground"
         android:label="@string/app_name"
@@ -32,24 +29,20 @@
             android:name=".ui.MainActivity"
             android:exported="false"
             android:theme="@style/Theme.ClahBOT" />
-        
+
         <activity
             android:name=".ui.OnboardingActivity"
             android:exported="false"
             android:theme="@style/Theme.ClahBOT" />
 
         <service
-            android:name=".service.AutomationForegroundService"
-            android:exported="false"
-            android:foregroundServiceType="mediaProjection" />
-
-        <service
             android:name=".service.FloatingMenuService"
-            android:exported="false" />
-
-        <service
-            android:name=".service.RecordingService"
-            android:exported="false" />
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="floating controller for recording and replaying user macros" />
+        </service>
 
         <service
             android:name=".service.ClahAccessibilityService"

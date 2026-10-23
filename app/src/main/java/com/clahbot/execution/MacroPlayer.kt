@@ -3,134 +3,215 @@ package com.clahbot.execution
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.graphics.Path
-import com.clahbot.data.SharedVisionBuffer
+import com.clahbot.data.BotState
+import com.clahbot.data.ControllerState
+import com.clahbot.data.models.GesturePoint
 import com.clahbot.data.models.Macro
 import com.clahbot.data.models.RecordedGesture
 import com.clahbot.service.ClahAccessibilityService
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlin.random.Random
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.coroutines.resume
 
+/**
+ * Replays a macro through the accessibility service.
+ *
+ * Only one player owns the gesture pipeline at a time; starting a new macro
+ * cancels whatever was running so a stale loop cannot keep injecting touches.
+ */
 class MacroPlayer(
-    private val currentWidth: Int,
-    private val currentHeight: Int
+    private val screenWidth: Int,
+    private val screenHeight: Int
 ) {
-    private var playbackJob: Job? = null
+
+    private var job: Job? = null
+
+    @Volatile
     private var paused = false
 
+    @Volatile
+    private var stopped = false
+
     fun play(macro: Macro, scope: CoroutineScope) {
-        playbackJob?.cancel()
+        active?.let { if (it !== this) it.stop() }
+        stopInternal()
+
+        val gestures = macro.gestures.sortedBy { it.timestampMs }
+        if (gestures.isEmpty()) {
+            BotState.setState(ControllerState.ERROR)
+            BotState.setStatus("\"${macro.name}\" has no gestures")
+            return
+        }
+        if (ClahAccessibilityService.instance == null) {
+            BotState.setState(ControllerState.ERROR)
+            BotState.setStatus("Accessibility service not enabled")
+            return
+        }
+
+        stopped = false
         paused = false
+        active = this
+        BotState.setActiveMacro(macro.name)
+        BotState.setState(ControllerState.PLAYING)
+        BotState.setStatus("Starting \"${macro.name}\"")
 
-        playbackJob = scope.launch(Dispatchers.Default) {
-            SharedVisionBuffer.setRunning(true)
-            SharedVisionBuffer.setStatus("Playing: ${macro.name}")
+        val newJob = scope.launch {
+            val self = coroutineContext[Job]
+            try {
+                val repeats = MacroTimeline.repeatCount(macro.repeatMode)
+                var iteration = 0
 
-            val gestures = macro.gestures.sortedBy { it.timestampMs }
-            if (gestures.isEmpty()) {
-                SharedVisionBuffer.setStatus("No gestures to play")
-                SharedVisionBuffer.setRunning(false)
-                return@launch
-            }
+                while (isActive && !stopped && iteration < repeats) {
+                    iteration++
+                    BotState.setStatus(
+                        if (repeats == Int.MAX_VALUE) "Loop $iteration" else "Run $iteration/$repeats"
+                    )
 
-            val totalMs = gestures.last().timestampMs + gestures.last().durationMs
-            val repeatCount = when (macro.repeatMode) {
-                "infinite" -> Int.MAX_VALUE
-                else -> (macro.repeatMode.toIntOrNull() ?: 1)
-            }
-            var repeat = 0
+                    var lastTimestamp = 0L
+                    for (gesture in gestures) {
+                        if (!isActive || stopped) break
+                        awaitResume()
 
-            while (isActive && !paused && repeat < repeatCount) {
-                val service = ClahAccessibilityService.instance
-                if (service == null) {
-                    SharedVisionBuffer.setStatus("ERROR: Accessibility service not enabled")
-                    return@launch
-                }
+                        val gap = MacroTimeline.gapMillis(
+                            (gesture.timestampMs - lastTimestamp).coerceAtLeast(0L),
+                            macro.speedMultiplier
+                        )
+                        if (gap > 0) delay(gap)
 
-                var lastTimestamp = 0L
-                for (gesture in gestures) {
-                    if (!isActive || paused) break
+                        val service = ClahAccessibilityService.instance
+                        if (service == null) {
+                            BotState.setState(ControllerState.ERROR)
+                            BotState.setStatus("Accessibility service disconnected")
+                            return@launch
+                        }
 
-                    val delayMs = ((gesture.timestampMs - lastTimestamp) / macro.speedMultiplier).toLong()
-                    if (delayMs > 0) delay(timeMillis = delayMs)
-
-                    val startX = gesture.normalizedStartX * currentWidth
-                    val startY = gesture.normalizedStartY * currentHeight
-                    val endX = gesture.normalizedEndX * currentWidth
-                    val endY = gesture.normalizedEndY * currentHeight
-
-                    val maxOffsetPx = when (macro.randomOffset) {
-                        "small" -> 4
-                        "medium" -> 12
-                        else -> 0
-                    }
-                    val offX = if (maxOffsetPx > 0) Random.nextInt(-maxOffsetPx, maxOffsetPx + 1) else 0
-                    val offY = if (maxOffsetPx > 0) Random.nextInt(-maxOffsetPx, maxOffsetPx + 1) else 0
-
-                    val scaledDuration = (gesture.durationMs / macro.speedMultiplier).toLong().coerceAtLeast(20)
-
-                    when (gesture.gestureType) {
-                        "swipe" -> executeGesture(service, startX + offX, startY + offY, endX + offX, endY + offY, scaledDuration)
-                        "long_press" -> executeGesture(service, startX + offX, startY + offY, startX + offX, startY + offY, scaledDuration.coerceAtLeast(300))
-                        else -> executeGesture(service, startX + offX, startY + offY, startX + offX, startY + offY, scaledDuration.coerceAtMost(80))
+                        if (!dispatch(service, gesture, macro.speedMultiplier) && !stopped) {
+                            BotState.setStatus("Gesture cancelled by system")
+                        }
+                        lastTimestamp = gesture.timestampMs
                     }
 
-                    lastTimestamp = gesture.timestampMs
+                    if (iteration < repeats && !stopped) {
+                        awaitResume()
+                        delay(INTER_LOOP_DELAY_MS)
+                    }
                 }
 
-                repeat++
-                if (repeat < repeatCount && isActive && !paused) {
-                    val label = if (repeatCount == Int.MAX_VALUE) "Repeat #$repeat" else "Repeat $repeat/$repeatCount"
-                    SharedVisionBuffer.setStatus(label)
-                    delay(1000)
+                if (!stopped) {
+                    BotState.setActiveMacro(null)
+                    BotState.setState(ControllerState.IDLE)
+                    BotState.setStatus("Playback complete")
+                }
+            } catch (_: CancellationException) {
+                // Stopping is a normal exit path.
+            } finally {
+                if (job === null || job === self) {
+                    job = null
+                    if (active === this@MacroPlayer) active = null
                 }
             }
-
-            SharedVisionBuffer.setRunning(false)
-            SharedVisionBuffer.setStatus("Playback complete")
         }
+        job = newJob
     }
 
-    private fun executeGesture(
+    private suspend fun awaitResume() {
+        while (paused && !stopped) delay(PAUSE_POLL_MS)
+    }
+
+    private suspend fun dispatch(
         service: ClahAccessibilityService,
-        x0: Float, y0: Float,
-        x1: Float, y1: Float,
-        duration: Long
-    ) {
-        val path = Path().apply {
-            moveTo(x0, y0)
-            if (x0 != x1 || y0 != y1) lineTo(x1, y1)
-        }
-        val stroke = GestureDescription.StrokeDescription(path, 0, duration)
-        val gesture = GestureDescription.Builder().addStroke(stroke).build()
-        var completed = false
-        val lock = Object()
-        service.dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
-            override fun onCompleted(g: GestureDescription?) { synchronized(lock) { completed = true; lock.notify() } }
-            override fun onCancelled(g: GestureDescription?) { synchronized(lock) { completed = true; lock.notify() } }
-        }, null)
-        synchronized(lock) {
-            if (!completed) {
-                try { (lock as java.lang.Object).wait(duration + 200) } catch (_: InterruptedException) {}
+        gesture: RecordedGesture,
+        speed: Float
+    ): Boolean {
+        val points = MacroTimeline.effectivePoints(gesture)
+        if (points.isEmpty()) return false
+        val path = buildPath(points, gesture.gestureType)
+        val duration = MacroTimeline.strokeDuration(gesture, speed)
+
+        // A cancelled or never-answered dispatch must not stall the loop forever.
+        val result = withTimeoutOrNull(duration + DISPATCH_TIMEOUT_SLACK_MS) {
+            suspendCancellableCoroutine<Boolean> { continuation ->
+                val stroke = GestureDescription.StrokeDescription(path, 0L, duration)
+                val description = GestureDescription.Builder().addStroke(stroke).build()
+                val callback = object : AccessibilityService.GestureResultCallback() {
+                    override fun onCompleted(gestureDescription: GestureDescription?) {
+                        if (continuation.isActive) continuation.resume(true)
+                    }
+
+                    override fun onCancelled(gestureDescription: GestureDescription?) {
+                        if (continuation.isActive) continuation.resume(false)
+                    }
+                }
+                val accepted = service.dispatchGesture(description, callback, null)
+                if (!accepted && continuation.isActive) continuation.resume(false)
             }
         }
+        return result ?: false
     }
 
-    fun stop() {
-        paused = true
-        playbackJob?.cancel()
-        playbackJob = null
-        SharedVisionBuffer.setRunning(false)
-        SharedVisionBuffer.setStatus("Playback stopped")
+    private fun buildPath(points: List<GesturePoint>, type: String): Path {
+        val px = MacroTimeline.denormalize(points, screenWidth, screenHeight)
+        val path = Path()
+        val first = px.first()
+        path.moveTo(first.x, first.y)
+        if (type != "swipe" || px.size < 2) return path
+        for (i in 1 until px.size) {
+            path.lineTo(px[i].x, px[i].y)
+        }
+        return path
     }
 
     fun pause() {
+        if (job == null) return
         paused = true
-        SharedVisionBuffer.setRunning(false)
-        SharedVisionBuffer.setStatus("Playback paused")
+        BotState.setState(ControllerState.PAUSED)
+        BotState.setStatus("Paused")
+    }
+
+    fun resume() {
+        if (job == null) return
+        paused = false
+        BotState.setState(ControllerState.PLAYING)
+        BotState.setStatus("Playing")
+    }
+
+    fun isPaused(): Boolean = paused
+
+    fun isRunning(): Boolean = job != null
+
+    fun stop() {
+        stopInternal()
+        BotState.setActiveMacro(null)
+        BotState.setState(ControllerState.IDLE)
+        BotState.setStatus("Playback stopped")
+    }
+
+    private fun stopInternal() {
+        stopped = true
+        paused = false
+        job?.cancel()
+        job = null
+        if (active === this) active = null
+    }
+
+    companion object {
+        private const val INTER_LOOP_DELAY_MS = 800L
+        private const val PAUSE_POLL_MS = 40L
+        private const val DISPATCH_TIMEOUT_SLACK_MS = 1_500L
+
+        @Volatile
+        private var active: MacroPlayer? = null
+
+        fun stopActive() {
+            active?.stop()
+        }
+
+        fun hasActivePlayer(): Boolean = active != null
     }
 }

@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   assemble-debug:
-    name: Assemble debug APK
+    name: Test and assemble debug APK
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -35,10 +35,22 @@ jobs:
         with:
           cache-read-only: false
 
-      - name: Assemble debug APK
+      - name: Unit tests
         run: |
           chmod +x ./gradlew
-          ./gradlew --no-daemon --stacktrace assembleDebug
+          ./gradlew --no-daemon --stacktrace testDebugUnitTest
+
+      - name: Assemble debug APK
+        run: ./gradlew --no-daemon --stacktrace assembleDebug
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-report
+          path: app/build/reports/tests/testDebugUnitTest
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
