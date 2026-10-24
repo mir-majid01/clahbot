@@ -60,6 +60,7 @@ import com.clahbot.data.models.RecordedGesture
 import com.clahbot.execution.MacroPlayer
 import com.clahbot.execution.MacroTimeline
 import com.clahbot.ui.MainActivity
+import com.clahbot.util.PermissionHelper
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -106,6 +107,7 @@ class FloatingMenuService : Service() {
     private var retryUsed: Boolean = false
     private var injectToken: Int = 0
     private var lastNotificationMs: Long = 0L
+    private var lastGestureUpMs: Long = 0L
     private var recorded = mutableListOf<RecordedGesture>()
     private var recordStartMs: Long = 0L
     private var pausedAccumMs: Long = 0L
@@ -474,7 +476,7 @@ class FloatingMenuService : Service() {
     private fun startRecording() {
         if (recording) return
         if (ClahAccessibilityService.instance == null) {
-            toast("Enable the AutoClash accessibility service first")
+            toast(accessibilityHint())
             return
         }
         if (BotState.state.value.isPlayback) {
@@ -641,6 +643,7 @@ class FloatingMenuService : Service() {
 
     private fun commitGesture(durationMs: Long) {
         if (!recording) return
+        lastGestureUpMs = SystemClock.uptimeMillis()
         if (captureView == null) return
         // Normalize against the same display bounds playback will scale by.
         // Using the capture view's measured size here was the coordinate drift:
@@ -745,6 +748,8 @@ class FloatingMenuService : Service() {
             restoreCaptureTouch(token)
             return
         }
+        // Evidence for the lag discussion: time from finger-up to dispatch.
+        BotState.setReplayLatency(SystemClock.uptimeMillis() - lastGestureUpMs)
         val stroke = GestureDescription.StrokeDescription(path, 0L, duration)
         val description = GestureDescription.Builder().addStroke(stroke).build()
         val callback = object : AccessibilityService.GestureResultCallback() {
@@ -861,7 +866,7 @@ class FloatingMenuService : Service() {
             return
         }
         if (ClahAccessibilityService.instance == null) {
-            toast("Enable the AutoClash accessibility service")
+            toast(accessibilityHint())
             return
         }
         updateScreenSize()
@@ -933,11 +938,20 @@ class FloatingMenuService : Service() {
             speedMultiplier = current.speed,
             repeatMode = current.repeat,
             result = if (interrupted) AttackRecord.RESULT_INTERRUPTED else AttackRecord.RESULT_COMPLETED,
-            complete = !interrupted
+            complete = !interrupted,
+            // Playback is not an attack: the user must confirm it in history.
+            confirmed = false
         )
         scope.launch { attackRepository.add(record) }
         BotState.setInterrupted(false)
     }
+
+    private fun accessibilityHint(): String =
+        if (PermissionHelper.isAccessibilityEnabled(this)) {
+            "Accessibility is enabled but still connecting — try again in a second"
+        } else {
+            "Enable the AutoClash accessibility service first"
+        }
 
     private fun nextAttackId(): Long {
         val highest = attackRepository.records.value.maxOfOrNull { it.id } ?: 0L
@@ -947,7 +961,7 @@ class FloatingMenuService : Service() {
     private fun renderStats() {
         val view = controllerView ?: return
         val records = attackRepository.records.value
-        val summary = AttackStats.summarize(records)
+        val summary = AttackStats.summarize(AttackStats.confirmedOnly(records))
         val state = BotState.state.value
         view.findViewById<TextView>(R.id.tvStatsState).text = when {
             state.isPlayback -> BotState.activeMacroName.value?.let { "Playing: " + it } ?: "Playing"
@@ -959,7 +973,8 @@ class FloatingMenuService : Service() {
         view.findViewById<TextView>(R.id.tvStatsTotals).text = lootTotalsText(summary)
         view.findViewById<TextView>(R.id.tvStatsTime).text =
             "Measured " + formatDuration(summary.totalDurationMs) +
-                " · avg " + formatDuration(summary.averageDurationMs)
+                " · avg " + formatDuration(summary.averageDurationMs) +
+                " · replay " + BotState.replayLatencyMs.value + " ms"
         view.findViewById<TextView>(R.id.tvStatsRecent).text = if (records.isEmpty()) {
             "No attacks yet. Play a macro to start history."
         } else {

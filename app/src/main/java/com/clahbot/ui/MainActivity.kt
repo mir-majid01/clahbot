@@ -21,17 +21,21 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.PlayArrow
@@ -268,6 +272,8 @@ fun DashboardScreen(
             else -> null
         }
     }
+    val confirmedAttacks = remember(attacks) { attacks.filter { it.confirmed } }
+    val unconfirmedCount = attacks.size - confirmedAttacks.size
     val filteredAttacks = remember(attacks, historySince) {
         AttackStats.filter(attacks, historySince)
     }
@@ -428,10 +434,15 @@ fun DashboardScreen(
                         color = MaterialTheme.colorScheme.onBackground,
                         modifier = Modifier.weight(1f)
                     )
-                    Text("${attacks.size} recorded", fontSize = 11.sp, color = TextMuted)
+                    Text(
+                        if (unconfirmedCount == 0) "${confirmedAttacks.size} recorded"
+                        else "${confirmedAttacks.size} confirmed · $unconfirmedCount unconfirmed",
+                        fontSize = 11.sp,
+                        color = TextMuted
+                    )
                 }
             }
-            item { AttackSummaryCard(attacks) }
+            item { AttackSummaryCard(confirmedAttacks, unconfirmedCount) }
             item {
                 HistoryFilterRow(selected = historyFilter, onSelect = { historyFilter = it })
             }
@@ -442,6 +453,7 @@ fun DashboardScreen(
                     AttackHistoryRow(
                         record = record,
                         onEdit = { lootEditing = record },
+                        onConfirm = { lootEditing = record },
                         onDelete = { deletingAttack = record }
                     )
                 }
@@ -453,15 +465,19 @@ fun DashboardScreen(
         LootEditDialog(
             record = record,
             onDismiss = { lootEditing = null },
-            onSave = { gold, elixir, dark ->
+            onSave = { gold, elixir, dark, bonusGold, bonusElixir, bonusDark ->
                 scope.launch {
                     attackRepository.update(
                         record.copy(
                             gold = gold,
                             elixir = elixir,
                             darkElixir = dark,
+                            bonusGold = bonusGold,
+                            bonusElixir = bonusElixir,
+                            bonusDarkElixir = bonusDark,
                             lootSource = AttackRecord.LOOT_MANUAL,
-                            verified = gold != null || elixir != null || dark != null
+                            verified = gold != null || elixir != null || dark != null,
+                            confirmed = true
                         )
                     )
                 }
@@ -489,7 +505,7 @@ fun DashboardScreen(
 }
 
 @Composable
-private fun AttackSummaryCard(records: List<AttackRecord>) {
+private fun AttackSummaryCard(records: List<AttackRecord>, unconfirmedCount: Int) {
     val summary = remember(records) { AttackStats.summarize(records) }
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -527,12 +543,21 @@ private fun AttackSummaryCard(records: List<AttackRecord>) {
                 fontSize = 10.sp,
                 color = TextMuted
             )
+            if (unconfirmedCount > 0) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "$unconfirmedCount unconfirmed playback session(s) are not counted as attacks. " +
+                        "Confirm one with the check mark, or remove them in Settings.",
+                    fontSize = 10.sp,
+                    color = PauseAmber
+                )
+            }
             if (summary.count > 0 && summary.lootedCount == 0) {
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    "Loot is not read automatically. Attack timing is measured; tap a record to add gold, elixir or dark elixir.",
+                    "Loot is not read automatically. Tap a record to add gold, elixir or dark elixir.",
                     fontSize = 10.sp,
-                    color = PauseAmber
+                    color = TextMuted
                 )
             }
         }
@@ -601,7 +626,12 @@ private fun HistoryEmpty(hasAny: Boolean) {
 }
 
 @Composable
-private fun AttackHistoryRow(record: AttackRecord, onEdit: () -> Unit, onDelete: () -> Unit) {
+private fun AttackHistoryRow(
+    record: AttackRecord,
+    onEdit: () -> Unit,
+    onConfirm: () -> Unit,
+    onDelete: () -> Unit
+) {
     val dateStr = remember(record.startedAt) {
         SimpleDateFormat("MM/dd HH:mm", Locale.US).format(Date(record.startedAt))
     }
@@ -638,9 +668,9 @@ private fun AttackHistoryRow(record: AttackRecord, onEdit: () -> Unit, onDelete:
                 )
                 Text(
                     record.macroName + " · " + MacroTimeline.formatSpeed(record.speedMultiplier) +
-                        " · " + record.result.replaceFirstChar { it.uppercase() },
+                        " · " + if (record.confirmed) "Confirmed" else "Unconfirmed",
                     fontSize = 10.sp,
-                    color = TextMuted,
+                    color = if (record.confirmed) TextMuted else PauseAmber,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
@@ -659,6 +689,16 @@ private fun AttackHistoryRow(record: AttackRecord, onEdit: () -> Unit, onDelete:
                     }
                 } else {
                     Text("Loot not captured", fontSize = 10.sp, color = TextMuted)
+                }
+            }
+            if (!record.confirmed) {
+                IconButton(onClick = onConfirm, modifier = Modifier.size(36.dp)) {
+                    Icon(
+                        Icons.Default.Check,
+                        contentDescription = "Confirm attack",
+                        tint = ReadyGreen,
+                        modifier = Modifier.size(18.dp)
+                    )
                 }
             }
             IconButton(onClick = onEdit, modifier = Modifier.size(36.dp)) {
@@ -698,26 +738,35 @@ private fun LootChip(iconRes: Int, value: Long) {
 private fun LootEditDialog(
     record: AttackRecord,
     onDismiss: () -> Unit,
-    onSave: (Long?, Long?, Long?) -> Unit
+    onSave: (Long?, Long?, Long?, Long?, Long?, Long?) -> Unit
 ) {
     fun initial(value: Long?) = value?.toString() ?: ""
     var gold by remember(record.id) { mutableStateOf(initial(record.gold)) }
     var elixir by remember(record.id) { mutableStateOf(initial(record.elixir)) }
     var dark by remember(record.id) { mutableStateOf(initial(record.darkElixir)) }
+    var bonusGold by remember(record.id) { mutableStateOf(initial(record.bonusGold)) }
+    var bonusElixir by remember(record.id) { mutableStateOf(initial(record.bonusElixir)) }
+    var bonusDark by remember(record.id) { mutableStateOf(initial(record.bonusDarkElixir)) }
 
     fun parse(value: String): Long? = value.trim().toLongOrNull()?.takeIf { it >= 0 }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Attack loot") },
+        title = { Text(if (record.confirmed) "Edit attack loot" else "Confirm this attack") },
         text = {
-            Column {
+            Column(modifier = Modifier.heightIn(max = 430.dp).verticalScroll(rememberScrollState())) {
                 Text(
-                    "Enter what the result screen showed. Leave a field empty if you did not read it.",
+                    if (record.confirmed) {
+                        "Correct the values from the result screen. Empty means not captured."
+                    } else {
+                        "A playback is not an attack yet. Enter the loot from the result screen to confirm it."
+                    },
                     fontSize = 11.sp,
                     color = TextMuted
                 )
                 Spacer(Modifier.height(10.dp))
+                Text("You got", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface)
+                Spacer(Modifier.height(6.dp))
                 listOf(
                     Triple("Gold", gold) { v: String -> gold = v },
                     Triple("Elixir", elixir) { v: String -> elixir = v },
@@ -733,11 +782,33 @@ private fun LootEditDialog(
                     )
                     Spacer(Modifier.height(8.dp))
                 }
+                Text("Bonus (separate panel)", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface)
+                Spacer(Modifier.height(6.dp))
+                listOf(
+                    Triple("Bonus gold", bonusGold) { v: String -> bonusGold = v },
+                    Triple("Bonus elixir", bonusElixir) { v: String -> bonusElixir = v },
+                    Triple("Bonus dark", bonusDark) { v: String -> bonusDark = v }
+                ).forEach { (label, value, setter) ->
+                    OutlinedTextField(
+                        value = value,
+                        onValueChange = setter,
+                        label = { Text(label) },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(8.dp))
+                }
             }
         },
         confirmButton = {
-            TextButton(onClick = { onSave(parse(gold), parse(elixir), parse(dark)) }) {
-                Text("Save")
+            TextButton(onClick = {
+                onSave(
+                    parse(gold), parse(elixir), parse(dark),
+                    parse(bonusGold), parse(bonusElixir), parse(bonusDark)
+                )
+            }) {
+                Text(if (record.confirmed) "Save" else "Confirm")
             }
         },
         dismissButton = {

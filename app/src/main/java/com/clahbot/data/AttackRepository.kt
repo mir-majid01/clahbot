@@ -136,7 +136,7 @@ class AttackRepository(private val file: File) {
     )
 
     companion object {
-        const val SCHEMA_VERSION = 1
+        const val SCHEMA_VERSION = 2
         const val FILE_NAME = "attacks.json"
 
         @Volatile
@@ -176,6 +176,9 @@ internal fun sanitizeAttack(raw: AttackRecord): AttackRecord? {
             gold = raw.gold?.coerceAtLeast(0L),
             elixir = raw.elixir?.coerceAtLeast(0L),
             darkElixir = raw.darkElixir?.coerceAtLeast(0L),
+            bonusGold = raw.bonusGold?.coerceAtLeast(0L),
+            bonusElixir = raw.bonusElixir?.coerceAtLeast(0L),
+            bonusDarkElixir = raw.bonusDarkElixir?.coerceAtLeast(0L),
             result = result,
             lootSource = source,
             macroName = raw.macroName.orEmpty().ifBlank { "Unknown macro" },

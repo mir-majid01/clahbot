@@ -24,12 +24,36 @@ object PermissionHelper {
         context.startActivity(intent)
     }
 
+    /**
+     * True when our exact component is enabled in Settings, even if the service
+     * has not connected yet. AccessibilityManager lags behind Settings, which is
+     * what produced the "granted but still asked" loop.
+     */
     fun isAccessibilityEnabled(context: Context): Boolean {
         if (ClahAccessibilityService.isEnabled()) return true
-        val am = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager
-        val enabled = am.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK)
-        return enabled.any { it.resolveInfo.serviceInfo.packageName == context.packageName }
+        val resolver = context.contentResolver
+        val master = Settings.Secure.getInt(
+            resolver,
+            Settings.Secure.ACCESSIBILITY_ENABLED,
+            0
+        ) == 1
+        if (!master) return false
+        val list = Settings.Secure.getString(
+            resolver,
+            Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+        ).orEmpty()
+        return list.split(:).any {
+            it.equals(ACCESSIBILITY_COMPONENT, ignoreCase = true) ||
+                it.equals(ACCESSIBILITY_COMPONENT_SHORT, ignoreCase = true)
+        }
     }
+
+    fun isAccessibilityConnected(): Boolean = ClahAccessibilityService.isEnabled()
+
+    private const val ACCESSIBILITY_COMPONENT =
+        "com.clahbot/com.clahbot.service.ClahAccessibilityService"
+    private const val ACCESSIBILITY_COMPONENT_SHORT =
+        "com.clahbot/.service.ClahAccessibilityService"
 
     fun openAccessibilitySettings(context: Context) {
         val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {

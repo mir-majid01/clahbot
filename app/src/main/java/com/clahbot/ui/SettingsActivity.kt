@@ -122,6 +122,7 @@ fun SettingsScreen(
     var tick by remember { mutableStateOf(0) }
     var showClearAll by remember { mutableStateOf(false) }
     var showClearHistory by remember { mutableStateOf(false) }
+    var showRemoveUnconfirmed by remember { mutableStateOf(false) }
     var showPrivacy by remember { mutableStateOf(false) }
     var showLicences by remember { mutableStateOf(false) }
 
@@ -158,6 +159,29 @@ fun SettingsScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showClearAll = false }) { Text("Cancel") }
+            }
+        )
+    }
+
+    if (showRemoveUnconfirmed) {
+        val unconfirmed = attacks.filter { !it.confirmed }
+        AlertDialog(
+            onDismissRequest = { showRemoveUnconfirmed = false },
+            title = { Text("Remove unconfirmed sessions?") },
+            text = {
+                Text(
+                    "This deletes ${unconfirmed.size} playback session(s) that were never confirmed as attacks. " +
+                        "Confirmed attacks are kept."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    scope.launch { unconfirmed.forEach { attackRepository.delete(it.id) } }
+                    showRemoveUnconfirmed = false
+                }) { Text("Remove", color = RecordRed) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showRemoveUnconfirmed = false }) { Text("Cancel") }
             }
         )
     }
@@ -398,6 +422,20 @@ fun SettingsScreen(
                     InfoRow("Recorded attacks", attacks.size.toString())
                     InfoRow("Storage used", formatBytes(attackRepository.storageBytes()))
                     Spacer(Modifier.height(10.dp))
+                    val unconfirmedCount = attacks.count { !it.confirmed }
+                    Button(
+                        onClick = { showRemoveUnconfirmed = true },
+                        enabled = unconfirmedCount > 0,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = PauseAmber,
+                            contentColor = Color(0xFF1C1917),
+                            disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant
+                        )
+                    ) {
+                        Text("Remove $unconfirmedCount unconfirmed session(s)", fontSize = 12.sp)
+                    }
+                    Spacer(Modifier.height(8.dp))
                     Button(
                         onClick = { showClearHistory = true },
                         enabled = attacks.isNotEmpty(),
@@ -411,8 +449,9 @@ fun SettingsScreen(
                     }
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        "Attack timing is measured locally. Loot values are only stored when you " +
-                            "enter or correct them; the app never invents a number it did not observe.",
+                        "Only confirmed records count as attacks. Playback sessions stay unconfirmed " +
+                            "until you enter the result-screen loot. Loot values are only stored when you " +
+                            "enter them; the app never invents a number it did not observe.",
                         fontSize = 10.sp,
                         color = TextMuted
                     )

@@ -2,6 +2,7 @@ package com.clahbot.service
 
 import android.accessibilityservice.AccessibilityService
 import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityWindowInfo
 
 class ClahAccessibilityService : AccessibilityService() {
 
@@ -35,10 +36,40 @@ class ClahAccessibilityService : AccessibilityService() {
 
         fun isEnabled(): Boolean = instance != null
 
-        /** Unknown (no events yet) counts as the game so we never pause falsely. */
+        /**
+         * Reads the focused application window right now. Our own overlay is a
+         * TYPE_SYSTEM window, so filtering to TYPE_APPLICATION skips the
+         * controller instead of mistaking it for the foreground app.
+         */
+        fun currentForegroundPackage(): String? {
+            val service = instance ?: return null
+            val windows = try {
+                service.windows
+            } catch (_: Exception) {
+                null
+            } ?: return null
+            val apps = windows.filter { it.type == AccessibilityWindowInfo.TYPE_APPLICATION }
+            val window = apps.firstOrNull { it.isActive }
+                ?: apps.firstOrNull { it.isFocused }
+                ?: apps.firstOrNull()
+                ?: return null
+            return try {
+                window.root?.packageName?.toString()
+            } catch (_: Exception) {
+                null
+            }
+        }
+
+        /**
+         * Unknown is treated as the game: a stale or missing signal must not
+         * trap playback in a permanent pause.
+         */
         fun isGameForeground(): Boolean {
-            val pkg = foregroundPackage ?: return true
+            val pkg = currentForegroundPackage() ?: foregroundPackage ?: return true
             return pkg.startsWith("com.supercell")
         }
+
+        fun foregroundLabel(): String =
+            currentForegroundPackage() ?: foregroundPackage ?: "another app"
     }
 }

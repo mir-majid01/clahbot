@@ -50,6 +50,9 @@ object BotState {
     private val _interrupted = MutableStateFlow(false)
     val interrupted: StateFlow<Boolean> = _interrupted.asStateFlow()
 
+    private val _replayLatencyMs = MutableStateFlow(0L)
+    val replayLatencyMs: StateFlow<Long> = _replayLatencyMs.asStateFlow()
+
     private val _recordedGestureCount = MutableStateFlow(0)
     val recordedGestureCount: StateFlow<Int> = _recordedGestureCount.asStateFlow()
 
@@ -77,6 +80,10 @@ object BotState {
 
     fun setInterrupted(value: Boolean) {
         _interrupted.value = value
+    }
+
+    fun setReplayLatency(ms: Long) {
+        _replayLatencyMs.value = ms.coerceAtLeast(0L)
     }
 
     fun setRecordedCount(count: Int) {

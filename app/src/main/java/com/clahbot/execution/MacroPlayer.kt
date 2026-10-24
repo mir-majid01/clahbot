@@ -77,10 +77,12 @@ class MacroPlayer(
                     for (gesture in gestures) {
                         if (!isActive || stopped) break
                         if (!ClahAccessibilityService.isGameForeground()) {
-                            BotState.setInterrupted(true)
-                            paused = true
-                            BotState.setState(ControllerState.PLAYBACK_PAUSED)
-                            BotState.setStatus("Paused — Clash of Clans is not in front")
+                            if (!paused) {
+                                BotState.setInterrupted(true)
+                                paused = true
+                                BotState.setState(ControllerState.PLAYBACK_PAUSED)
+                                BotState.setStatus(pauseReason())
+                            }
                         }
                         awaitResume()
 
@@ -125,6 +127,15 @@ class MacroPlayer(
             }
         }
         job = newJob
+    }
+
+    private fun pauseReason(): String {
+        val front = ClahAccessibilityService.foregroundLabel()
+        return if (front.startsWith("com.clahbot")) {
+            "Paused — open Clash of Clans, then press Resume"
+        } else {
+            "Paused — " + front + " is in front"
+        }
     }
 
     private suspend fun awaitResume() {

@@ -16,15 +16,25 @@ data class AttackRecord(
     val gold: Long? = null,
     val elixir: Long? = null,
     val darkElixir: Long? = null,
+    /** Loot from the separate bonus panel, never folded into the values above. */
+    val bonusGold: Long? = null,
+    val bonusElixir: Long? = null,
+    val bonusDarkElixir: Long? = null,
     /** "none" (never observed) or "manual" (entered/corrected by the user). */
     val lootSource: String = LOOT_NONE,
     /** "unknown", "completed", or "interrupted". */
     val result: String = RESULT_UNKNOWN,
     val verified: Boolean = false,
     val complete: Boolean = true,
+    /**
+     * A playback session is not an attack. Only a record the user confirmed
+     * (or a future verified result-screen capture) counts as an attack.
+     */
+    val confirmed: Boolean = false,
     val note: String = ""
 ) {
     val hasLoot: Boolean get() = gold != null || elixir != null || darkElixir != null
+    val hasBonus: Boolean get() = bonusGold != null || bonusElixir != null || bonusDarkElixir != null
 
     companion object {
         const val LOOT_NONE = "none"
@@ -46,6 +56,9 @@ data class AttackSummary(
 )
 
 object AttackStats {
+
+    fun confirmedOnly(records: List<AttackRecord>): List<AttackRecord> =
+        records.filter { it.confirmed }
 
     fun summarize(records: List<AttackRecord>): AttackSummary {
         if (records.isEmpty()) return AttackSummary()
