@@ -118,6 +118,16 @@
                     android:textStyle="bold" />
 
                 <TextView
+                    android:id="@+id/tvRecordMode"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="3dp"
+                    android:gravity="center"
+                    android:text="Live relay · game responds"
+                    android:textColor="#22C55E"
+                    android:textSize="9sp" />
+
+                <TextView
                     android:id="@+id/tvLibraryLabel"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"

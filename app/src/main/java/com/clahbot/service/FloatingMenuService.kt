@@ -13,6 +13,7 @@ import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Path
+import android.graphics.Rect
 import android.graphics.drawable.ColorDrawable
 import android.os.Build
 import android.os.Handler
@@ -51,10 +52,12 @@ import com.clahbot.data.models.AttackSummary
 import com.clahbot.data.ControllerState
 import com.clahbot.data.MacroRepository
 import com.clahbot.data.MacroSelection
+import com.clahbot.data.RecordingMode
 import com.clahbot.data.SettingsStore
 import com.clahbot.data.models.GesturePoint
 import com.clahbot.data.models.Macro
 import com.clahbot.data.models.RecordedGesture
+import com.clahbot.execution.LiveGestureTracker
 import com.clahbot.execution.MacroPlayer
 import com.clahbot.execution.MacroTimeline
 import com.clahbot.ui.MainActivity
@@ -73,10 +76,11 @@ import kotlin.math.abs
 /**
  * Owns the floating controller, the touch recorder and macro playback.
  *
- * Window layering: the touch capture surface is a full screen window, and the
- * controller is re-added after it so the controller is always topmost. A touch
- * on a controller control therefore never reaches the capture surface and is
- * never recorded as gameplay input.
+ * Live recording relays the physical pointer through the accessibility
+ * TouchInteractionController, so no capture window is used. Capture-only mode
+ * still uses a full screen touch surface with the controller layered above it.
+ * In live mode the controller area is excluded through the framework's
+ * touch-exploration passthrough region.
  */
 class FloatingMenuService : Service() {
 
@@ -91,6 +95,8 @@ class FloatingMenuService : Service() {
     private var controllerParams: WindowManager.LayoutParams? = null
     private var captureView: View? = null
     private var captureParams: WindowManager.LayoutParams? = null
+    private var liveRelay: LiveTouchRelay? = null
+    private var liveRecording: Boolean = false
 
     private var player: MacroPlayer? = null
 
@@ -159,6 +165,7 @@ class FloatingMenuService : Service() {
                         // Window detached.
                     }
                 }
+                refreshUi()
             }
         }
     }
@@ -191,11 +198,15 @@ class FloatingMenuService : Service() {
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
         updateScreenSize()
-        if (recording) {
-            stopRecording()
-            BotState.setStatus("Screen changed — recording stopped")
-            toast("Recording stopped: screen changed")
+        if (!recording) return
+        if (liveRecording && BotState.state.value == ControllerState.RECORDING_PAUSED) {
+            updateControllerPassthrough()
+            refreshUi()
+            return
         }
+        stopRecording()
+        BotState.setStatus("Screen changed — recording stopped")
+        toast("Recording stopped: screen changed")
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -205,6 +216,7 @@ class FloatingMenuService : Service() {
         BotState.setInterrupted(true)
         stopPlayback()
         stopRecording(silent = true)
+        finishLiveRelay()
         removeCapture()
         removeController()
         scope.cancel()
@@ -409,6 +421,7 @@ class FloatingMenuService : Service() {
 
                 MotionEvent.ACTION_UP -> {
                     if (!moved) onTap()
+                    updateControllerPassthrough()
                     true
                 }
 
@@ -439,6 +452,7 @@ class FloatingMenuService : Service() {
         } catch (_: Exception) {
             // Ignore.
         }
+        view.post { updateControllerPassthrough() }
         refreshUi()
     }
 
@@ -453,6 +467,7 @@ class FloatingMenuService : Service() {
         } catch (_: Exception) {
             // Ignore.
         }
+        view.post { updateControllerPassthrough() }
         refreshUi()
     }
 
@@ -473,7 +488,8 @@ class FloatingMenuService : Service() {
 
     private fun startRecording() {
         if (recording) return
-        if (ClahAccessibilityService.instance == null) {
+        val a11y = ClahAccessibilityService.instance
+        if (a11y == null) {
             toast(accessibilityHint())
             return
         }
@@ -492,17 +508,93 @@ class FloatingMenuService : Service() {
         pausedAtMs = 0L
         downTime = 0L
         recordStartMs = SystemClock.uptimeMillis()
-        recording = true
         updateScreenSize()
-
         BotState.clearRecording()
-        BotState.setState(ControllerState.RECORDING)
-        BotState.setStatus("Recording (game input paused)")
-        toast("Recording: the game will not respond. Taps are captured, not played.")
-        attachCaptureSurface()
+
+        val mode = settingsStore.settings.value.recordingMode
+        if (mode == RecordingMode.LIVE_RELAY) {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+                BotState.setState(ControllerState.ERROR)
+                BotState.setStatus("Live relay requires Android 13 or newer")
+                toast("Live recording needs Android 13+. Choose Capture only in Settings.")
+                refreshUi()
+                return
+            }
+            val relay = LiveTouchRelay(
+                service = a11y,
+                shouldCapture = { x, y -> !isPointOnController(x, y) },
+                onGesture = { snapshot -> recordLiveGesture(snapshot) },
+                onUnavailable = { onLiveRelayUnavailable() }
+            )
+            if (!relay.start()) {
+                relay.stop()
+                BotState.setState(ControllerState.ERROR)
+                BotState.setStatus("Live relay is not available on this device")
+                toast("Live recording could not start. Nothing was recorded.")
+                refreshUi()
+                return
+            }
+            liveRelay = relay
+            liveRecording = true
+            a11y.attachLiveRelay(relay)
+            ClahAccessibilityService.liveRelayLost = { onAccessibilityLost() }
+            recording = true
+            setControllerKeepScreenOn(true)
+            updateControllerPassthrough()
+            BotState.setState(ControllerState.RECORDING)
+            BotState.setStatus("Recording live — touches reach the game")
+            toast("Live recording: the game responds. Play normally.")
+        } else {
+            liveRecording = false
+            recording = true
+            BotState.setState(ControllerState.RECORDING)
+            BotState.setStatus("Recording (capture only) — game ignores touches")
+            toast("Capture-only recording: the game will not respond to touches.")
+            attachCaptureSurface()
+        }
         handler.removeCallbacks(timerRunnable)
         handler.post(timerRunnable)
         refreshUi()
+    }
+
+    private fun recordLiveGesture(snapshot: LiveGestureTracker.Snapshot) {
+        if (!recording) return
+        commitScreenGesture(snapshot.points, snapshot.startTimeMs, snapshot.durationMs)
+    }
+
+    private fun onLiveRelayUnavailable() {
+        if (!recording || !liveRecording) return
+        Log.e(TAG, "Live relay did not take over touches; stopping recording")
+        stopRecording()
+        BotState.setStatus("Live relay unavailable — recording stopped")
+        toast("Live recording is unavailable on this device.")
+    }
+
+    private fun onAccessibilityLost() {
+        if (!liveRecording) return
+        liveRecording = false
+        recording = false
+        liveRelay = null
+        ClahAccessibilityService.liveRelayLost = null
+        handler.removeCallbacks(timerRunnable)
+        setControllerKeepScreenOn(false)
+        BotState.setRecordedCount(recorded.size)
+        BotState.setState(if (recorded.isEmpty()) ControllerState.READY else ControllerState.REVIEW)
+        BotState.setStatus("Accessibility service disconnected — recording stopped")
+        toast("Accessibility service disconnected. Recording stopped.")
+        refreshUi()
+    }
+
+    private fun finishLiveRelay() {
+        val relay = liveRelay
+        liveRelay = null
+        liveRecording = false
+        if (relay != null) {
+            relay.stop()
+            ClahAccessibilityService.instance?.detachLiveRelay(relay)
+        }
+        ClahAccessibilityService.liveRelayLost = null
+        setControllerKeepScreenOn(false)
     }
 
     private fun toggleRecordingPause() {
@@ -510,24 +602,92 @@ class FloatingMenuService : Service() {
             ControllerState.RECORDING -> {
                 pausedAtMs = SystemClock.uptimeMillis()
                 BotState.setState(ControllerState.RECORDING_PAUSED)
-                BotState.setStatus("Recording paused")
+                BotState.setStatus(
+                    if (liveRecording) "Recording paused — game responds normally"
+                    else "Recording paused"
+                )
                 pathPoints.clear()
-                // Paused: stop capturing and let the game take input again.
-                setCaptureTouchable(false)
+                if (liveRecording) {
+                    liveRelay?.setEnabled(false)
+                } else {
+                    // Paused: stop capturing and let the game take input again.
+                    setCaptureTouchable(false)
+                }
             }
 
             ControllerState.RECORDING_PAUSED -> {
+                if (liveRecording &&
+                    (ClahAccessibilityService.instance == null || liveRelay == null)
+                ) {
+                    onAccessibilityLost()
+                    return
+                }
                 pausedAccumMs += SystemClock.uptimeMillis() - pausedAtMs
                 pausedAtMs = 0L
                 BotState.setState(ControllerState.RECORDING)
-                BotState.setStatus("Recording (game input paused)")
-                setCaptureTouchable(true)
+                BotState.setStatus(
+                    if (liveRecording) "Recording live — touches reach the game"
+                    else "Recording (capture only) — game ignores touches"
+                )
+                if (liveRecording) {
+                    liveRelay?.setEnabled(true)
+                    updateControllerPassthrough()
+                } else {
+                    setCaptureTouchable(true)
+                }
             }
 
             else -> return
         }
         updateRecordingNotification()
         refreshUi()
+    }
+
+    private fun controllerVisibleBounds(): Rect? {
+        val root = controllerView ?: return null
+        val panel = root.findViewById<View>(R.id.panel)
+        val bubble = root.findViewById<View>(R.id.bubble)
+        val target = when {
+            collapsed && bubble.visibility == View.VISIBLE -> bubble
+            !collapsed && panel.visibility == View.VISIBLE -> panel
+            bubble.visibility == View.VISIBLE -> bubble
+            else -> panel
+        }
+        if (target.width <= 0 || target.height <= 0) return null
+        val location = IntArray(2)
+        target.getLocationOnScreen(location)
+        val pad = dp(10)
+        return Rect(
+            location[0] - pad,
+            location[1] - pad,
+            location[0] + target.width + pad,
+            location[1] + target.height + pad
+        )
+    }
+
+    private fun isPointOnController(x: Float, y: Float): Boolean {
+        val bounds = controllerVisibleBounds() ?: return false
+        return x >= bounds.left && x <= bounds.right &&
+            y >= bounds.top && y <= bounds.bottom
+    }
+
+    private fun updateControllerPassthrough() {
+        liveRelay?.updateControllerRegion(controllerVisibleBounds())
+    }
+
+    private fun setControllerKeepScreenOn(on: Boolean) {
+        val view = controllerView ?: return
+        val params = controllerParams ?: return
+        val flag = WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
+        val keep = on && settingsStore.settings.value.keepScreenAwake
+        val updated = if (keep) params.flags or flag else params.flags and flag.inv()
+        if (updated == params.flags) return
+        params.flags = updated
+        try {
+            windowManager.updateViewLayout(view, params)
+        } catch (_: Exception) {
+            // Window detached.
+        }
     }
 
     private fun elapsedRecordingMs(): Long {
@@ -652,39 +812,48 @@ class FloatingMenuService : Service() {
 
     private fun commitGesture(durationMs: Long) {
         if (!recording) return
-        if (captureView == null) return
-        // Normalize against the same display bounds playback will scale by.
-        // Using the capture view's measured size here was the coordinate drift:
-        // its frame can be inset by system bars/cutout while playback scales by
-        // WindowMetrics.bounds, so every stored point was slightly displaced.
-        val width = screenWidth
-        val height = screenHeight
-        if (width <= 0 || height <= 0) {
+        val view = captureView
+        if (view == null) {
             pathPoints.clear()
             return
         }
-
         val rawPoints = pathPoints.toList()
         pathPoints = mutableListOf()
         if (rawPoints.isEmpty()) return
-
-        val sampled = MacroTimeline.decimate(rawPoints)
         // event.x/y are relative to the capture view. Convert once to screen
-        // coordinates before storing them, so a window
-        // that is not anchored at (0,0) cannot shift the macro.
+        // coordinates before storing them, so a window that is not anchored at
+        // (0,0) cannot shift the macro.
         val origin = IntArray(2)
-        captureView?.getLocationOnScreen(origin)
+        view.getLocationOnScreen(origin)
         val screenPoints = if (origin[0] == 0 && origin[1] == 0) {
-            sampled
+            rawPoints
         } else {
-            sampled.map { GesturePoint(it.x + origin[0], it.y + origin[1], it.t) }
+            rawPoints.map { GesturePoint(it.x + origin[0], it.y + origin[1], it.t) }
         }
-        val deviation = MacroTimeline.maxDeviationPx(screenPoints)
+        commitScreenGesture(screenPoints, downTime, durationMs)
+    }
+
+    /**
+     * Normalizes screen-space samples against the same display bounds playback
+     * uses. Live samples already arrive in screen coordinates; capture-only
+     * samples are converted once by [commitGesture].
+     */
+    private fun commitScreenGesture(
+        screenPoints: List<GesturePoint>,
+        startUptimeMs: Long,
+        durationMs: Long
+    ) {
+        if (!recording) return
+        val width = screenWidth
+        val height = screenHeight
+        if (width <= 0 || height <= 0 || screenPoints.isEmpty()) return
+        val sampled = MacroTimeline.decimate(screenPoints)
+        val deviation = MacroTimeline.maxDeviationPx(sampled)
         val type = MacroTimeline.classify(deviation, durationMs)
-        val normalized = MacroTimeline.normalize(screenPoints, width, height)
+        val normalized = MacroTimeline.normalize(sampled, width, height)
         if (normalized.isEmpty()) return
 
-        val startInRecording = (downTime - recordStartMs - pausedAccumMs).coerceAtLeast(0L)
+        val startInRecording = (startUptimeMs - recordStartMs - pausedAccumMs).coerceAtLeast(0L)
         val gesture = RecordedGesture(
             id = ++gestureSeq,
             timestampMs = startInRecording,
@@ -698,14 +867,13 @@ class FloatingMenuService : Service() {
         )
         recorded.add(gesture)
         capturedGestures++
-        // Recording never injects: the captured touch is stored and the game
-        // below is deliberately not fed anything while recording.
         BotState.setRecordedCount(recorded.size)
         updateRecordingInfo()
         val now = SystemClock.uptimeMillis()
         if (now - lastStatusMs > STATUS_THROTTLE_MS) {
             lastStatusMs = now
-            BotState.setStatus("Recording (input paused) — " + recorded.size + " gesture(s)")
+            val mode = if (liveRecording) "live" else "capture only"
+            BotState.setStatus("Recording ($mode) — ${recorded.size} gesture(s)")
         }
         if (now - lastNotificationMs > NOTIFICATION_THROTTLE_MS) {
             lastNotificationMs = now
@@ -716,6 +884,7 @@ class FloatingMenuService : Service() {
     private fun stopRecording(silent: Boolean = false) {
         if (!recording) return
         if (recorded.isEmpty()) rejectedGestures++
+        finishLiveRelay()
         recording = false
         pathPoints.clear()
         handler.removeCallbacks(timerRunnable)
@@ -742,6 +911,7 @@ class FloatingMenuService : Service() {
     }
 
     private fun discardRecording(quiet: Boolean = false) {
+        finishLiveRelay()
         recorded.clear()
         pathPoints.clear()
         BotState.clearRecording()
@@ -1113,8 +1283,18 @@ class FloatingMenuService : Service() {
         view.findViewById<ImageButton>(R.id.btnRename).isEnabled = selectedId > 0
         view.findViewById<ImageButton>(R.id.btnDelete).isEnabled = selectedId > 0
 
-        view.findViewById<TextView>(R.id.tvRecState).text =
-            if (state == ControllerState.RECORDING_PAUSED) "PAUSED" else "REC"
+        val recordMode = settingsStore.settings.value.recordingMode
+        val liveMode = recordMode == RecordingMode.LIVE_RELAY
+        view.findViewById<TextView>(R.id.tvRecordMode).apply {
+            text = if (liveMode) "Live relay · game responds"
+            else "Capture only · game ignores touch"
+            setTextColor(if (liveMode) 0xFF22C55E.toInt() else 0xFFF59E0B.toInt())
+        }
+        view.findViewById<TextView>(R.id.tvRecState).text = when {
+            state == ControllerState.RECORDING_PAUSED -> "PAUSED"
+            liveRecording -> "REC LIVE"
+            else -> "REC"
+        }
         view.findViewById<Button>(R.id.btnRecPause).text =
             if (state == ControllerState.RECORDING_PAUSED) "Resume" else "Pause"
         view.findViewById<TextView>(R.id.tvRecTimer).text = formatClock(elapsedRecordingMs())
@@ -1166,7 +1346,13 @@ class FloatingMenuService : Service() {
         val count = BotState.recordedGestureCount.value
         when (state) {
             ControllerState.RECORDING ->
-                updateNotification(getString(R.string.notification_recording, count))
+                updateNotification(
+                    getString(
+                        if (liveRecording) R.string.notification_recording_live
+                        else R.string.notification_recording_capture,
+                        count
+                    )
+                )
 
             ControllerState.RECORDING_PAUSED ->
                 updateNotification("Recording paused")
@@ -1347,6 +1533,7 @@ class FloatingMenuService : Service() {
     private fun closeEverything() {
         stopPlayback()
         stopRecording(silent = true)
+        finishLiveRelay()
         removeCapture()
         removeController()
         BotState.clearActiveMacro()

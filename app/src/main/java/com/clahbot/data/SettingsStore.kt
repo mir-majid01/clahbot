@@ -10,9 +10,12 @@ import kotlinx.coroutines.flow.asStateFlow
 
 enum class ThemeMode { DARK, LIGHT, SYSTEM }
 
+enum class RecordingMode { LIVE_RELAY, CAPTURE_ONLY }
+
 data class AppSettings(
     val defaultSpeed: Float = 1f,
     val defaultRepeat: String = Macro.REPEAT_ONCE,
+    val recordingMode: RecordingMode = RecordingMode.LIVE_RELAY,
     val hapticFeedback: Boolean = true,
     val keepScreenAwake: Boolean = true,
     val startMinimized: Boolean = false,
@@ -32,9 +35,12 @@ class SettingsStore private constructor(private val prefs: SharedPreferences) {
 
     private fun read(): AppSettings {
         val themeName = prefs.getString(KEY_THEME, ThemeMode.DARK.name) ?: ThemeMode.DARK.name
+        val recordingName = prefs.getString(KEY_RECORDING_MODE, null)
         return AppSettings(
             defaultSpeed = MacroTimeline.clampSpeed(prefs.getFloat(KEY_SPEED, 1f)),
             defaultRepeat = normalizeRepeat(prefs.getString(KEY_REPEAT, Macro.REPEAT_ONCE)),
+            recordingMode = runCatching { RecordingMode.valueOf(recordingName ?: "") }
+                .getOrDefault(RecordingMode.LIVE_RELAY),
             hapticFeedback = prefs.getBoolean(KEY_HAPTIC, true),
             keepScreenAwake = prefs.getBoolean(KEY_AWAKE, true),
             startMinimized = prefs.getBoolean(KEY_MINIMIZED, false),
@@ -53,6 +59,7 @@ class SettingsStore private constructor(private val prefs: SharedPreferences) {
         prefs.edit()
             .putFloat(KEY_SPEED, normalized.defaultSpeed)
             .putString(KEY_REPEAT, normalized.defaultRepeat)
+            .putString(KEY_RECORDING_MODE, normalized.recordingMode.name)
             .putBoolean(KEY_HAPTIC, normalized.hapticFeedback)
             .putBoolean(KEY_AWAKE, normalized.keepScreenAwake)
             .putBoolean(KEY_MINIMIZED, normalized.startMinimized)
@@ -74,6 +81,7 @@ class SettingsStore private constructor(private val prefs: SharedPreferences) {
         private const val PREFS = "autoclash_settings"
         private const val KEY_SPEED = "default_speed"
         private const val KEY_REPEAT = "default_repeat"
+        private const val KEY_RECORDING_MODE = "recording_mode"
         private const val KEY_HAPTIC = "haptic"
         private const val KEY_AWAKE = "keep_awake"
         private const val KEY_MINIMIZED = "start_minimized"

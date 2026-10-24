@@ -63,6 +63,7 @@ import com.clahbot.data.AttackRepository
 import com.clahbot.data.BotState
 import com.clahbot.data.ControllerState
 import com.clahbot.data.MacroRepository
+import com.clahbot.data.RecordingMode
 import com.clahbot.data.SettingsStore
 import com.clahbot.data.ThemeMode
 import com.clahbot.data.models.Macro
@@ -275,6 +276,42 @@ fun SettingsScreen(
         ) {
             item {
                 SettingsSection("Recording & playback") {
+                    Text(
+                        "Recording mode",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(
+                            selected = settings.recordingMode == RecordingMode.LIVE_RELAY,
+                            onClick = {
+                                onUpdate { it.copy(recordingMode = RecordingMode.LIVE_RELAY) }
+                            },
+                            label = { Text("Live relay", fontSize = 11.sp) }
+                        )
+                        FilterChip(
+                            selected = settings.recordingMode == RecordingMode.CAPTURE_ONLY,
+                            onClick = {
+                                onUpdate { it.copy(recordingMode = RecordingMode.CAPTURE_ONLY) }
+                            },
+                            label = { Text("Capture only", fontSize = 11.sp) }
+                        )
+                    }
+                    Text(
+                        if (settings.recordingMode == RecordingMode.LIVE_RELAY) {
+                            "Touches reach Clash of Clans while recording. This is the intended mode."
+                        } else {
+                            "The game will not respond to touches while recording. Use only when you deliberately want blocked input."
+                        },
+                        fontSize = 10.sp,
+                        color = if (settings.recordingMode == RecordingMode.LIVE_RELAY) {
+                            ReadyGreen
+                        } else {
+                            PauseAmber
+                        }
+                    )
+                    Spacer(Modifier.height(12.dp))
                     StepperRow(
                         title = "Default speed",
                         value = MacroTimeline.formatSpeed(settings.defaultSpeed),

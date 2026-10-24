@@ -1,11 +1,13 @@
 <resources>
     <string name="app_name">AutoClash</string>
-    <string name="accessibility_service_description">AutoClash replays the taps and swipes you record. It does not read screen content. Educational use only.</string>
+    <string name="accessibility_service_description">AutoClash records the taps and swipes you make, relays them to the app while you record, and can replay saved macros. It does not read screen content. Educational use only.</string>
     <string name="notification_channel_name">AutoClash Controller</string>
     <string name="notification_channel_desc">Keeps the floating controller and macro playback alive</string>
     <string name="notification_title">AutoClash</string>
     <string name="notification_idle">Controller ready</string>
     <string name="notification_recording">Recording — %1$d gesture(s)</string>
+    <string name="notification_recording_live">Live recording — %1$d gesture(s)</string>
+    <string name="notification_recording_capture">Capture only (game ignores touches) — %1$d gesture(s)</string>
     <string name="notification_playing">Playing %1$s</string>
     <string name="notification_paused">Playback paused</string>
     <string name="action_stop">Stop</string>
