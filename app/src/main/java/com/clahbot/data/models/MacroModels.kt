@@ -10,6 +10,14 @@ data class GesturePoint(
     val t: Long = 0L
 )
 
+/** One contact path inside a gesture. Times are relative to this path's start. */
+data class GesturePath(
+    val startOffsetMs: Long = 0L,
+    val points: List<GesturePoint> = emptyList()
+) {
+    val durationMs: Long get() = points.lastOrNull()?.t ?: 0L
+}
+
 data class RecordedGesture(
     val id: Int = 0,
     val timestampMs: Long = 0,
@@ -21,7 +29,9 @@ data class RecordedGesture(
     val normalizedEndY: Float = 0f,
     val pressure: Float = 0f,
     /** Full movement path. Empty on macros recorded by schema version 1. */
-    val points: List<GesturePoint> = emptyList()
+    val points: List<GesturePoint> = emptyList(),
+    /** Additional simultaneous contacts; empty for ordinary single-finger gestures. */
+    val paths: List<GesturePath> = emptyList()
 )
 
 data class Macro(

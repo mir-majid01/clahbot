@@ -1,5 +1,6 @@
 package com.clahbot.execution
 
+import com.clahbot.data.models.GesturePath
 import com.clahbot.data.models.GesturePoint
 import com.clahbot.data.models.Macro
 import com.clahbot.data.models.RecordedGesture
@@ -26,6 +27,14 @@ object MacroTimeline {
     const val MIN_TAP_STROKE_MS = 24L
     const val MIN_LONG_PRESS_STROKE_MS = 300L
     const val MIN_DRAG_STROKE_MS = 40L
+    const val MAX_STROKE_COUNT = 10
+
+    /** A stroke ready to be turned into an Android gesture description. */
+    data class PlaybackPath(
+        val points: List<GesturePoint>,
+        val startOffsetMs: Long,
+        val durationMs: Long
+    )
 
     fun clampSpeed(speed: Float): Float {
         if (!speed.isFinite()) return 1f
@@ -52,15 +61,17 @@ object MacroTimeline {
         return (recordedGapMs / factor).toLong().coerceIn(0L, MAX_GAP_MS)
     }
 
-    fun strokeDuration(gesture: RecordedGesture, speed: Float): Long {
-        val factor = clampSpeed(speed)
-        val scaled = (gesture.durationMs / factor).toLong()
-        val min = when (gesture.gestureType) {
+    fun strokeDuration(gesture: RecordedGesture, speed: Float): Long =
+        scaledStrokeMs(gesture.gestureType, gesture.durationMs, clampSpeed(speed))
+
+    private fun scaledStrokeMs(type: String, durationMs: Long, factor: Float): Long {
+        val scaled = (durationMs / factor).toLong()
+        val min = when (type) {
             "swipe" -> MIN_DRAG_STROKE_MS
             "long_press" -> MIN_LONG_PRESS_STROKE_MS
             else -> MIN_TAP_STROKE_MS
         }
-        val max = when (gesture.gestureType) {
+        val max = when (type) {
             "long_press", "swipe" -> MAX_STROKE_MS
             else -> 120L
         }
@@ -184,7 +195,51 @@ object MacroTimeline {
         return if (gesture.points.size >= 2) gesture.points else fallbackPoints(gesture)
     }
 
+    fun effectivePaths(gesture: RecordedGesture): List<GesturePath> {
+        val stored = gesture.paths.filter { it.points.isNotEmpty() }
+        if (stored.isNotEmpty()) return stored
+        return listOf(GesturePath(0L, effectivePoints(gesture)))
+    }
+
+    fun playbackPaths(
+        gesture: RecordedGesture,
+        speed: Float,
+        width: Int,
+        height: Int
+    ): List<PlaybackPath> {
+        if (width <= 0 || height <= 0) return emptyList()
+        val factor = clampSpeed(speed)
+        val storedPaths = gesture.paths.filter { it.points.isNotEmpty() }
+        val useStoredPaths = storedPaths.isNotEmpty()
+        val paths = if (useStoredPaths) {
+            storedPaths
+        } else {
+            listOf(GesturePath(0L, effectivePoints(gesture)))
+        }
+        return paths
+            .take(MAX_STROKE_COUNT)
+            .mapNotNull { path ->
+                val pixels = denormalize(path.points, width, height)
+                if (pixels.isEmpty()) return@mapNotNull null
+                val rawDuration = if (useStoredPaths) {
+                    pixels.last().t.coerceAtLeast(1L)
+                } else {
+                    gesture.durationMs.coerceAtLeast(1L)
+                }
+                val duration = scaledStrokeMs(gesture.gestureType, rawDuration, factor)
+                val maxOffset = (MAX_STROKE_MS - duration).coerceAtLeast(0L)
+                val offset = (path.startOffsetMs / factor).toLong()
+                    .coerceIn(0L, maxOffset)
+                PlaybackPath(pixels, offset, duration)
+            }
+    }
+
     fun totalDuration(gestures: List<RecordedGesture>): Long {
-        return gestures.maxOfOrNull { it.timestampMs + it.durationMs } ?: 0L
+        return gestures.maxOfOrNull { gesture ->
+            val pathEnd = gesture.paths.maxOfOrNull {
+                it.startOffsetMs + it.durationMs
+            } ?: 0L
+            gesture.timestampMs + maxOf(gesture.durationMs, pathEnd)
+        } ?: 0L
     }
 }

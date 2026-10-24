@@ -147,16 +147,34 @@ class MacroPlayer(
         gesture: RecordedGesture,
         speed: Float
     ): Boolean {
-        val points = MacroTimeline.effectivePoints(gesture)
-        if (points.isEmpty()) return false
-        val path = buildPath(points, gesture.gestureType)
-        val duration = MacroTimeline.strokeDuration(gesture, speed)
+        val paths = MacroTimeline.playbackPaths(
+            gesture,
+            speed,
+            screenWidth,
+            screenHeight
+        )
+        if (paths.isEmpty()) return false
+
+        val description = try {
+            val builder = GestureDescription.Builder()
+            for (path in paths) {
+                builder.addStroke(
+                    GestureDescription.StrokeDescription(
+                        buildPath(path.points, gesture.gestureType),
+                        path.startOffsetMs,
+                        path.durationMs.coerceAtLeast(1L)
+                    )
+                )
+            }
+            builder.build()
+        } catch (_: Exception) {
+            return false
+        }
+        val totalDuration = paths.maxOf { it.startOffsetMs + it.durationMs }
 
         // A cancelled or never-answered dispatch must not stall the loop forever.
-        val result = withTimeoutOrNull(duration + DISPATCH_TIMEOUT_SLACK_MS) {
+        val result = withTimeoutOrNull(totalDuration + DISPATCH_TIMEOUT_SLACK_MS) {
             suspendCancellableCoroutine<Boolean> { continuation ->
-                val stroke = GestureDescription.StrokeDescription(path, 0L, duration)
-                val description = GestureDescription.Builder().addStroke(stroke).build()
                 val callback = object : AccessibilityService.GestureResultCallback() {
                     override fun onCompleted(gestureDescription: GestureDescription?) {
                         if (continuation.isActive) continuation.resume(true)
@@ -174,13 +192,12 @@ class MacroPlayer(
     }
 
     private fun buildPath(points: List<GesturePoint>, type: String): Path {
-        val px = MacroTimeline.denormalize(points, screenWidth, screenHeight)
         val path = Path()
-        val first = px.first()
+        val first = points.first()
         path.moveTo(first.x, first.y)
-        if (type != "swipe" || px.size < 2) return path
-        for (i in 1 until px.size) {
-            path.lineTo(px[i].x, px[i].y)
+        if (type != "swipe" || points.size < 2) return path
+        for (i in 1 until points.size) {
+            path.lineTo(points[i].x, points[i].y)
         }
         return path
     }

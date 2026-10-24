@@ -10,12 +10,12 @@ import kotlinx.coroutines.flow.asStateFlow
 
 enum class ThemeMode { DARK, LIGHT, SYSTEM }
 
-enum class RecordingMode { LIVE_RELAY, CAPTURE_ONLY }
+enum class RecordingMode { PASSIVE, CAPTURE_ONLY }
 
 data class AppSettings(
     val defaultSpeed: Float = 1f,
     val defaultRepeat: String = Macro.REPEAT_ONCE,
-    val recordingMode: RecordingMode = RecordingMode.LIVE_RELAY,
+    val recordingMode: RecordingMode = RecordingMode.PASSIVE,
     val hapticFeedback: Boolean = true,
     val keepScreenAwake: Boolean = true,
     val startMinimized: Boolean = false,
@@ -39,8 +39,12 @@ class SettingsStore private constructor(private val prefs: SharedPreferences) {
         return AppSettings(
             defaultSpeed = MacroTimeline.clampSpeed(prefs.getFloat(KEY_SPEED, 1f)),
             defaultRepeat = normalizeRepeat(prefs.getString(KEY_REPEAT, Macro.REPEAT_ONCE)),
-            recordingMode = runCatching { RecordingMode.valueOf(recordingName ?: "") }
-                .getOrDefault(RecordingMode.LIVE_RELAY),
+            // "LIVE_RELAY" was the old overlay relay; passive is its replacement.
+            recordingMode = if (recordingName == RecordingMode.CAPTURE_ONLY.name) {
+                RecordingMode.CAPTURE_ONLY
+            } else {
+                RecordingMode.PASSIVE
+            },
             hapticFeedback = prefs.getBoolean(KEY_HAPTIC, true),
             keepScreenAwake = prefs.getBoolean(KEY_AWAKE, true),
             startMinimized = prefs.getBoolean(KEY_MINIMIZED, false),

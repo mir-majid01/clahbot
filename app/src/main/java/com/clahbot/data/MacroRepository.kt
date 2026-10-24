@@ -1,6 +1,7 @@
 package com.clahbot.data
 
 import android.content.Context
+import com.clahbot.data.models.GesturePath
 import com.clahbot.data.models.GesturePoint
 import com.clahbot.data.models.Macro
 import com.clahbot.data.models.RecordedGesture
@@ -260,17 +261,48 @@ private fun sanitizeGesture(raw: RecordedGesture): RecordedGesture? {
         val points = if (cleaned.size >= 2) cleaned else MacroTimeline.fallbackPoints(raw)
         if (points.isEmpty()) return null
 
-        val duration = raw.durationMs.coerceIn(1L, MacroTimeline.MAX_STROKE_MS)
+        val rawPaths: List<GesturePath?>? = raw.paths
+        val cleanedPaths = rawPaths.orEmpty()
+            .take(MacroTimeline.MAX_STROKE_COUNT)
+            .mapNotNull { path ->
+                if (path == null) return@mapNotNull null
+                val pathPoints: List<GesturePoint>? = path.points
+                val pathCleaned = pathPoints.orEmpty()
+                    .filter { it.x.isFinite() && it.y.isFinite() }
+                    .map {
+                        GesturePoint(
+                            x = it.x.coerceIn(0f, 1f),
+                            y = it.y.coerceIn(0f, 1f),
+                            t = it.t.coerceIn(0L, MacroTimeline.MAX_STROKE_MS)
+                        )
+                    }
+                if (pathCleaned.size < 2) return@mapNotNull null
+                GesturePath(
+                    startOffsetMs = path.startOffsetMs.coerceIn(
+                        0L,
+                        MacroTimeline.MAX_STROKE_MS
+                    ),
+                    points = pathCleaned
+                )
+            }
+        val paths = if (cleanedPaths.size >= 2) cleanedPaths else emptyList()
+        val finalPoints = if (paths.isNotEmpty()) paths.first().points else points
+
+        val duration = maxOf(
+            raw.durationMs.coerceIn(1L, MacroTimeline.MAX_STROKE_MS),
+            paths.maxOfOrNull { it.startOffsetMs + it.durationMs } ?: 0L
+        ).coerceIn(1L, MacroTimeline.MAX_STROKE_MS)
 
         raw.copy(
             timestampMs = raw.timestampMs.coerceAtLeast(0L),
             durationMs = duration,
             gestureType = type,
-            normalizedStartX = points.first().x,
-            normalizedStartY = points.first().y,
-            normalizedEndX = points.last().x,
-            normalizedEndY = points.last().y,
-            points = points
+            normalizedStartX = finalPoints.first().x,
+            normalizedStartY = finalPoints.first().y,
+            normalizedEndX = finalPoints.last().x,
+            normalizedEndY = finalPoints.last().y,
+            points = finalPoints,
+            paths = paths
         )
     } catch (_: RuntimeException) {
         null

@@ -1,5 +1,6 @@
 package com.clahbot.execution
 
+import com.clahbot.data.models.GesturePath
 import com.clahbot.data.models.GesturePoint
 import com.clahbot.data.models.Macro
 import com.clahbot.data.models.RecordedGesture
@@ -139,6 +140,112 @@ class MacroTimelineTest {
         )
         assertEquals(800L, MacroTimeline.totalDuration(gestures))
         assertEquals(0L, MacroTimeline.totalDuration(emptyList()))
+    }
+
+    @Test
+    fun playbackPathsKeepStoredSimultaneousContacts() {
+        val multi = multiTouchGesture()
+        val paths = MacroTimeline.playbackPaths(multi, 1f, 1000, 2000)
+
+        assertEquals(2, paths.size)
+        assertEquals(0L, paths[0].startOffsetMs)
+        assertEquals(100L, paths[1].startOffsetMs)
+        assertEquals(300L, paths[0].durationMs)
+        assertEquals(300L, paths[1].durationMs)
+        assertEquals(100f, paths[0].points.first().x, 0.5f)
+        assertEquals(400f, paths[0].points.first().y, 0.5f)
+        assertEquals(300f, paths[0].points.last().x, 0.5f)
+        assertEquals(800f, paths[0].points.last().y, 0.5f)
+        assertEquals(500f, paths[1].points.first().x, 0.5f)
+        assertEquals(1200f, paths[1].points.first().y, 0.5f)
+        assertEquals(700f, paths[1].points.last().x, 0.5f)
+        assertEquals(1600f, paths[1].points.last().y, 0.5f)
+    }
+
+    @Test
+    fun playbackPathsScaleOffsetsAndDurations() {
+        val paths = MacroTimeline.playbackPaths(multiTouchGesture(), 2f, 1000, 2000)
+
+        assertEquals(0L, paths[0].startOffsetMs)
+        assertEquals(50L, paths[1].startOffsetMs)
+        assertEquals(150L, paths[0].durationMs)
+        assertEquals(150L, paths[1].durationMs)
+    }
+
+    @Test
+    fun playbackPathsFallBackToThePrimaryPathForOldMacros() {
+        val legacy = RecordedGesture(
+            gestureType = "swipe",
+            durationMs = 400,
+            points = listOf(
+                GesturePoint(0.1f, 0.2f, 0),
+                GesturePoint(0.3f, 0.4f, 400)
+            )
+        )
+        val paths = MacroTimeline.playbackPaths(legacy, 1f, 1000, 2000)
+
+        assertEquals(1, paths.size)
+        assertEquals(0L, paths[0].startOffsetMs)
+        assertEquals(400L, paths[0].durationMs)
+        assertEquals(300f, paths[0].points.last().x, 0.5f)
+        assertEquals(800f, paths[0].points.last().y, 0.5f)
+    }
+
+    @Test
+    fun totalDurationIncludesASecondContactThatEndsLater() {
+        val multi = RecordedGesture(
+            timestampMs = 100,
+            gestureType = "swipe",
+            durationMs = 100,
+            points = listOf(GesturePoint(0.1f, 0.2f, 0), GesturePoint(0.2f, 0.2f, 300)),
+            paths = listOf(
+                GesturePath(
+                    0L,
+                    listOf(GesturePoint(0.1f, 0.2f, 0), GesturePoint(0.2f, 0.2f, 300))
+                ),
+                GesturePath(
+                    200L,
+                    listOf(GesturePoint(0.3f, 0.3f, 0), GesturePoint(0.4f, 0.4f, 200))
+                )
+            )
+        )
+
+        assertEquals(500L, MacroTimeline.totalDuration(listOf(multi)))
+    }
+
+    @Test
+    fun playbackPathsCapsTheStrokeCount() {
+        val points = listOf(GesturePoint(0.1f, 0.1f, 0), GesturePoint(0.2f, 0.2f, 100))
+        val gesture = RecordedGesture(
+            gestureType = "swipe",
+            durationMs = 200,
+            points = points,
+            paths = (0 until MacroTimeline.MAX_STROKE_COUNT + 3).map {
+                GesturePath(it.toLong(), points)
+            }
+        )
+
+        assertEquals(
+            MacroTimeline.MAX_STROKE_COUNT,
+            MacroTimeline.playbackPaths(gesture, 1f, 1000, 2000).size
+        )
+    }
+
+    private fun multiTouchGesture(): RecordedGesture {
+        val primary = listOf(
+            GesturePoint(0.1f, 0.2f, 0),
+            GesturePoint(0.3f, 0.4f, 300)
+        )
+        val secondary = listOf(
+            GesturePoint(0.5f, 0.6f, 0),
+            GesturePoint(0.7f, 0.8f, 300)
+        )
+        return RecordedGesture(
+            gestureType = "swipe",
+            durationMs = 400,
+            points = primary,
+            paths = listOf(GesturePath(0L, primary), GesturePath(100L, secondary))
+        )
     }
 
     private fun gesture(

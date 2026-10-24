@@ -3,6 +3,8 @@ package com.clahbot.ui
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Arrangement
@@ -39,6 +41,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -68,6 +71,7 @@ import com.clahbot.data.SettingsStore
 import com.clahbot.data.ThemeMode
 import com.clahbot.data.models.Macro
 import com.clahbot.execution.MacroTimeline
+import com.clahbot.input.InputAccessManager
 import com.clahbot.service.FloatingMenuService
 import com.clahbot.ui.theme.AutoClashTheme
 import com.clahbot.ui.theme.ElectricBlue
@@ -78,6 +82,7 @@ import com.clahbot.ui.theme.TextMuted
 import com.clahbot.util.PermissionHelper
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import rikka.shizuku.Shizuku
 import java.util.Locale
 
 private const val GITHUB_URL = "https://github.com/mir-majid01/clahbot"
@@ -139,8 +144,27 @@ fun SettingsScreen(
     val overlayOk = remember(tick) { PermissionHelper.canDrawOverlays(context) }
     val accessibilityOk = remember(tick) { PermissionHelper.isAccessibilityEnabled(context) }
     val notificationsOk = remember(tick) { PermissionHelper.canPostNotifications(context) }
+    val recordingAccess = remember(tick) { InputAccessManager.status(context) }
     val storageBytes = remember(tick, macros) { repository.storageBytes() }
     val controllerActive = controllerState != ControllerState.INACTIVE
+
+    DisposableEffect(Unit) {
+        val listener = Shizuku.OnRequestPermissionResultListener { _, _ ->
+            Handler(Looper.getMainLooper()).post { tick++ }
+        }
+        try {
+            Shizuku.addRequestPermissionResultListener(listener)
+        } catch (_: Throwable) {
+            // Shizuku is not running.
+        }
+        onDispose {
+            try {
+                Shizuku.removeRequestPermissionResultListener(listener)
+            } catch (_: Throwable) {
+                // Shizuku stopped while this screen was open.
+            }
+        }
+    }
 
     if (showClearAll) {
         AlertDialog(
@@ -216,8 +240,9 @@ fun SettingsScreen(
                 Text(
                     "AutoClash stores macros and settings only on this device. " +
                         "The app has no network permission and sends nothing anywhere. " +
-                        "It does not read screen content; the accessibility service is used only to " +
-                        "replay the gestures you record."
+                        "Recording reads raw touchscreen events through Shizuku or root; it does not " +
+                        "read screen content. The accessibility service is used only to replay the " +
+                        "gestures you record."
                 )
             },
             confirmButton = {
@@ -275,6 +300,83 @@ fun SettingsScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             item {
+                SettingsSection("Recording access") {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.Top
+                    ) {
+                        androidx.compose.foundation.layout.Box(
+                            Modifier
+                                .size(7.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    if (recordingAccess.ready) ReadyGreen else PauseAmber
+                                )
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                InputAccessManager.title(recordingAccess),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Spacer(Modifier.height(3.dp))
+                            Text(
+                                InputAccessManager.detail(recordingAccess),
+                                fontSize = 10.sp,
+                                color = TextMuted
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    when {
+                        recordingAccess.shizukuRunning && !recordingAccess.shizukuGranted -> {
+                            Button(
+                                onClick = {
+                                    if (!InputAccessManager.requestShizukuPermission()) {
+                                        PermissionHelper.showToast(context, "Start Shizuku first")
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue)
+                            ) {
+                                Text("Grant Shizuku access", fontSize = 11.sp)
+                            }
+                        }
+
+                        recordingAccess.shizukuInstalled && !recordingAccess.shizukuRunning -> {
+                            Button(
+                                onClick = { InputAccessManager.openShizuku(context) },
+                                colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue)
+                            ) {
+                                Text("Open Shizuku", fontSize = 11.sp)
+                            }
+                        }
+
+                        !recordingAccess.shizukuInstalled && !recordingAccess.rootPossible -> {
+                            Button(
+                                onClick = { InputAccessManager.openShizukuInstall(context) },
+                                colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue)
+                            ) {
+                                Text("Get Shizuku", fontSize = 11.sp)
+                            }
+                        }
+                    }
+                    if (recordingAccess.rootPossible && !recordingAccess.shizukuGranted) {
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            "Root will be checked when recording starts. Grant the su prompt if it appears.",
+                            fontSize = 10.sp,
+                            color = TextMuted
+                        )
+                    }
+                    TextButton(onClick = { tick++ }, contentPadding = PaddingValues(0.dp)) {
+                        Text("Check again", fontSize = 10.sp, color = ElectricBlue)
+                    }
+                }
+            }
+
+            item {
                 SettingsSection("Recording & playback") {
                     Text(
                         "Recording mode",
@@ -284,28 +386,30 @@ fun SettingsScreen(
                     Spacer(Modifier.height(6.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         FilterChip(
-                            selected = settings.recordingMode == RecordingMode.LIVE_RELAY,
+                            selected = settings.recordingMode == RecordingMode.PASSIVE,
                             onClick = {
-                                onUpdate { it.copy(recordingMode = RecordingMode.LIVE_RELAY) }
+                                onUpdate { it.copy(recordingMode = RecordingMode.PASSIVE) }
                             },
-                            label = { Text("Live relay", fontSize = 11.sp) }
+                            label = { Text("Passive", fontSize = 11.sp) }
                         )
                         FilterChip(
                             selected = settings.recordingMode == RecordingMode.CAPTURE_ONLY,
                             onClick = {
                                 onUpdate { it.copy(recordingMode = RecordingMode.CAPTURE_ONLY) }
                             },
-                            label = { Text("Capture only", fontSize = 11.sp) }
+                            label = { Text("Blocks game input", fontSize = 11.sp) }
                         )
                     }
                     Text(
-                        if (settings.recordingMode == RecordingMode.LIVE_RELAY) {
-                            "Touches reach Clash of Clans while recording. This is the intended mode."
+                        if (settings.recordingMode == RecordingMode.PASSIVE) {
+                            "The game receives every touch. AutoClash reads raw touchscreen events " +
+                                "through Shizuku or root; no AutoClash window is in the touch path."
                         } else {
-                            "The game will not respond to touches while recording. Use only when you deliberately want blocked input."
+                            "A full-screen overlay captures touches and the game receives none " +
+                                "while recording. Use only when you deliberately want blocked input."
                         },
                         fontSize = 10.sp,
-                        color = if (settings.recordingMode == RecordingMode.LIVE_RELAY) {
+                        color = if (settings.recordingMode == RecordingMode.PASSIVE) {
                             ReadyGreen
                         } else {
                             PauseAmber
@@ -424,11 +528,10 @@ fun SettingsScreen(
                     )
                     Spacer(Modifier.height(10.dp))
                     Text(
-                        "Android does not give apps a raw touch stream from another app. " +
-                            "AutoClash records by intercepting touches on a transparent overlay and " +
-                            "replaying them through the accessibility service, so a recorded gesture " +
-                            "is injected rather than observed. Overlay and accessibility access are " +
-                            "required; without them recording and playback are unavailable.",
+                        "Passive recording reads raw touchscreen events through Shizuku or root, " +
+                            "so the game receives every touch normally. Playback uses the accessibility " +
+                            "service to dispatch the saved gestures. Capture-only mode instead adds a " +
+                            "full-screen overlay and deliberately blocks game input.",
                         fontSize = 10.sp,
                         color = TextMuted
                     )

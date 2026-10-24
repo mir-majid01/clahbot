@@ -15,6 +15,7 @@ import android.graphics.PixelFormat
 import android.graphics.Path
 import android.graphics.Rect
 import android.graphics.drawable.ColorDrawable
+import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -54,33 +55,42 @@ import com.clahbot.data.MacroRepository
 import com.clahbot.data.MacroSelection
 import com.clahbot.data.RecordingMode
 import com.clahbot.data.SettingsStore
+import com.clahbot.data.models.GesturePath
 import com.clahbot.data.models.GesturePoint
 import com.clahbot.data.models.Macro
 import com.clahbot.data.models.RecordedGesture
-import com.clahbot.execution.LiveGestureTracker
 import com.clahbot.execution.MacroPlayer
 import com.clahbot.execution.MacroTimeline
+import com.clahbot.input.BuiltGesture
+import com.clahbot.input.InputAccessManager
+import com.clahbot.input.InputEventSource
+import com.clahbot.input.PassiveRecorder
+import com.clahbot.input.ScreenGeometry
+import com.clahbot.input.ScreenRect
 import com.clahbot.ui.MainActivity
+import com.clahbot.ui.SettingsActivity
 import com.clahbot.util.PermissionHelper
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
 
 /**
- * Owns the floating controller, the touch recorder and macro playback.
+ * Owns the floating controller, the passive touch recorder and macro playback.
  *
- * Live recording relays the physical pointer through the accessibility
- * TouchInteractionController, so no capture window is used. Capture-only mode
- * still uses a full screen touch surface with the controller layered above it.
- * In live mode the controller area is excluded through the framework's
- * touch-exploration passthrough region.
+ * Passive recording reads getevent through Shizuku or root; no AutoClash
+ * window is in the touch path. Capture-only mode still uses a full-screen
+ * touch surface and deliberately blocks the game. Playback uses accessibility
+ * gesture dispatch in both cases.
  */
 class FloatingMenuService : Service() {
 
@@ -95,8 +105,15 @@ class FloatingMenuService : Service() {
     private var controllerParams: WindowManager.LayoutParams? = null
     private var captureView: View? = null
     private var captureParams: WindowManager.LayoutParams? = null
-    private var liveRelay: LiveTouchRelay? = null
-    private var liveRecording: Boolean = false
+    private var passiveRecorder: PassiveRecorder? = null
+    private var indicatorView: View? = null
+    private var indicatorParams: WindowManager.LayoutParams? = null
+    private var indicatorText: TextView? = null
+    private var startingPassive = false
+    private var activeRecordingMode: RecordingMode? = null
+
+    @Volatile
+    private var controllerBoundsSnapshot: ScreenRect? = null
 
     private var player: MacroPlayer? = null
 
@@ -134,6 +151,7 @@ class FloatingMenuService : Service() {
             if (!recording) return
             controllerView?.findViewById<TextView>(R.id.tvRecTimer)?.text =
                 formatClock(elapsedRecordingMs())
+            updateIndicator()
             handler.postDelayed(this, 500L)
         }
     }
@@ -198,12 +216,8 @@ class FloatingMenuService : Service() {
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
         updateScreenSize()
+        refreshControllerBoundsSnapshot()
         if (!recording) return
-        if (liveRecording && BotState.state.value == ControllerState.RECORDING_PAUSED) {
-            updateControllerPassthrough()
-            refreshUi()
-            return
-        }
         stopRecording()
         BotState.setStatus("Screen changed — recording stopped")
         toast("Recording stopped: screen changed")
@@ -216,7 +230,8 @@ class FloatingMenuService : Service() {
         BotState.setInterrupted(true)
         stopPlayback()
         stopRecording(silent = true)
-        finishLiveRelay()
+        stopPassiveRecorder()
+        removeIndicator()
         removeCapture()
         removeController()
         scope.cancel()
@@ -300,6 +315,10 @@ class FloatingMenuService : Service() {
         controllerView = view
         controllerParams = params
         bindController(view)
+        view.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+            refreshControllerBoundsSnapshot()
+        }
+        view.post { refreshControllerBoundsSnapshot() }
 
         if (selectedId <= 0) {
             speed = MacroTimeline.clampSpeed(prefs.defaultSpeed)
@@ -425,6 +444,11 @@ class FloatingMenuService : Service() {
                     true
                 }
 
+                MotionEvent.ACTION_CANCEL -> {
+                    updateControllerPassthrough()
+                    true
+                }
+
                 else -> true
             }
         }
@@ -481,23 +505,32 @@ class FloatingMenuService : Service() {
         } catch (_: Exception) {
             // Ignore.
         }
+        view.post { refreshControllerBoundsSnapshot() }
         toast("Controller position reset")
     }
 
     // -------------------------------------------------------------- recording
 
     private fun startRecording() {
-        if (recording) return
-        val a11y = ClahAccessibilityService.instance
-        if (a11y == null) {
-            toast(accessibilityHint())
-            return
-        }
-        if (BotState.state.value.isPlayback) {
-            stopPlayback()
-        }
+        if (recording || startingPassive) return
+        if (BotState.state.value.isPlayback) stopPlayback()
         if (controllerView == null) ensureController()
         if (controllerView == null) return
+
+        if (settingsStore.settings.value.recordingMode == RecordingMode.PASSIVE) {
+            val access = InputAccessManager.status(this)
+            if (!access.ready) {
+                toast(InputAccessManager.unavailableMessage(this))
+                startActivity(
+                    Intent(this, SettingsActivity::class.java)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+                return
+            }
+        }
+
+        updateScreenSize()
+        refreshControllerBoundsSnapshot()
 
         recorded.clear()
         pathPoints.clear()
@@ -508,130 +541,266 @@ class FloatingMenuService : Service() {
         pausedAtMs = 0L
         downTime = 0L
         recordStartMs = SystemClock.uptimeMillis()
-        updateScreenSize()
         BotState.clearRecording()
 
-        val mode = settingsStore.settings.value.recordingMode
-        if (mode == RecordingMode.LIVE_RELAY) {
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
-                BotState.setState(ControllerState.ERROR)
-                BotState.setStatus("Live relay requires Android 13 or newer")
-                toast("Live recording needs Android 13+. Choose Capture only in Settings.")
-                refreshUi()
-                return
-            }
-            val relay = LiveTouchRelay(
-                service = a11y,
-                shouldCapture = { x, y -> !isPointOnController(x, y) },
-                onGesture = { snapshot -> recordLiveGesture(snapshot) },
-                onUnavailable = { onLiveRelayUnavailable() }
-            )
-            if (!relay.start()) {
-                relay.stop()
-                BotState.setState(ControllerState.ERROR)
-                BotState.setStatus("Live relay is not available on this device")
-                toast("Live recording could not start. Nothing was recorded.")
-                refreshUi()
-                return
-            }
-            liveRelay = relay
-            liveRecording = true
-            a11y.attachLiveRelay(relay)
-            ClahAccessibilityService.liveRelayLost = { onAccessibilityLost() }
-            recording = true
-            setControllerKeepScreenOn(true)
-            updateControllerPassthrough()
-            BotState.setState(ControllerState.RECORDING)
-            BotState.setStatus("Recording live — touches reach the game")
-            toast("Live recording: the game responds. Play normally.")
-        } else {
-            liveRecording = false
-            recording = true
-            BotState.setState(ControllerState.RECORDING)
-            BotState.setStatus("Recording (capture only) — game ignores touches")
-            toast("Capture-only recording: the game will not respond to touches.")
-            attachCaptureSurface()
+        when (settingsStore.settings.value.recordingMode) {
+            RecordingMode.CAPTURE_ONLY -> startCaptureOnlyRecording()
+            RecordingMode.PASSIVE -> startPassiveRecording()
+        }
+        refreshUi()
+    }
+
+    private fun startCaptureOnlyRecording() {
+        activeRecordingMode = RecordingMode.CAPTURE_ONLY
+        startingPassive = false
+        recording = true
+        BotState.setState(ControllerState.RECORDING)
+        BotState.setStatus("Recording (blocks game input)")
+        toast("Capture-only recording: the game will not respond to touches.")
+        attachCaptureSurface()
+        if (!recording) {
+            activeRecordingMode = null
+            return
+        }
+        setControllerKeepScreenOn(true)
+        handler.removeCallbacks(timerRunnable)
+        handler.post(timerRunnable)
+    }
+
+    private fun startPassiveRecording() {
+        activeRecordingMode = RecordingMode.PASSIVE
+        startingPassive = true
+        recording = true
+        BotState.setState(ControllerState.RECORDING)
+        BotState.setStatus("Starting passive capture…")
+        if (!addIndicator()) {
+            recording = false
+            startingPassive = false
+            activeRecordingMode = null
+            BotState.setState(ControllerState.READY)
+            BotState.setStatus("Could not show the recording indicator")
+            toast("Could not show the recording indicator")
+            return
         }
         handler.removeCallbacks(timerRunnable)
         handler.post(timerRunnable)
-        refreshUi()
+        scope.launch { runPassiveStart() }
     }
 
-    private fun recordLiveGesture(snapshot: LiveGestureTracker.Snapshot) {
-        if (!recording) return
-        commitScreenGesture(snapshot.points, snapshot.startTimeMs, snapshot.durationMs)
-    }
+    private suspend fun runPassiveStart() {
+        var source: InputEventSource? = null
+        var recorder: PassiveRecorder? = null
+        try {
+            source = withContext(Dispatchers.IO) {
+                InputAccessManager.createSource(this@FloatingMenuService)
+            }
+            if (source == null) {
+                onPassiveStartFailed(
+                    InputAccessManager.unavailableMessage(this@FloatingMenuService)
+                )
+                return
+            }
+            if (!recording || activeRecordingMode != RecordingMode.PASSIVE) return
 
-    private fun onLiveRelayUnavailable() {
-        if (!recording || !liveRecording) return
-        Log.e(TAG, "Live relay did not take over touches; stopping recording")
-        stopRecording()
-        BotState.setStatus("Live relay unavailable — recording stopped")
-        toast("Live recording is unavailable on this device.")
-    }
+            val newRecorder = PassiveRecorder(
+                source = source,
+                geometry = {
+                    ScreenGeometry(screenWidth, screenHeight, currentRotation())
+                },
+                controllerBounds = { controllerBoundsSnapshot },
+                onGesture = { gesture ->
+                    handler.post { onPassiveGesture(gesture) }
+                },
+                onError = { message ->
+                    handler.post { onPassiveError(message) }
+                }
+            )
+            recorder = newRecorder
+            passiveRecorder = newRecorder
 
-    private fun onAccessibilityLost() {
-        if (!liveRecording) return
-        liveRecording = false
-        recording = false
-        liveRelay = null
-        ClahAccessibilityService.liveRelayLost = null
-        handler.removeCallbacks(timerRunnable)
-        setControllerKeepScreenOn(false)
-        BotState.setRecordedCount(recorded.size)
-        BotState.setState(if (recorded.isEmpty()) ControllerState.READY else ControllerState.REVIEW)
-        BotState.setStatus("Accessibility service disconnected — recording stopped")
-        toast("Accessibility service disconnected. Recording stopped.")
-        refreshUi()
-    }
+            val started = withContext(Dispatchers.IO) { newRecorder.start() }
+            if (!started) {
+                passiveRecorder = null
+                onPassiveStartFailed(
+                    "Passive capture could not start. Check Recording access in Settings."
+                )
+                return
+            }
+            if (!recording || activeRecordingMode != RecordingMode.PASSIVE) return
 
-    private fun finishLiveRelay() {
-        val relay = liveRelay
-        liveRelay = null
-        liveRecording = false
-        if (relay != null) {
-            relay.stop()
-            ClahAccessibilityService.instance?.detachLiveRelay(relay)
+            startingPassive = false
+            recordStartMs = SystemClock.uptimeMillis()
+            setControllerKeepScreenOn(true)
+            BotState.setStatus("Recording passive — touches reach the game")
+            toast("Passive recording: touches reach the game.")
+            updateIndicator()
+            refreshUi()
+        } catch (t: CancellationException) {
+            throw t
+        } catch (t: Throwable) {
+            passiveRecorder = null
+            onPassiveStartFailed(
+                "Passive capture could not start: ${t.message ?: "unknown error"}"
+            )
+        } finally {
+            if (!recording || activeRecordingMode != RecordingMode.PASSIVE) {
+                passiveRecorder = null
+                withContext(NonCancellable + Dispatchers.IO) {
+                    recorder?.stop()
+                    recorder?.close()
+                    if (recorder == null) source?.close()
+                }
+            }
         }
-        ClahAccessibilityService.liveRelayLost = null
+    }
+
+    private fun onPassiveStartFailed(message: String) {
+        if (activeRecordingMode != RecordingMode.PASSIVE) return
+        startingPassive = false
+        recording = false
+        activeRecordingMode = null
+        handler.removeCallbacks(timerRunnable)
+        removeIndicator()
         setControllerKeepScreenOn(false)
+        BotState.setState(ControllerState.READY)
+        BotState.setStatus(message)
+        toast(message)
+        refreshUi()
+    }
+
+    private fun onPassiveGesture(gesture: BuiltGesture) {
+        if (!recording || activeRecordingMode != RecordingMode.PASSIVE) return
+        if (BotState.state.value == ControllerState.RECORDING_PAUSED) return
+        commitPassiveGesture(gesture)
+    }
+
+    private fun onPassiveError(message: String) {
+        if (!recording || activeRecordingMode != RecordingMode.PASSIVE) return
+        Log.e(TAG, "Passive recording stopped: $message")
+        stopRecording()
+        BotState.setStatus("Recording stopped: $message")
+        toast(message)
+        refreshUi()
+    }
+
+    private fun commitPassiveGesture(built: BuiltGesture) {
+        if (!recording || activeRecordingMode != RecordingMode.PASSIVE) return
+        if (built.paths.isEmpty()) return
+        val width = screenWidth
+        val height = screenHeight
+        if (width <= 0 || height <= 0) return
+
+        val primary = built.paths.first()
+        val sampled = MacroTimeline.decimate(primary.points)
+        if (sampled.isEmpty()) return
+        val deviation = MacroTimeline.maxDeviationPx(sampled)
+        val primaryDuration = primary.durationMs.coerceAtLeast(1L)
+        val type = MacroTimeline.classify(deviation, primaryDuration)
+        val normalizedPrimary = MacroTimeline.normalize(sampled, width, height)
+        if (normalizedPrimary.isEmpty()) return
+
+        val normalizedPaths = if (built.paths.size > 1) {
+            built.paths.take(MacroTimeline.MAX_STROKE_COUNT)
+                .mapNotNull { path ->
+                    val points = MacroTimeline.normalize(
+                        MacroTimeline.decimate(path.points),
+                        width,
+                        height
+                    )
+                    if (points.size < 2) {
+                        null
+                    } else {
+                        GesturePath(
+                            startOffsetMs = path.startOffsetMs.coerceAtLeast(0L),
+                            points = points
+                        )
+                    }
+                }
+                .takeIf { it.size > 1 }
+                ?: emptyList()
+        } else {
+            emptyList()
+        }
+
+        val startInRecording =
+            (built.startUptimeMs - recordStartMs - pausedAccumMs).coerceAtLeast(0L)
+        val gesture = RecordedGesture(
+            id = ++gestureSeq,
+            timestampMs = startInRecording,
+            gestureType = type,
+            durationMs = built.durationMs.coerceIn(1L, MacroTimeline.MAX_STROKE_MS),
+            normalizedStartX = normalizedPrimary.first().x,
+            normalizedStartY = normalizedPrimary.first().y,
+            normalizedEndX = normalizedPrimary.last().x,
+            normalizedEndY = normalizedPrimary.last().y,
+            points = normalizedPrimary,
+            paths = normalizedPaths
+        )
+        recorded.add(gesture)
+        capturedGestures++
+        BotState.setRecordedCount(recorded.size)
+        updateRecordingInfo()
+        val now = SystemClock.uptimeMillis()
+        if (now - lastStatusMs > STATUS_THROTTLE_MS) {
+            lastStatusMs = now
+            BotState.setStatus("Recording passive — ${recorded.size} gesture(s)")
+        }
+        if (now - lastNotificationMs > NOTIFICATION_THROTTLE_MS) {
+            lastNotificationMs = now
+            updateRecordingNotification()
+        }
+    }
+
+    private fun stopPassiveRecorder() {
+        val recorder = passiveRecorder
+        passiveRecorder = null
+        if (recorder == null) return
+        val wasStarting = startingPassive
+        startingPassive = false
+        if (wasStarting) {
+            scope.launch(Dispatchers.IO) {
+                recorder.stop()
+                recorder.close()
+            }
+        } else {
+            recorder.stop()
+            scope.launch(Dispatchers.IO) { recorder.close() }
+        }
     }
 
     private fun toggleRecordingPause() {
+        if (startingPassive) {
+            toast("Capture is starting…")
+            return
+        }
+        val passive = activeRecordingMode == RecordingMode.PASSIVE
         when (BotState.state.value) {
             ControllerState.RECORDING -> {
                 pausedAtMs = SystemClock.uptimeMillis()
                 BotState.setState(ControllerState.RECORDING_PAUSED)
                 BotState.setStatus(
-                    if (liveRecording) "Recording paused — game responds normally"
+                    if (passive) "Recording paused — game responds normally"
                     else "Recording paused"
                 )
                 pathPoints.clear()
-                if (liveRecording) {
-                    liveRelay?.setEnabled(false)
+                if (passive) {
+                    passiveRecorder?.setPaused(true)
                 } else {
-                    // Paused: stop capturing and let the game take input again.
+                    // Capture-only: while paused the game receives input again.
                     setCaptureTouchable(false)
                 }
             }
 
             ControllerState.RECORDING_PAUSED -> {
-                if (liveRecording &&
-                    (ClahAccessibilityService.instance == null || liveRelay == null)
-                ) {
-                    onAccessibilityLost()
-                    return
-                }
                 pausedAccumMs += SystemClock.uptimeMillis() - pausedAtMs
                 pausedAtMs = 0L
                 BotState.setState(ControllerState.RECORDING)
                 BotState.setStatus(
-                    if (liveRecording) "Recording live — touches reach the game"
-                    else "Recording (capture only) — game ignores touches"
+                    if (passive) "Recording passive — touches reach the game"
+                    else "Recording (blocks game input)"
                 )
-                if (liveRecording) {
-                    liveRelay?.setEnabled(true)
-                    updateControllerPassthrough()
+                if (passive) {
+                    passiveRecorder?.setPaused(false)
                 } else {
                     setCaptureTouchable(true)
                 }
@@ -639,6 +808,7 @@ class FloatingMenuService : Service() {
 
             else -> return
         }
+        updateIndicator()
         updateRecordingNotification()
         refreshUi()
     }
@@ -665,14 +835,20 @@ class FloatingMenuService : Service() {
         )
     }
 
-    private fun isPointOnController(x: Float, y: Float): Boolean {
-        val bounds = controllerVisibleBounds() ?: return false
-        return x >= bounds.left && x <= bounds.right &&
-            y >= bounds.top && y <= bounds.bottom
+    private fun refreshControllerBoundsSnapshot() {
+        val bounds = controllerVisibleBounds()
+        controllerBoundsSnapshot = bounds?.let {
+            ScreenRect(
+                left = it.left.toFloat(),
+                top = it.top.toFloat(),
+                right = it.right.toFloat(),
+                bottom = it.bottom.toFloat()
+            )
+        }
     }
 
     private fun updateControllerPassthrough() {
-        liveRelay?.updateControllerRegion(controllerVisibleBounds())
+        refreshControllerBoundsSnapshot()
     }
 
     private fun setControllerKeepScreenOn(on: Boolean) {
@@ -689,6 +865,76 @@ class FloatingMenuService : Service() {
             // Window detached.
         }
     }
+
+    private fun addIndicator(): Boolean {
+        if (indicatorView != null) {
+            updateIndicator()
+            return true
+        }
+        val view = TextView(this).apply {
+            textSize = 10f
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            setPadding(dp(9), dp(5), dp(9), dp(5))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(14).toFloat()
+                setColor(0xD9111827.toInt())
+                setStroke(dp(1), 0x66EF4444)
+            }
+        }
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            overlayType(),
+            WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.END
+            x = dp(12)
+            y = dp(96)
+        }
+        return try {
+            windowManager.addView(view, params)
+            indicatorView = view
+            indicatorText = view
+            updateIndicator()
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to show the recording indicator", e)
+            false
+        }
+    }
+
+    private fun removeIndicator() {
+        val view = indicatorView ?: return
+        indicatorView = null
+        indicatorText = null
+        try {
+            windowManager.removeView(view)
+        } catch (_: Exception) {
+            // Already detached.
+        }
+    }
+
+    private fun updateIndicator() {
+        val view = indicatorText ?: return
+        val state = BotState.state.value
+        view.text = when {
+            state == ControllerState.RECORDING_PAUSED -> "❚❚ PAUSED"
+            startingPassive -> "● STARTING"
+            else -> "● REC " + formatClock(elapsedRecordingMs())
+        }
+        view.setTextColor(
+            if (state == ControllerState.RECORDING_PAUSED) {
+                0xFFFDE68A.toInt()
+            } else {
+                0xFFFCA5A5.toInt()
+            }
+        )
+    }
+
+    @Suppress("DEPRECATION")
+    private fun currentRotation(): Int = windowManager.defaultDisplay.rotation
 
     private fun elapsedRecordingMs(): Long {
         val end = if (pausedAtMs > 0L) pausedAtMs else SystemClock.uptimeMillis()
@@ -872,8 +1118,7 @@ class FloatingMenuService : Service() {
         val now = SystemClock.uptimeMillis()
         if (now - lastStatusMs > STATUS_THROTTLE_MS) {
             lastStatusMs = now
-            val mode = if (liveRecording) "live" else "capture only"
-            BotState.setStatus("Recording ($mode) — ${recorded.size} gesture(s)")
+            BotState.setStatus("Recording (blocks game input) — ${recorded.size} gesture(s)")
         }
         if (now - lastNotificationMs > NOTIFICATION_THROTTLE_MS) {
             lastNotificationMs = now
@@ -883,12 +1128,32 @@ class FloatingMenuService : Service() {
 
     private fun stopRecording(silent: Boolean = false) {
         if (!recording) return
-        if (recorded.isEmpty()) rejectedGestures++
-        finishLiveRelay()
+        val wasStarting = startingPassive
+        val recorder = passiveRecorder
+        passiveRecorder = null
+        startingPassive = false
         recording = false
+        activeRecordingMode = null
+        if (recorded.isEmpty()) rejectedGestures++
         pathPoints.clear()
         handler.removeCallbacks(timerRunnable)
+        removeIndicator()
         removeCapture()
+        setControllerKeepScreenOn(false)
+        pausedAtMs = 0L
+        pausedAccumMs = 0L
+
+        if (recorder != null) {
+            if (wasStarting) {
+                scope.launch(Dispatchers.IO) {
+                    recorder.stop()
+                    recorder.close()
+                }
+            } else {
+                recorder.stop()
+                scope.launch(Dispatchers.IO) { recorder.close() }
+            }
+        }
 
         if (silent) {
             recorded.clear()
@@ -911,7 +1176,16 @@ class FloatingMenuService : Service() {
     }
 
     private fun discardRecording(quiet: Boolean = false) {
-        finishLiveRelay()
+        stopPassiveRecorder()
+        removeIndicator()
+        removeCapture()
+        setControllerKeepScreenOn(false)
+        handler.removeCallbacks(timerRunnable)
+        recording = false
+        startingPassive = false
+        activeRecordingMode = null
+        pausedAtMs = 0L
+        pausedAccumMs = 0L
         recorded.clear()
         pathPoints.clear()
         BotState.clearRecording()
@@ -1283,21 +1557,25 @@ class FloatingMenuService : Service() {
         view.findViewById<ImageButton>(R.id.btnRename).isEnabled = selectedId > 0
         view.findViewById<ImageButton>(R.id.btnDelete).isEnabled = selectedId > 0
 
-        val recordMode = settingsStore.settings.value.recordingMode
-        val liveMode = recordMode == RecordingMode.LIVE_RELAY
+        val recordMode = activeRecordingMode ?: settingsStore.settings.value.recordingMode
+        val passiveMode = recordMode == RecordingMode.PASSIVE
         view.findViewById<TextView>(R.id.tvRecordMode).apply {
-            text = if (liveMode) "Live relay · game responds"
-            else "Capture only · game ignores touch"
-            setTextColor(if (liveMode) 0xFF22C55E.toInt() else 0xFFF59E0B.toInt())
+            text = if (passiveMode) "Passive · game responds"
+            else "Capture only · blocks game input"
+            setTextColor(if (passiveMode) 0xFF22C55E.toInt() else 0xFFF59E0B.toInt())
         }
         view.findViewById<TextView>(R.id.tvRecState).text = when {
+            startingPassive -> "STARTING"
             state == ControllerState.RECORDING_PAUSED -> "PAUSED"
-            liveRecording -> "REC LIVE"
+            activeRecordingMode == RecordingMode.PASSIVE -> "REC PASSIVE"
             else -> "REC"
         }
-        view.findViewById<Button>(R.id.btnRecPause).text =
-            if (state == ControllerState.RECORDING_PAUSED) "Resume" else "Pause"
-        view.findViewById<TextView>(R.id.tvRecTimer).text = formatClock(elapsedRecordingMs())
+        view.findViewById<Button>(R.id.btnRecPause).apply {
+            text = if (state == ControllerState.RECORDING_PAUSED) "Resume" else "Pause"
+            isEnabled = !startingPassive
+        }
+        view.findViewById<TextView>(R.id.tvRecTimer).text =
+            if (startingPassive) "00:00" else formatClock(elapsedRecordingMs())
 
         view.findViewById<TextView>(R.id.tvReviewInfo).text =
             "$count gesture(s) · ${formatDuration(MacroTimeline.totalDuration(recorded))}"
@@ -1332,7 +1610,8 @@ class FloatingMenuService : Service() {
         val count = BotState.recordedGestureCount.value
         view.findViewById<TextView>(R.id.tvReviewInfo).text =
             "$count gesture(s) · ${formatDuration(MacroTimeline.totalDuration(recorded))}"
-        view.findViewById<TextView>(R.id.tvRecTimer).text = formatClock(elapsedRecordingMs())
+        view.findViewById<TextView>(R.id.tvRecTimer).text =
+            if (startingPassive) "00:00" else formatClock(elapsedRecordingMs())
     }
 
     private fun onStatusChanged(status: String) {
@@ -1348,8 +1627,11 @@ class FloatingMenuService : Service() {
             ControllerState.RECORDING ->
                 updateNotification(
                     getString(
-                        if (liveRecording) R.string.notification_recording_live
-                        else R.string.notification_recording_capture,
+                        if (activeRecordingMode == RecordingMode.PASSIVE) {
+                            R.string.notification_recording_passive
+                        } else {
+                            R.string.notification_recording_capture
+                        },
                         count
                     )
                 )
@@ -1533,7 +1815,8 @@ class FloatingMenuService : Service() {
     private fun closeEverything() {
         stopPlayback()
         stopRecording(silent = true)
-        finishLiveRelay()
+        stopPassiveRecorder()
+        removeIndicator()
         removeCapture()
         removeController()
         BotState.clearActiveMacro()
