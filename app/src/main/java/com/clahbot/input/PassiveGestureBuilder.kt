@@ -19,7 +19,6 @@ class PassiveGestureBuilder(
 
     private class PathState(
         val sequence: Int,
-        val slot: Int,
         val pointerId: Int,
         val startOffsetMs: Long,
         val startAbsMs: Long,
@@ -71,7 +70,6 @@ class PassiveGestureBuilder(
                 if (point != null && !isOnController(bounds, point)) {
                     val newState = PathState(
                         sequence = nextSequence++,
-                        slot = contact.slot,
                         pointerId = contact.trackingId,
                         startOffsetMs = (frame.timestampMs - gestureStartMs).coerceAtLeast(0L),
                         startAbsMs = frame.timestampMs
@@ -127,7 +125,6 @@ class PassiveGestureBuilder(
         for ((contact, point) in captured) {
             val state = PathState(
                 sequence = nextSequence++,
-                slot = contact.slot,
                 pointerId = contact.trackingId,
                 startOffsetMs = 0L,
                 startAbsMs = frame.timestampMs

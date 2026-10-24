@@ -12,7 +12,6 @@ import android.content.pm.ServiceInfo
 import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.PixelFormat
-import android.graphics.Path
 import android.graphics.Rect
 import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
@@ -107,7 +106,6 @@ class FloatingMenuService : Service() {
     private var captureParams: WindowManager.LayoutParams? = null
     private var passiveRecorder: PassiveRecorder? = null
     private var indicatorView: View? = null
-    private var indicatorParams: WindowManager.LayoutParams? = null
     private var indicatorText: TextView? = null
     private var startingPassive = false
     private var activeRecordingMode: RecordingMode? = null
@@ -540,6 +538,8 @@ class FloatingMenuService : Service() {
         pausedAccumMs = 0L
         pausedAtMs = 0L
         downTime = 0L
+        lastStatusMs = 0L
+        lastNotificationMs = 0L
         recordStartMs = SystemClock.uptimeMillis()
         BotState.clearRecording()
 
@@ -563,6 +563,7 @@ class FloatingMenuService : Service() {
             return
         }
         setControllerKeepScreenOn(true)
+        updateRecordingNotification()
         handler.removeCallbacks(timerRunnable)
         handler.post(timerRunnable)
     }
@@ -633,6 +634,7 @@ class FloatingMenuService : Service() {
             setControllerKeepScreenOn(true)
             BotState.setStatus("Recording passive — touches reach the game")
             toast("Passive recording: touches reach the game.")
+            updateRecordingNotification()
             updateIndicator()
             refreshUi()
         } catch (t: CancellationException) {
@@ -662,6 +664,7 @@ class FloatingMenuService : Service() {
         handler.removeCallbacks(timerRunnable)
         removeIndicator()
         setControllerKeepScreenOn(false)
+        updateNotification(getString(R.string.notification_idle))
         BotState.setState(ControllerState.READY)
         BotState.setStatus(message)
         toast(message)

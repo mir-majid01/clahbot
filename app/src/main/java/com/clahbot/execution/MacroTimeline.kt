@@ -195,12 +195,6 @@ object MacroTimeline {
         return if (gesture.points.size >= 2) gesture.points else fallbackPoints(gesture)
     }
 
-    fun effectivePaths(gesture: RecordedGesture): List<GesturePath> {
-        val stored = gesture.paths.filter { it.points.isNotEmpty() }
-        if (stored.isNotEmpty()) return stored
-        return listOf(GesturePath(0L, effectivePoints(gesture)))
-    }
-
     fun playbackPaths(
         gesture: RecordedGesture,
         speed: Float,
