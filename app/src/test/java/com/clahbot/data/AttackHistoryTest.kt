@@ -171,7 +171,7 @@ class AttackHistoryTest {
         val withBonus = record(1, gold = 100).copy(
             bonusGold = 310_000,
             bonusElixir = 310_000,
-            bonusDark = 2_100
+            bonusDarkElixir = 2_100
         )
         val summary = AttackStats.summarize(listOf(withBonus))
         assertEquals(100L, summary.gold)
