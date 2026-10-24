@@ -42,7 +42,7 @@ object PermissionHelper {
             resolver,
             Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
         ).orEmpty()
-        return list.split(:).any {
+        return list.split(':').any {
             it.equals(ACCESSIBILITY_COMPONENT, ignoreCase = true) ||
                 it.equals(ACCESSIBILITY_COMPONENT_SHORT, ignoreCase = true)
         }
