@@ -85,6 +85,7 @@ import com.clahbot.data.AttackRepository
 import com.clahbot.data.BotState
 import com.clahbot.data.models.AttackRecord
 import com.clahbot.data.models.AttackStats
+import com.clahbot.data.models.LootInput
 import com.clahbot.data.ControllerState
 import com.clahbot.data.MacroRepository
 import com.clahbot.data.SettingsStore
@@ -445,7 +446,11 @@ fun DashboardScreen(
                     )
                 }
             }
-            item { AttackSummaryCard(confirmedAttacks, unconfirmedCount) }
+            item {
+                AttackSummaryCard(confirmedAttacks, unconfirmedCount) {
+                    attacks.firstOrNull { !it.confirmed }?.let { lootEditing = it }
+                }
+            }
             item {
                 HistoryFilterRow(selected = historyFilter, onSelect = { historyFilter = it })
             }
@@ -470,6 +475,14 @@ fun DashboardScreen(
             onDismiss = { lootEditing = null },
             onSave = { gold, elixir, dark, bonusGold, bonusElixir, bonusDark ->
                 scope.launch {
+                    val anyLoot = listOf(
+                        gold,
+                        elixir,
+                        dark,
+                        bonusGold,
+                        bonusElixir,
+                        bonusDark
+                    ).any { it != null }
                     attackRepository.update(
                         record.copy(
                             gold = gold,
@@ -478,8 +491,12 @@ fun DashboardScreen(
                             bonusGold = bonusGold,
                             bonusElixir = bonusElixir,
                             bonusDarkElixir = bonusDark,
-                            lootSource = AttackRecord.LOOT_MANUAL,
-                            verified = gold != null || elixir != null || dark != null,
+                            lootSource = if (anyLoot) {
+                                AttackRecord.LOOT_MANUAL
+                            } else {
+                                AttackRecord.LOOT_NONE
+                            },
+                            verified = anyLoot,
                             confirmed = true
                         )
                     )
@@ -508,7 +525,11 @@ fun DashboardScreen(
 }
 
 @Composable
-private fun AttackSummaryCard(records: List<AttackRecord>, unconfirmedCount: Int) {
+private fun AttackSummaryCard(
+    records: List<AttackRecord>,
+    unconfirmedCount: Int,
+    onConfirmNext: () -> Unit
+) {
     val summary = remember(records) { AttackStats.summarize(records) }
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -548,12 +569,21 @@ private fun AttackSummaryCard(records: List<AttackRecord>, unconfirmedCount: Int
             )
             if (unconfirmedCount > 0) {
                 Spacer(Modifier.height(6.dp))
-                Text(
-                    "$unconfirmedCount unconfirmed playback session(s) are not counted as attacks. " +
-                        "Confirm one with the check mark, or remove them in Settings.",
-                    fontSize = 10.sp,
-                    color = PauseAmber
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "$unconfirmedCount unconfirmed playback session(s) are not counted as " +
+                            "attacks yet. Confirm the result to count it.",
+                        fontSize = 10.sp,
+                        color = PauseAmber,
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextButton(
+                        onClick = onConfirmNext,
+                        contentPadding = PaddingValues(horizontal = 8.dp)
+                    ) {
+                        Text("Confirm next", fontSize = 10.sp, color = ElectricBlue)
+                    }
+                }
             }
             if (summary.count > 0 && summary.lootedCount == 0) {
                 Spacer(Modifier.height(6.dp))
@@ -691,7 +721,27 @@ private fun AttackHistoryRow(
                         }
                     }
                 } else {
-                    Text("Loot not captured", fontSize = 10.sp, color = TextMuted)
+                    Text(
+                        if (record.confirmed) {
+                            "Loot not captured"
+                        } else {
+                            "Loot not captured · tap ✓ to confirm"
+                        },
+                        fontSize = 10.sp,
+                        color = TextMuted
+                    )
+                }
+                if (record.hasBonus) {
+                    Spacer(Modifier.height(2.dp))
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(9.dp)
+                    ) {
+                        Text("Bonus", fontSize = 9.sp, color = TextMuted)
+                        record.bonusGold?.let { LootChip(R.drawable.ic_gold, it) }
+                        record.bonusElixir?.let { LootChip(R.drawable.ic_elixir, it) }
+                        record.bonusDarkElixir?.let { LootChip(R.drawable.ic_dark, it) }
+                    }
                 }
             }
             if (!record.confirmed) {
@@ -751,7 +801,7 @@ private fun LootEditDialog(
     var bonusElixir by remember(record.id) { mutableStateOf(initial(record.bonusElixir)) }
     var bonusDark by remember(record.id) { mutableStateOf(initial(record.bonusDarkElixir)) }
 
-    fun parse(value: String): Long? = value.trim().toLongOrNull()?.takeIf { it >= 0 }
+    fun parse(value: String): Long? = LootInput.parse(value)
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -762,7 +812,8 @@ private fun LootEditDialog(
                     if (record.confirmed) {
                         "Correct the values from the result screen. Empty means not captured."
                     } else {
-                        "A playback is not an attack yet. Enter the loot from the result screen to confirm it."
+                        "A playback is not an attack yet. Enter the loot from the result screen " +
+                            "to confirm it. You can leave every field empty and still confirm the attack."
                     },
                     fontSize = 11.sp,
                     color = TextMuted
@@ -1004,8 +1055,9 @@ private fun ControllerStatusCard(
             if (!ready) {
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    "Recording needs accessibility and overlay access. Android does not allow an app to " +
-                        "capture another app's raw touches, so AutoClash replays what you record.",
+                    "Passive recording reads the touchscreen through Shizuku or root, so the game " +
+                        "still receives every touch. Accessibility and overlay access are needed for " +
+                        "playback and the floating controls.",
                     fontSize = 10.sp,
                     color = TextMuted
                 )
@@ -1086,7 +1138,7 @@ private fun EmptyLibrary(onStartController: () -> Unit) {
             )
             Spacer(Modifier.height(4.dp))
             Text(
-                "Start the controller, tap Record, play your attack, then review and save it.",
+                "Start the controller, tap Record, play the attack normally, then review and save the macro.",
                 fontSize = 11.sp,
                 color = TextMuted,
                 modifier = Modifier.padding(horizontal = 12.dp)

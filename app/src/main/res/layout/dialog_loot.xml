@@ -1,0 +1,168 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:background="@drawable/bg_dialog"
+    android:orientation="vertical"
+    android:padding="16dp">
+
+    <TextView
+        android:id="@+id/tvLootTitle"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Confirm attack"
+        android:textColor="#F1F5F9"
+        android:textSize="16sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/tvLootMessage"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="3dp"
+        android:text="Enter the loot you saw on the result screen. Leave a field empty when it was not captured. Confirming counts the attack even if all fields stay empty."
+        android:textColor="#94A3B8"
+        android:textSize="10sp" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="44dp"
+        android:layout_marginTop="10dp"
+        android:orientation="horizontal">
+
+        <EditText
+            android:id="@+id/etLootGold"
+            android:layout_width="0dp"
+            android:layout_height="44dp"
+            android:layout_weight="1"
+            android:backgroundTint="#3B82F6"
+            android:hint="Gold"
+            android:importantForAutofill="no"
+            android:inputType="number"
+            android:maxLength="15"
+            android:singleLine="true"
+            android:textColor="#F1F5F9"
+            android:textColorHint="#64748B"
+            android:textSize="13sp" />
+
+        <EditText
+            android:id="@+id/etLootElixir"
+            android:layout_width="0dp"
+            android:layout_height="44dp"
+            android:layout_marginStart="8dp"
+            android:layout_weight="1"
+            android:backgroundTint="#3B82F6"
+            android:hint="Elixir"
+            android:importantForAutofill="no"
+            android:inputType="number"
+            android:maxLength="15"
+            android:singleLine="true"
+            android:textColor="#F1F5F9"
+            android:textColorHint="#64748B"
+            android:textSize="13sp" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="44dp"
+        android:layout_marginTop="6dp"
+        android:orientation="horizontal">
+
+        <EditText
+            android:id="@+id/etLootDark"
+            android:layout_width="0dp"
+            android:layout_height="44dp"
+            android:layout_weight="1"
+            android:backgroundTint="#3B82F6"
+            android:hint="Dark elixir"
+            android:importantForAutofill="no"
+            android:inputType="number"
+            android:maxLength="15"
+            android:singleLine="true"
+            android:textColor="#F1F5F9"
+            android:textColorHint="#64748B"
+            android:textSize="13sp" />
+
+        <EditText
+            android:id="@+id/etLootBonusGold"
+            android:layout_width="0dp"
+            android:layout_height="44dp"
+            android:layout_marginStart="8dp"
+            android:layout_weight="1"
+            android:backgroundTint="#3B82F6"
+            android:hint="Bonus gold"
+            android:importantForAutofill="no"
+            android:inputType="number"
+            android:maxLength="15"
+            android:singleLine="true"
+            android:textColor="#F1F5F9"
+            android:textColorHint="#64748B"
+            android:textSize="13sp" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="44dp"
+        android:layout_marginTop="6dp"
+        android:orientation="horizontal">
+
+        <EditText
+            android:id="@+id/etLootBonusElixir"
+            android:layout_width="0dp"
+            android:layout_height="44dp"
+            android:layout_weight="1"
+            android:backgroundTint="#3B82F6"
+            android:hint="Bonus elixir"
+            android:importantForAutofill="no"
+            android:inputType="number"
+            android:maxLength="15"
+            android:singleLine="true"
+            android:textColor="#F1F5F9"
+            android:textColorHint="#64748B"
+            android:textSize="13sp" />
+
+        <EditText
+            android:id="@+id/etLootBonusDark"
+            android:layout_width="0dp"
+            android:layout_height="44dp"
+            android:layout_marginStart="8dp"
+            android:layout_weight="1"
+            android:backgroundTint="#3B82F6"
+            android:hint="Bonus dark"
+            android:importantForAutofill="no"
+            android:inputType="number"
+            android:maxLength="15"
+            android:singleLine="true"
+            android:textColor="#F1F5F9"
+            android:textColorHint="#64748B"
+            android:textSize="13sp" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="44dp"
+        android:layout_marginTop="10dp"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/btnLootLater"
+            android:layout_width="0dp"
+            android:layout_height="44dp"
+            android:layout_weight="1"
+            android:backgroundTint="#1E293B"
+            android:text="Later"
+            android:textColor="#E2E8F0"
+            android:textSize="12sp" />
+
+        <Button
+            android:id="@+id/btnLootConfirm"
+            android:layout_width="0dp"
+            android:layout_height="44dp"
+            android:layout_marginStart="8dp"
+            android:layout_weight="1"
+            android:backgroundTint="#22C55E"
+            android:text="Confirm"
+            android:textSize="12sp"
+            android:textStyle="bold" />
+    </LinearLayout>
+</LinearLayout>

@@ -56,10 +56,13 @@ import com.clahbot.data.RecordingMode
 import com.clahbot.data.SettingsStore
 import com.clahbot.data.models.GesturePath
 import com.clahbot.data.models.GesturePoint
+import com.clahbot.data.models.LootInput
 import com.clahbot.data.models.Macro
 import com.clahbot.data.models.RecordedGesture
+import com.clahbot.execution.BubbleCorner
 import com.clahbot.execution.MacroPlayer
 import com.clahbot.execution.MacroTimeline
+import com.clahbot.execution.PlaybackBubblePlacement
 import com.clahbot.input.BuiltGesture
 import com.clahbot.input.InputAccessManager
 import com.clahbot.input.InputEventSource
@@ -109,6 +112,7 @@ class FloatingMenuService : Service() {
     private var indicatorText: TextView? = null
     private var startingPassive = false
     private var activeRecordingMode: RecordingMode? = null
+    private var lootDialog: Dialog? = null
 
     @Volatile
     private var controllerBoundsSnapshot: ScreenRect? = null
@@ -230,6 +234,7 @@ class FloatingMenuService : Service() {
         stopRecording(silent = true)
         stopPassiveRecorder()
         removeIndicator()
+        dismissLootDialog()
         removeCapture()
         removeController()
         scope.cancel()
@@ -483,7 +488,12 @@ class FloatingMenuService : Service() {
         val params = controllerParams ?: return
         collapsed = false
         view.findViewById<View>(R.id.bubble).visibility = View.GONE
-        view.findViewById<View>(R.id.panel).visibility = View.VISIBLE
+        val panel = view.findViewById<View>(R.id.panel)
+        panel.visibility = View.VISIBLE
+        val panelWidth = panel.width.takeIf { it > 0 } ?: dp(304)
+        val panelHeight = panel.height.takeIf { it > 0 } ?: dp(260)
+        params.x = params.x.coerceIn(0, (screenWidth - panelWidth).coerceAtLeast(0))
+        params.y = params.y.coerceIn(0, (screenHeight - panelHeight).coerceAtLeast(0))
         try {
             windowManager.updateViewLayout(view, params)
         } catch (_: Exception) {
@@ -512,6 +522,7 @@ class FloatingMenuService : Service() {
     private fun startRecording() {
         if (recording || startingPassive) return
         if (BotState.state.value.isPlayback) stopPlayback()
+        dismissLootDialog()
         if (controllerView == null) ensureController()
         if (controllerView == null) return
 
@@ -1224,17 +1235,26 @@ class FloatingMenuService : Service() {
             return
         }
 
+        if (macro.gestures.isEmpty()) {
+            toast("This macro has no gestures")
+            return
+        }
         val adjusted = macro.copy(speedMultiplier = speed, repeatMode = repeatMode)
         if (adjusted.orientation != currentOrientation()) {
             BotState.setStatus("Warning: macro was recorded in ${adjusted.orientation}")
         }
 
+        dismissLootDialog()
         endAttackSession(interrupted = false)
         BotState.setInterrupted(false)
         player?.stop()
+        // Place the icon before the first injected gesture can run.
+        placeControllerForPlayback(macro)
         val newPlayer = MacroPlayer(screenWidth, screenHeight)
         player = newPlayer
-        newPlayer.play(adjusted, scope) { endAttackSession(interrupted = false) }
+        newPlayer.play(adjusted, scope) {
+            endAttackSession(interrupted = false, promptLoot = true)
+        }
         if (newPlayer.isRunning()) {
             session = AttackSession(
                 startedAt = System.currentTimeMillis(),
@@ -1246,6 +1266,61 @@ class FloatingMenuService : Service() {
         }
         updateNotification(getString(R.string.notification_playing, macro.name))
         refreshUi()
+    }
+
+    /**
+     * While a macro is running, keep only the small icon and place it in the
+     * top corner farthest from the macro's own touch points.
+     */
+    private fun placeControllerForPlayback(macro: Macro) {
+        val view = controllerView ?: return
+        val params = controllerParams ?: return
+        if (screenWidth <= 0 || screenHeight <= 0) return
+
+        val landscape = screenWidth > screenHeight
+        val topMargin = if (landscape) {
+            dp(BUBBLE_TOP_LANDSCAPE_DP)
+        } else {
+            dp(BUBBLE_TOP_DP)
+        }
+        val corner = PlaybackBubblePlacement.chooseCorner(
+            points = macroTouchPoints(macro),
+            width = screenWidth,
+            height = screenHeight,
+            bubbleSizePx = dp(BUBBLE_SIZE_DP).toFloat(),
+            sideMarginPx = dp(BUBBLE_MARGIN_DP).toFloat(),
+            topMarginPx = topMargin.toFloat()
+        )
+
+        collapsed = true
+        view.findViewById<View>(R.id.panel).visibility = View.GONE
+        view.findViewById<View>(R.id.bubble).visibility = View.VISIBLE
+        params.x = if (corner == BubbleCorner.TOP_RIGHT) {
+            screenWidth - dp(BUBBLE_SIZE_DP) - dp(BUBBLE_MARGIN_DP)
+        } else {
+            dp(BUBBLE_MARGIN_DP)
+        }
+        params.y = topMargin
+        try {
+            windowManager.updateViewLayout(view, params)
+        } catch (_: Exception) {
+            // Window detached.
+        }
+        view.post { refreshControllerBoundsSnapshot() }
+        refreshUi()
+    }
+
+    private fun macroTouchPoints(macro: Macro): List<GesturePoint> {
+        val points = ArrayList<GesturePoint>()
+        for (gesture in macro.gestures) {
+            val stored = gesture.paths.filter { it.points.isNotEmpty() }
+            if (stored.isNotEmpty()) {
+                stored.forEach { points.addAll(it.points) }
+            } else {
+                points.addAll(MacroTimeline.effectivePoints(gesture))
+            }
+        }
+        return points
     }
 
     private fun togglePlaybackPause() {
@@ -1273,7 +1348,7 @@ class FloatingMenuService : Service() {
         if (next == PAGE_STATS) renderStats()
     }
 
-    private fun endAttackSession(interrupted: Boolean) {
+    private fun endAttackSession(interrupted: Boolean, promptLoot: Boolean = false) {
         val current = session ?: return
         session = null
         val now = System.currentTimeMillis()
@@ -1288,11 +1363,116 @@ class FloatingMenuService : Service() {
             repeatMode = current.repeat,
             result = if (interrupted) AttackRecord.RESULT_INTERRUPTED else AttackRecord.RESULT_COMPLETED,
             complete = !interrupted,
-            // Playback is not an attack: the user must confirm it in history.
+            // Playback is not an attack until the user confirms the result.
             confirmed = false
         )
-        scope.launch { attackRepository.add(record) }
+        scope.launch {
+            val saved = attackRepository.add(record)
+            if (saved != null && promptLoot && !interrupted) {
+                showLootDialog(saved)
+            }
+        }
         BotState.setInterrupted(false)
+    }
+
+    private fun showLootDialog(record: AttackRecord) {
+        dismissLootDialog()
+        val view = LayoutInflater.from(this).inflate(R.layout.dialog_loot, null)
+        view.findViewById<TextView>(R.id.tvLootMessage).text =
+            "Macro \"${record.macroName}\" finished. Enter the loot you saw on the " +
+                "result screen. Leave a field empty when it was not captured. " +
+                "Confirming counts the attack even if every field stays empty."
+
+        fun field(id: Int, initial: Long?) {
+            view.findViewById<EditText>(id).setText(initial?.toString() ?: "")
+        }
+        field(R.id.etLootGold, record.gold)
+        field(R.id.etLootElixir, record.elixir)
+        field(R.id.etLootDark, record.darkElixir)
+        field(R.id.etLootBonusGold, record.bonusGold)
+        field(R.id.etLootBonusElixir, record.bonusElixir)
+        field(R.id.etLootBonusDark, record.bonusDarkElixir)
+
+        val dialog = Dialog(this).apply {
+            setContentView(view)
+            window?.setType(overlayType())
+            window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+            window?.setLayout(dp(320), WindowManager.LayoutParams.WRAP_CONTENT)
+            window?.setGravity(Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
+            window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+            setCanceledOnTouchOutside(false)
+        }
+        lootDialog = dialog
+        dialog.setOnDismissListener {
+            if (lootDialog === dialog) lootDialog = null
+        }
+
+        view.findViewById<Button>(R.id.btnLootLater).setOnClickListener {
+            dialog.dismiss()
+            toast("Saved as unconfirmed in Attack history")
+        }
+        view.findViewById<Button>(R.id.btnLootConfirm).setOnClickListener {
+            fun parse(id: Int): Long? =
+                LootInput.parse(view.findViewById<EditText>(id).text.toString())
+
+            val gold = parse(R.id.etLootGold)
+            val elixir = parse(R.id.etLootElixir)
+            val dark = parse(R.id.etLootDark)
+            val bonusGold = parse(R.id.etLootBonusGold)
+            val bonusElixir = parse(R.id.etLootBonusElixir)
+            val bonusDark = parse(R.id.etLootBonusDark)
+            val anyLoot = listOf(
+                gold,
+                elixir,
+                dark,
+                bonusGold,
+                bonusElixir,
+                bonusDark
+            ).any { it != null }
+
+            val updated = record.copy(
+                gold = gold,
+                elixir = elixir,
+                darkElixir = dark,
+                bonusGold = bonusGold,
+                bonusElixir = bonusElixir,
+                bonusDarkElixir = bonusDark,
+                lootSource = if (anyLoot) {
+                    AttackRecord.LOOT_MANUAL
+                } else {
+                    AttackRecord.LOOT_NONE
+                },
+                verified = anyLoot,
+                confirmed = true
+            )
+            scope.launch {
+                if (attackRepository.update(updated) != null) {
+                    BotState.setStatus("Attack confirmed")
+                    toast("Attack confirmed")
+                } else {
+                    toast("Could not save the attack")
+                }
+            }
+            dialog.dismiss()
+        }
+
+        try {
+            dialog.show()
+        } catch (e: Exception) {
+            Log.e(TAG, "Loot dialog failed", e)
+            if (lootDialog === dialog) lootDialog = null
+            toast("Could not open the loot prompt")
+        }
+    }
+
+    private fun dismissLootDialog() {
+        val dialog = lootDialog
+        lootDialog = null
+        try {
+            dialog?.dismiss()
+        } catch (_: Exception) {
+            // Already dismissed.
+        }
     }
 
     private fun accessibilityHint(): String =
@@ -1820,6 +2000,7 @@ class FloatingMenuService : Service() {
         stopRecording(silent = true)
         stopPassiveRecorder()
         removeIndicator()
+        dismissLootDialog()
         removeCapture()
         removeController()
         BotState.clearActiveMacro()
@@ -1900,6 +2081,10 @@ class FloatingMenuService : Service() {
         private const val NOTIFICATION_ID = 1001
         private const val NOTIFICATION_THROTTLE_MS = 900L
         private const val STATUS_THROTTLE_MS = 500L
+        private const val BUBBLE_SIZE_DP = 48
+        private const val BUBBLE_MARGIN_DP = 8
+        private const val BUBBLE_TOP_DP = 48
+        private const val BUBBLE_TOP_LANDSCAPE_DP = 8
         private const val EXTRA_MACRO_ID = "macro_id"
 
         const val ACTION_PLAY = "com.clahbot.action.PLAY"
