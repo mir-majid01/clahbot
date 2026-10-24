@@ -235,9 +235,12 @@ fun DashboardScreen(
 
     LaunchedEffect(Unit) { attackRepository.refresh() }
 
-    LaunchedEffect(Unit) {
+    // While a session is active the dashboard is behind the controller overlay:
+    // polling here would only add main-thread work during recording.
+    LaunchedEffect(controllerState) {
+        if (controllerState != ControllerState.INACTIVE) return@LaunchedEffect
         while (true) {
-            delay(1500)
+            delay(2000)
             tick++
         }
     }

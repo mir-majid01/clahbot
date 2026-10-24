@@ -106,8 +106,18 @@ class FloatingMenuService : Service() {
     private var injectedEventSeen: Boolean = false
     private var retryUsed: Boolean = false
     private var injectToken: Int = 0
+    private var injectUntilMs: Long = 0L
+    private var injectedStartX: Float = 0f
+    private var injectedStartY: Float = 0f
     private var lastNotificationMs: Long = 0L
+    private var lastStatusMs: Long = 0L
     private var lastGestureUpMs: Long = 0L
+
+    // Lightweight per-session counters shown on the Stats page.
+    private var capturedGestures: Int = 0
+    private var dispatchedGestures: Int = 0
+    private var selfDiscardedEvents: Int = 0
+    private var rejectedGestures: Int = 0
     private var recorded = mutableListOf<RecordedGesture>()
     private var recordStartMs: Long = 0L
     private var pausedAccumMs: Long = 0L
@@ -487,6 +497,10 @@ class FloatingMenuService : Service() {
 
         recorded.clear()
         pathPoints.clear()
+        capturedGestures = 0
+        dispatchedGestures = 0
+        selfDiscardedEvents = 0
+        rejectedGestures = 0
         gestureSeq = 0
         pausedAccumMs = 0L
         pausedAtMs = 0L
@@ -598,9 +612,16 @@ class FloatingMenuService : Service() {
 
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                if (injecting) {
-                    injectedEventSeen = true
-                    return true
+                if (injecting || now < injectUntilMs) {
+                    // Only a touch at our own injected start point is ours.
+                    // Anything else is a genuine gesture and must be recorded.
+                    val dx = event.x - injectedStartX
+                    val dy = event.y - injectedStartY
+                    if (dx * dx + dy * dy <= SELF_MATCH_PX * SELF_MATCH_PX) {
+                        injectedEventSeen = true
+                        selfDiscardedEvents++
+                        return true
+                    }
                 }
                 downTime = now
                 pathPoints = mutableListOf(GesturePoint(event.x, event.y, 0L))
@@ -689,12 +710,17 @@ class FloatingMenuService : Service() {
             points = normalized
         )
         recorded.add(gesture)
+        capturedGestures++
         // Inject first. Notification updates and view lookups used to run before
         // this and added tens of milliseconds to every gesture.
         injectRecordedGesture(screenPoints, type, durationMs)
         BotState.setRecordedCount(recorded.size)
         updateRecordingInfo()
         val now = SystemClock.uptimeMillis()
+        if (now - lastStatusMs > STATUS_THROTTLE_MS) {
+            lastStatusMs = now
+            BotState.setStatus("Recording — " + recorded.size + " gesture(s)")
+        }
         if (now - lastNotificationMs > NOTIFICATION_THROTTLE_MS) {
             lastNotificationMs = now
             updateRecordingNotification()
@@ -730,12 +756,17 @@ class FloatingMenuService : Service() {
         injecting = true
         injectedEventSeen = false
         retryUsed = false
+        injectedStartX = pointsPx.first().x
+        injectedStartY = pointsPx.first().y
+        injectUntilMs = SystemClock.uptimeMillis() + duration + INJECT_TAIL_MS
+        dispatchedGestures++
         setCaptureTouchable(false)
-        // No artificial delay: dispatch on the next loop iteration. If the window
-        // flag has not applied yet the injection lands on our own surface, which
-        // sets injectedEventSeen and triggers exactly one re-dispatch.
+        // Dispatch on the next loop iteration. If the window flag has not applied
+        // yet the injection lands on our own surface, which sets injectedEventSeen
+        // and triggers exactly one re-dispatch.
         handler.post { dispatchPath(service, token, path, duration) }
-        handler.postDelayed({ restoreCaptureTouch(token) }, duration + 900L)
+        // Bounded, not a ~1 s watchdog: stroke duration plus one drain tail.
+        handler.postDelayed({ restoreCaptureTouch(token) }, duration + INJECT_TAIL_MS)
     }
 
     private fun dispatchPath(
@@ -784,6 +815,7 @@ class FloatingMenuService : Service() {
             }, 32L)
             return
         }
+        // Drain first; restoreCaptureTouch waits out the remaining tail itself.
         restoreCaptureTouch(token)
     }
 
@@ -805,6 +837,19 @@ class FloatingMenuService : Service() {
         if (token != injectToken) return
         if (!injecting) return
         injecting = false
+        // Keep the window non-touchable for the tail so the end of the injected
+        // event stream cannot be captured as a new physical gesture.
+        val remaining = injectUntilMs - SystemClock.uptimeMillis()
+        if (remaining > 0) {
+            handler.postDelayed({
+                if (token == injectToken && recording &&
+                    BotState.state.value == ControllerState.RECORDING
+                ) {
+                    setCaptureTouchable(true)
+                }
+            }, remaining)
+            return
+        }
         if (recording && BotState.state.value == ControllerState.RECORDING) {
             setCaptureTouchable(true)
         }
@@ -812,6 +857,7 @@ class FloatingMenuService : Service() {
 
     private fun stopRecording(silent: Boolean = false) {
         if (!recording) return
+        if (recorded.isEmpty()) rejectedGestures++
         recording = false
         injecting = false
         injectToken++
@@ -974,7 +1020,9 @@ class FloatingMenuService : Service() {
         view.findViewById<TextView>(R.id.tvStatsTime).text =
             "Measured " + formatDuration(summary.totalDurationMs) +
                 " · avg " + formatDuration(summary.averageDurationMs) +
-                " · replay " + BotState.replayLatencyMs.value + " ms"
+                " · replay " + BotState.replayLatencyMs.value + " ms" +
+                "\nRec: " + capturedGestures + " captured · " + dispatchedGestures +
+                " injected · " + selfDiscardedEvents + " self · " + rejectedGestures + " rejected"
         view.findViewById<TextView>(R.id.tvStatsRecent).text = if (records.isEmpty()) {
             "No attacks yet. Play a macro to start history."
         } else {
@@ -1524,6 +1572,9 @@ class FloatingMenuService : Service() {
         private const val CHANNEL_ID = "autoclash_controller"
         private const val NOTIFICATION_ID = 1001
         private const val NOTIFICATION_THROTTLE_MS = 900L
+        private const val STATUS_THROTTLE_MS = 500L
+        private const val INJECT_TAIL_MS = 140L
+        private const val SELF_MATCH_PX = 40f
         private const val EXTRA_MACRO_ID = "macro_id"
 
         const val ACTION_PLAY = "com.clahbot.action.PLAY"
