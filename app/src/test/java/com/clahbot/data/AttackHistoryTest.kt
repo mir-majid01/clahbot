@@ -137,6 +137,49 @@ class AttackHistoryTest {
     }
 
     @Test
+    fun onlyConfirmedRecordsCountAsAttacks() {
+        val playback = record(1, gold = null).copy(confirmed = false)
+        val confirmed = record(2, gold = 100).copy(confirmed = true)
+        val summary = AttackStats.summarize(
+            AttackStats.confirmedOnly(listOf(playback, confirmed))
+        )
+        assertEquals(1, summary.count)
+        assertEquals(100L, summary.gold)
+    }
+
+    @Test
+    fun legacyRecordsWithoutConfirmationAreUnconfirmed() = runBlocking {
+        // A record written by the previous build has no "confirmed" field.
+        File(directory, "attacks.json").writeText(
+            """
+            {"schemaVersion":1,"records":[{
+              "id":1,"startedAt":1000,"endedAt":61000,"durationMs":60000,
+              "macroId":7,"macroName":"Attack","speedMultiplier":1.0,
+              "repeatMode":"once","result":"completed","complete":true
+            }]}
+            """.trimIndent()
+        )
+        val reloaded = AttackRepository(File(directory, "attacks.json"))
+        val loaded = reloaded.refresh()
+        assertEquals(1, loaded.size)
+        assertFalse(loaded[0].confirmed)
+        assertEquals(0, AttackStats.confirmedOnly(loaded).size)
+    }
+
+    @Test
+    fun bonusIsStoredSeparatelyFromAwardedLoot() {
+        val withBonus = record(1, gold = 100).copy(
+            bonusGold = 310_000,
+            bonusElixir = 310_000,
+            bonusDark = 2_100
+        )
+        val summary = AttackStats.summarize(listOf(withBonus))
+        assertEquals(100L, summary.gold)
+        assertEquals(0L, summary.elixir)
+        assertTrue(withBonus.hasBonus)
+    }
+
+    @Test
     fun clearAllEmptiesHistory() = runBlocking {
         repository.add(record(1))
         repository.add(record(2))
