@@ -1,7 +1,5 @@
 package com.clahbot.service
 
-import android.accessibilityservice.AccessibilityService
-import android.accessibilityservice.GestureDescription
 import android.app.Dialog
 import android.app.Notification
 import android.app.NotificationChannel
@@ -102,21 +100,11 @@ class FloatingMenuService : Service() {
     private var repeatMode: String = Macro.REPEAT_ONCE
 
     private var recording: Boolean = false
-    private var injecting: Boolean = false
-    private var injectedEventSeen: Boolean = false
-    private var retryUsed: Boolean = false
-    private var injectToken: Int = 0
-    private var injectUntilMs: Long = 0L
-    private var injectedStartX: Float = 0f
-    private var injectedStartY: Float = 0f
     private var lastNotificationMs: Long = 0L
     private var lastStatusMs: Long = 0L
-    private var lastGestureUpMs: Long = 0L
 
-    // Lightweight per-session counters shown on the Stats page.
+    // Recording never dispatches, so every captured gesture is physical.
     private var capturedGestures: Int = 0
-    private var dispatchedGestures: Int = 0
-    private var selfDiscardedEvents: Int = 0
     private var rejectedGestures: Int = 0
     private var recorded = mutableListOf<RecordedGesture>()
     private var recordStartMs: Long = 0L
@@ -498,22 +486,19 @@ class FloatingMenuService : Service() {
         recorded.clear()
         pathPoints.clear()
         capturedGestures = 0
-        dispatchedGestures = 0
-        selfDiscardedEvents = 0
         rejectedGestures = 0
         gestureSeq = 0
         pausedAccumMs = 0L
         pausedAtMs = 0L
         downTime = 0L
         recordStartMs = SystemClock.uptimeMillis()
-        injectToken++
-        injecting = false
         recording = true
         updateScreenSize()
 
         BotState.clearRecording()
         BotState.setState(ControllerState.RECORDING)
-        BotState.setStatus("Recording")
+        BotState.setStatus("Recording (game input paused)")
+        toast("Recording: the game will not respond. Taps are captured, not played.")
         attachCaptureSurface()
         handler.removeCallbacks(timerRunnable)
         handler.post(timerRunnable)
@@ -527,15 +512,16 @@ class FloatingMenuService : Service() {
                 BotState.setState(ControllerState.RECORDING_PAUSED)
                 BotState.setStatus("Recording paused")
                 pathPoints.clear()
-                if (!injecting) setCaptureTouchable(false)
+                // Paused: stop capturing and let the game take input again.
+                setCaptureTouchable(false)
             }
 
             ControllerState.RECORDING_PAUSED -> {
                 pausedAccumMs += SystemClock.uptimeMillis() - pausedAtMs
                 pausedAtMs = 0L
                 BotState.setState(ControllerState.RECORDING)
-                BotState.setStatus("Recording")
-                if (!injecting) setCaptureTouchable(true)
+                BotState.setStatus("Recording (game input paused)")
+                setCaptureTouchable(true)
             }
 
             else -> return
@@ -594,6 +580,21 @@ class FloatingMenuService : Service() {
         }
     }
 
+    /** Used only by pause: while paused the game receives input again. */
+    private fun setCaptureTouchable(touchable: Boolean) {
+        val view = captureView ?: return
+        val params = captureParams ?: return
+        val notTouchable = WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        val updated = if (touchable) params.flags and notTouchable.inv() else params.flags or notTouchable
+        if (updated == params.flags) return
+        params.flags = updated
+        try {
+            windowManager.updateViewLayout(view, params)
+        } catch (_: Exception) {
+            // Window detached.
+        }
+    }
+
     private fun removeCapture() {
         val view = captureView ?: return
         captureView = null
@@ -612,24 +613,12 @@ class FloatingMenuService : Service() {
 
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                if (injecting || now < injectUntilMs) {
-                    // Only a touch at our own injected start point is ours.
-                    // Anything else is a genuine gesture and must be recorded.
-                    val dx = event.x - injectedStartX
-                    val dy = event.y - injectedStartY
-                    if (dx * dx + dy * dy <= SELF_MATCH_PX * SELF_MATCH_PX) {
-                        injectedEventSeen = true
-                        selfDiscardedEvents++
-                        return true
-                    }
-                }
                 downTime = now
                 pathPoints = mutableListOf(GesturePoint(event.x, event.y, 0L))
                 return true
             }
 
             MotionEvent.ACTION_MOVE -> {
-                if (injecting) return true
                 val elapsed = now - downTime
                 val last = pathPoints.lastOrNull()
                 if (last == null) {
@@ -647,7 +636,6 @@ class FloatingMenuService : Service() {
             }
 
             MotionEvent.ACTION_UP -> {
-                if (injecting) return true
                 val duration = (now - downTime).coerceAtLeast(1L)
                 pathPoints.add(GesturePoint(event.x, event.y, duration))
                 commitGesture(duration)
@@ -664,7 +652,6 @@ class FloatingMenuService : Service() {
 
     private fun commitGesture(durationMs: Long) {
         if (!recording) return
-        lastGestureUpMs = SystemClock.uptimeMillis()
         if (captureView == null) return
         // Normalize against the same display bounds playback will scale by.
         // Using the capture view's measured size here was the coordinate drift:
@@ -683,7 +670,7 @@ class FloatingMenuService : Service() {
 
         val sampled = MacroTimeline.decimate(rawPoints)
         // event.x/y are relative to the capture view. Convert once to screen
-        // coordinates and use those for both storage and injection, so a window
+        // coordinates before storing them, so a window
         // that is not anchored at (0,0) cannot shift the macro.
         val origin = IntArray(2)
         captureView?.getLocationOnScreen(origin)
@@ -711,15 +698,14 @@ class FloatingMenuService : Service() {
         )
         recorded.add(gesture)
         capturedGestures++
-        // Inject first. Notification updates and view lookups used to run before
-        // this and added tens of milliseconds to every gesture.
-        injectRecordedGesture(screenPoints, type, durationMs)
+        // Recording never injects: the captured touch is stored and the game
+        // below is deliberately not fed anything while recording.
         BotState.setRecordedCount(recorded.size)
         updateRecordingInfo()
         val now = SystemClock.uptimeMillis()
         if (now - lastStatusMs > STATUS_THROTTLE_MS) {
             lastStatusMs = now
-            BotState.setStatus("Recording — " + recorded.size + " gesture(s)")
+            BotState.setStatus("Recording (input paused) — " + recorded.size + " gesture(s)")
         }
         if (now - lastNotificationMs > NOTIFICATION_THROTTLE_MS) {
             lastNotificationMs = now
@@ -727,140 +713,10 @@ class FloatingMenuService : Service() {
         }
     }
 
-    /**
-     * Replays the gesture into the game while the capture surface is not
-     * touchable, otherwise the injected gesture would land on our own overlay.
-     */
-    private fun injectRecordedGesture(
-        pointsPx: List<GesturePoint>,
-        type: String,
-        durationMs: Long
-    ) {
-        val service = ClahAccessibilityService.instance ?: return
-        if (pointsPx.isEmpty()) return
-
-        val path = Path()
-        val first = pointsPx.first()
-        path.moveTo(first.x, first.y)
-        if (type == "swipe") {
-            for (i in 1 until pointsPx.size) path.lineTo(pointsPx[i].x, pointsPx[i].y)
-        }
-
-        val duration = when (type) {
-            "swipe" -> durationMs.coerceIn(MacroTimeline.MIN_DRAG_STROKE_MS, MacroTimeline.MAX_STROKE_MS)
-            "long_press" -> durationMs.coerceIn(MacroTimeline.MIN_LONG_PRESS_STROKE_MS, MacroTimeline.MAX_STROKE_MS)
-            else -> MacroTimeline.TAP_MS
-        }
-
-        val token = ++injectToken
-        injecting = true
-        injectedEventSeen = false
-        retryUsed = false
-        injectedStartX = pointsPx.first().x
-        injectedStartY = pointsPx.first().y
-        injectUntilMs = SystemClock.uptimeMillis() + duration + INJECT_TAIL_MS
-        dispatchedGestures++
-        setCaptureTouchable(false)
-        // Dispatch on the next loop iteration. If the window flag has not applied
-        // yet the injection lands on our own surface, which sets injectedEventSeen
-        // and triggers exactly one re-dispatch.
-        handler.post { dispatchPath(service, token, path, duration) }
-        // Bounded, not a ~1 s watchdog: stroke duration plus one drain tail.
-        handler.postDelayed({ restoreCaptureTouch(token) }, duration + INJECT_TAIL_MS)
-    }
-
-    private fun dispatchPath(
-        service: ClahAccessibilityService,
-        token: Int,
-        path: Path,
-        duration: Long
-    ) {
-        if (!recording || token != injectToken) {
-            restoreCaptureTouch(token)
-            return
-        }
-        // Evidence for the lag discussion: time from finger-up to dispatch.
-        BotState.setReplayLatency(SystemClock.uptimeMillis() - lastGestureUpMs)
-        val stroke = GestureDescription.StrokeDescription(path, 0L, duration)
-        val description = GestureDescription.Builder().addStroke(stroke).build()
-        val callback = object : AccessibilityService.GestureResultCallback() {
-            override fun onCompleted(gestureDescription: GestureDescription?) {
-                afterDispatch(service, token, path, duration)
-            }
-
-            override fun onCancelled(gestureDescription: GestureDescription?) {
-                afterDispatch(service, token, path, duration)
-            }
-        }
-        val accepted = service.dispatchGesture(description, callback, null)
-        if (!accepted) afterDispatch(service, token, path, duration)
-    }
-
-    /**
-     * If our own capture surface saw the injected gesture, the game never got it.
-     * Re-dispatch once so a fast tap is not silently swallowed.
-     */
-    private fun afterDispatch(
-        service: ClahAccessibilityService,
-        token: Int,
-        path: Path,
-        duration: Long
-    ) {
-        if (token != injectToken) return
-        if (injectedEventSeen && !retryUsed) {
-            retryUsed = true
-            injectedEventSeen = false
-            handler.postDelayed({
-                if (token == injectToken) dispatchPath(service, token, path, duration)
-            }, 32L)
-            return
-        }
-        // Drain first; restoreCaptureTouch waits out the remaining tail itself.
-        restoreCaptureTouch(token)
-    }
-
-    private fun setCaptureTouchable(touchable: Boolean) {
-        val view = captureView ?: return
-        val params = captureParams ?: return
-        val notTouchable = WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-        val updated = if (touchable) params.flags and notTouchable.inv() else params.flags or notTouchable
-        if (updated == params.flags) return
-        params.flags = updated
-        try {
-            windowManager.updateViewLayout(view, params)
-        } catch (_: Exception) {
-            // Window detached.
-        }
-    }
-
-    private fun restoreCaptureTouch(token: Int) {
-        if (token != injectToken) return
-        if (!injecting) return
-        injecting = false
-        // Keep the window non-touchable for the tail so the end of the injected
-        // event stream cannot be captured as a new physical gesture.
-        val remaining = injectUntilMs - SystemClock.uptimeMillis()
-        if (remaining > 0) {
-            handler.postDelayed({
-                if (token == injectToken && recording &&
-                    BotState.state.value == ControllerState.RECORDING
-                ) {
-                    setCaptureTouchable(true)
-                }
-            }, remaining)
-            return
-        }
-        if (recording && BotState.state.value == ControllerState.RECORDING) {
-            setCaptureTouchable(true)
-        }
-    }
-
     private fun stopRecording(silent: Boolean = false) {
         if (!recording) return
         if (recorded.isEmpty()) rejectedGestures++
         recording = false
-        injecting = false
-        injectToken++
         pathPoints.clear()
         handler.removeCallbacks(timerRunnable)
         removeCapture()
@@ -1020,9 +876,7 @@ class FloatingMenuService : Service() {
         view.findViewById<TextView>(R.id.tvStatsTime).text =
             "Measured " + formatDuration(summary.totalDurationMs) +
                 " · avg " + formatDuration(summary.averageDurationMs) +
-                " · replay " + BotState.replayLatencyMs.value + " ms" +
-                "\nRec: " + capturedGestures + " captured · " + dispatchedGestures +
-                " injected · " + selfDiscardedEvents + " self · " + rejectedGestures + " rejected"
+                "\nRec: " + capturedGestures + " captured · " + rejectedGestures + " rejected"
         view.findViewById<TextView>(R.id.tvStatsRecent).text = if (records.isEmpty()) {
             "No attacks yet. Play a macro to start history."
         } else {
@@ -1573,8 +1427,6 @@ class FloatingMenuService : Service() {
         private const val NOTIFICATION_ID = 1001
         private const val NOTIFICATION_THROTTLE_MS = 900L
         private const val STATUS_THROTTLE_MS = 500L
-        private const val INJECT_TAIL_MS = 140L
-        private const val SELF_MATCH_PX = 40f
         private const val EXTRA_MACRO_ID = "macro_id"
 
         const val ACTION_PLAY = "com.clahbot.action.PLAY"
