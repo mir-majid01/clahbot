@@ -62,12 +62,17 @@ class PassiveRecorder(
         val started = try {
             source.start(
                 devicePath = device.path,
-                onLines = { line ->
-                    if (!running) return@start
-                    try {
-                        newParser.feed(line)
-                    } catch (t: Throwable) {
-                        fail("Touch capture stopped: ${t.message ?: "parser error"}")
+                onLines = { payload ->
+                    if (running) {
+                        try {
+                            // Shizuku batches a whole SYN_REPORT frame into one
+                            // payload; root delivers one line at a time.
+                            payload.lineSequence().forEach { line ->
+                                if (line.isNotBlank()) newParser.feed(line)
+                            }
+                        } catch (t: Throwable) {
+                            fail("Touch capture stopped: ${t.message ?: "parser error"}")
+                        }
                     }
                 },
                 onFatal = { message -> fail(message) }

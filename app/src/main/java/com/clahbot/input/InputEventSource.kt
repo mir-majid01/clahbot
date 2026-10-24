@@ -10,6 +10,10 @@ interface InputEventSource {
     /** Runs `getevent -lp` and returns its raw text, or null on failure. */
     fun discover(): String?
 
+    /**
+     * [onLines] receives complete getevent output and may contain several
+     * newline-separated lines per callback.
+     */
     fun start(
         devicePath: String,
         onLines: (String) -> Unit,

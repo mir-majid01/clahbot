@@ -99,6 +99,20 @@ class PassiveRecorderTest {
     }
 
     @Test
+    fun multiLineBatchesFromShizukuAreParsedLineByLine() {
+        assertTrue(recorder.start())
+
+        source.emitRaw(down(1000, 1, 300, 2300) + "\n")
+        source.emitRaw(up(1200) + "\n")
+
+        val gesture = gestures.single()
+        assertEquals(1000L, gesture.startUptimeMs)
+        assertEquals(200L, gesture.durationMs)
+        assertPoint(gesture.primary.points.first(), 300f, 2300f, 0L)
+        assertPoint(gesture.primary.points.last(), 300f, 2300f, 200L)
+    }
+
+    @Test
     fun pauseDropsInputAndResumeStartsFresh() {
         assertTrue(recorder.start())
         recorder.setPaused(true)
@@ -179,8 +193,23 @@ class PassiveRecorderTest {
             lines.split('\n').forEach { this.lines?.invoke(it) }
         }
 
+        fun emitRaw(batch: String) {
+            this.lines?.invoke(batch)
+        }
+
         fun fatal(message: String) {
             this.fatal?.invoke(message)
         }
+    }
+
+    private fun assertPoint(
+        point: com.clahbot.data.models.GesturePoint,
+        x: Float,
+        y: Float,
+        t: Long
+    ) {
+        assertEquals(x, point.x, 0.001f)
+        assertEquals(y, point.y, 0.001f)
+        assertEquals(t, point.t)
     }
 }
