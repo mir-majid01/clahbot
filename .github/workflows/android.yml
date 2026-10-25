@@ -38,10 +38,18 @@ jobs:
       - name: Unit tests
         run: |
           chmod +x ./gradlew
-          ./gradlew --no-daemon --stacktrace testDebugUnitTest
+          ./gradlew --no-daemon --stacktrace :app:testDebugUnitTest :ocrlab:testDebugUnitTest
 
       - name: Assemble debug APK
-        run: ./gradlew --no-daemon --stacktrace assembleDebug
+        run: ./gradlew --no-daemon --stacktrace :app:assembleDebug :ocrlab:assembleDebug
+
+      - name: Upload OCR Lab APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ocrlab-debug
+          path: ocrlab/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Upload test report
         if: always()

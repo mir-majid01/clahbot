@@ -56,7 +56,6 @@ import com.clahbot.data.RecordingMode
 import com.clahbot.data.SettingsStore
 import com.clahbot.data.models.GesturePath
 import com.clahbot.data.models.GesturePoint
-import com.clahbot.data.models.LootInput
 import com.clahbot.data.models.Macro
 import com.clahbot.data.models.RecordedGesture
 import com.clahbot.execution.BubbleCorner
@@ -113,7 +112,6 @@ class FloatingMenuService : Service() {
     private var indicatorText: TextView? = null
     private var startingPassive = false
     private var activeRecordingMode: RecordingMode? = null
-    private var lootDialog: Dialog? = null
 
     @Volatile
     private var controllerBoundsSnapshot: ScreenRect? = null
@@ -235,7 +233,6 @@ class FloatingMenuService : Service() {
         stopRecording(silent = true)
         stopPassiveRecorder()
         removeIndicator()
-        dismissLootDialog()
         removeCapture()
         removeController()
         scope.cancel()
@@ -547,7 +544,6 @@ class FloatingMenuService : Service() {
     private fun startRecording() {
         if (recording || startingPassive) return
         if (BotState.state.value.isPlayback) stopPlayback()
-        dismissLootDialog()
         if (controllerView == null) ensureController()
         if (controllerView == null) return
 
@@ -1337,7 +1333,6 @@ class FloatingMenuService : Service() {
             BotState.setStatus("Warning: macro was recorded in ${adjusted.orientation}")
         }
 
-        dismissLootDialog()
         endAttackSession(interrupted = false)
         BotState.setInterrupted(false)
         player?.stop()
@@ -1346,7 +1341,7 @@ class FloatingMenuService : Service() {
         val newPlayer = MacroPlayer(screenWidth, screenHeight)
         player = newPlayer
         newPlayer.play(adjusted, scope) {
-            endAttackSession(interrupted = false, promptLoot = true)
+            endAttackSession(interrupted = false)
         }
         if (newPlayer.isRunning()) {
             session = AttackSession(
@@ -1442,131 +1437,13 @@ class FloatingMenuService : Service() {
         if (next == PAGE_STATS) renderStats()
     }
 
-    private fun endAttackSession(interrupted: Boolean, promptLoot: Boolean = false) {
-        val current = session ?: return
+    private fun endAttackSession(interrupted: Boolean) {
+        if (session == null) return
         session = null
-        val now = System.currentTimeMillis()
-        val record = AttackRecord(
-            id = nextAttackId(),
-            startedAt = current.startedAt,
-            endedAt = now,
-            durationMs = (now - current.startedAt).coerceAtLeast(0L),
-            macroId = current.macroId,
-            macroName = current.macroName,
-            speedMultiplier = current.speed,
-            repeatMode = current.repeat,
-            result = if (interrupted) AttackRecord.RESULT_INTERRUPTED else AttackRecord.RESULT_COMPLETED,
-            complete = !interrupted,
-            // Playback is not an attack until the user confirms the result.
-            confirmed = false
-        )
-        scope.launch {
-            val saved = attackRepository.add(record)
-            if (saved != null && promptLoot && !interrupted) {
-                showLootDialog(saved)
-            }
-        }
+        // A finished playback is not evidence of an attack. Only a detected
+        // results screen may create a record.
+        Log.i(TAG, "Playback ended (interrupted=$interrupted); no attack record written")
         BotState.setInterrupted(false)
-    }
-
-    private fun showLootDialog(record: AttackRecord) {
-        dismissLootDialog()
-        val view = LayoutInflater.from(this).inflate(R.layout.dialog_loot, null)
-        view.findViewById<TextView>(R.id.tvLootMessage).text =
-            "Macro \"${record.macroName}\" finished. Enter the loot you saw on the " +
-                "result screen. Leave a field empty when it was not captured. " +
-                "Confirming counts the attack even if every field stays empty."
-
-        fun field(id: Int, initial: Long?) {
-            view.findViewById<EditText>(id).setText(initial?.toString() ?: "")
-        }
-        field(R.id.etLootGold, record.gold)
-        field(R.id.etLootElixir, record.elixir)
-        field(R.id.etLootDark, record.darkElixir)
-        field(R.id.etLootBonusGold, record.bonusGold)
-        field(R.id.etLootBonusElixir, record.bonusElixir)
-        field(R.id.etLootBonusDark, record.bonusDarkElixir)
-
-        val dialog = Dialog(this).apply {
-            setContentView(view)
-            window?.setType(overlayType())
-            window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-            window?.setLayout(dp(320), WindowManager.LayoutParams.WRAP_CONTENT)
-            window?.setGravity(Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
-            window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
-            setCanceledOnTouchOutside(false)
-        }
-        lootDialog = dialog
-        dialog.setOnDismissListener {
-            if (lootDialog === dialog) lootDialog = null
-        }
-
-        view.findViewById<Button>(R.id.btnLootLater).setOnClickListener {
-            dialog.dismiss()
-            toast("Saved as unconfirmed in Attack history")
-        }
-        view.findViewById<Button>(R.id.btnLootConfirm).setOnClickListener {
-            fun parse(id: Int): Long? =
-                LootInput.parse(view.findViewById<EditText>(id).text.toString())
-
-            val gold = parse(R.id.etLootGold)
-            val elixir = parse(R.id.etLootElixir)
-            val dark = parse(R.id.etLootDark)
-            val bonusGold = parse(R.id.etLootBonusGold)
-            val bonusElixir = parse(R.id.etLootBonusElixir)
-            val bonusDark = parse(R.id.etLootBonusDark)
-            val anyLoot = listOf(
-                gold,
-                elixir,
-                dark,
-                bonusGold,
-                bonusElixir,
-                bonusDark
-            ).any { it != null }
-
-            val updated = record.copy(
-                gold = gold,
-                elixir = elixir,
-                darkElixir = dark,
-                bonusGold = bonusGold,
-                bonusElixir = bonusElixir,
-                bonusDarkElixir = bonusDark,
-                lootSource = if (anyLoot) {
-                    AttackRecord.LOOT_MANUAL
-                } else {
-                    AttackRecord.LOOT_NONE
-                },
-                verified = anyLoot,
-                confirmed = true
-            )
-            scope.launch {
-                if (attackRepository.update(updated) != null) {
-                    BotState.setStatus("Attack confirmed")
-                    toast("Attack confirmed")
-                } else {
-                    toast("Could not save the attack")
-                }
-            }
-            dialog.dismiss()
-        }
-
-        try {
-            dialog.show()
-        } catch (e: Exception) {
-            Log.e(TAG, "Loot dialog failed", e)
-            if (lootDialog === dialog) lootDialog = null
-            toast("Could not open the loot prompt")
-        }
-    }
-
-    private fun dismissLootDialog() {
-        val dialog = lootDialog
-        lootDialog = null
-        try {
-            dialog?.dismiss()
-        } catch (_: Exception) {
-            // Already dismissed.
-        }
     }
 
     private fun accessibilityHint(): String =
@@ -1575,11 +1452,6 @@ class FloatingMenuService : Service() {
         } else {
             "Enable the AutoClash accessibility service first"
         }
-
-    private fun nextAttackId(): Long {
-        val highest = attackRepository.records.value.maxOfOrNull { it.id } ?: 0L
-        return maxOf(System.currentTimeMillis(), highest + 1L)
-    }
 
     private fun renderStats() {
         val view = controllerView ?: return
@@ -2128,7 +2000,6 @@ class FloatingMenuService : Service() {
         stopRecording(silent = true)
         stopPassiveRecorder()
         removeIndicator()
-        dismissLootDialog()
         removeCapture()
         removeController()
         BotState.clearActiveMacro()
