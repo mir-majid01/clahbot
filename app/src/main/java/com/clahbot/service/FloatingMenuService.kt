@@ -343,6 +343,9 @@ class FloatingMenuService : Service() {
         BotState.setStatus("Controller ready")
         refreshUi()
         refreshMacros()
+        // The repository may have emitted its current list before this window
+        // existed; render the value we already have so the list is never blank.
+        renderMacroList()
         scope.launch { attackRepository.refresh() }
     }
 
@@ -1624,8 +1627,12 @@ class FloatingMenuService : Service() {
 
     private fun renderMacroList() {
         val view = controllerView ?: return
-        val container = view.findViewById<LinearLayout>(R.id.macroList) ?: return
+        val container = view.findViewById<LinearLayout>(R.id.macroList) ?: run {
+            Log.e(TAG, "macroList container missing")
+            return
+        }
         container.removeAllViews()
+        Log.i(TAG, "Rendering ${macros.size} macro(s) in the controller")
 
         view.findViewById<TextView>(R.id.tvLibraryLabel)?.text =
             if (macros.isEmpty()) "Macros" else "Macros · ${macros.size}"
