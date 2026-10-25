@@ -155,7 +155,7 @@ class MainActivity : ComponentActivity() {
         statusView.text = "Running accuracy on ${images.size} images…"
         lifecycleScope.launch {
             try {
-                val report = AccuracyRunner().run(directory, ocr)
+                val report = AccuracyRunner(this@MainActivity).run(directory, ocr)
                 val outputFile = File(filesDir, "accuracy_report.json")
                 withContext(Dispatchers.IO) {
                     outputFile.writeText(

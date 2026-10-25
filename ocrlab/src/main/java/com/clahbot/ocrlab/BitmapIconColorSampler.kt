@@ -11,11 +11,16 @@ import android.graphics.Color
 class BitmapIconColorSampler(private val bitmap: Bitmap) : IconColorSampler {
 
     override fun classify(numberBox: OcrBox): ResourceKind? {
-        val size = (numberBox.height * 0.9f).toInt().coerceIn(6, 28)
-        val left = (numberBox.right + 4).coerceAtLeast(0)
-        val top = (numberBox.centerY - size / 2).coerceAtLeast(0)
-        val right = (left + size).coerceAtMost(bitmap.width)
-        val bottom = (top + size).coerceAtMost(bitmap.height)
+        // The icon sits to the right of the number, typically one text-height
+        // away. A narrow strip sees only background; this window is measured
+        // relative to the row height and covers the full icon.
+        val sampleHeight = (numberBox.height * 1.2f).toInt().coerceIn(20, 80)
+        val sampleWidth = (numberBox.height * 1.7f).toInt().coerceIn(24, 120)
+        val gap = maxOf(6, numberBox.height / 3)
+        val left = (numberBox.right + gap).coerceAtLeast(0)
+        val top = (numberBox.centerY - sampleHeight / 2).coerceAtLeast(0)
+        val right = (left + sampleWidth).coerceAtMost(bitmap.width)
+        val bottom = (top + sampleHeight).coerceAtMost(bitmap.height)
         if (right - left < 3 || bottom - top < 3) return null
 
         var gold = 0
@@ -23,8 +28,8 @@ class BitmapIconColorSampler(private val bitmap: Bitmap) : IconColorSampler {
         var dark = 0
         var neutral = 0
         val hsv = FloatArray(3)
-        for (y in top until bottom) {
-            for (x in left until right) {
+        for (y in top until bottom step 2) {
+            for (x in left until right step 2) {
                 val pixel = bitmap.getPixel(x, y)
                 if (Color.alpha(pixel) < 128) continue
                 Color.RGBToHSV(Color.red(pixel), Color.green(pixel), Color.blue(pixel), hsv)

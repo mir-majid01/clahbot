@@ -11,8 +11,9 @@ android {
         applicationId = "com.clahbot.ocrlab"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 3
+        versionName = "0.3.0"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     signingConfigs {
@@ -64,5 +65,11 @@ dependencies {
     // Bundled on-device Latin OCR model; no network or Play Services download.
     implementation("com.google.mlkit:text-recognition:16.0.0")
 
+    // Row-crop comparison engine; model is bundled in assets/tessdata.
+    implementation("cz.adaptech.tesseract4android:tesseract4android:4.9.0")
+
     testImplementation("junit:junit:4.13.2")
+    androidTestImplementation("androidx.test:runner:1.5.2")
+    androidTestImplementation("androidx.test:rules:1.5.0")
+    androidTestImplementation("androidx.test.ext:junit:1.1.5")
 }
