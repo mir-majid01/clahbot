@@ -458,10 +458,10 @@ class AccuracyRunner(private val context: Context) {
         score(fields, "dark", expected.darkElixir, values?.dark)
         score(fields, "bonus_gold", expected.bonusGold, values?.bonusGold)
         score(fields, "bonus_elixir", expected.bonusElixir, values?.bonusElixir)
-        score(fields, "bonus_dark", expected.bonusDarkElixir, values?.bonusDarkElixir)
+        score(fields, "bonus_dark", expected.bonusDarkElixir, values?.bonusDark)
         score(fields, "balance_gold", expected.balanceGold, values?.balanceGold)
         score(fields, "balance_elixir", expected.balanceElixir, values?.balanceElixir)
-        score(fields, "balance_dark", expected.balanceDarkElixir, values?.balanceDarkElixir)
+        score(fields, "balance_dark", expected.balanceDarkElixir, values?.balanceDark)
     }
 
     private fun compareFields(
