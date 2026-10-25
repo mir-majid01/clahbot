@@ -292,7 +292,13 @@ class FloatingMenuService : Service() {
             return
         }
 
+        updateScreenSize()
         val view = LayoutInflater.from(this).inflate(R.layout.overlay_controller, null)
+        // Keep the macro list as a scrollable window so the footer stays on screen.
+        val listHeight = (screenHeight - dp(300)).coerceIn(dp(72), dp(148))
+        view.findViewById<View>(R.id.macroScroll)?.let { scroll ->
+            scroll.layoutParams = scroll.layoutParams.apply { height = listHeight }
+        }
         val prefs = settingsStore.settings.value
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -319,9 +325,13 @@ class FloatingMenuService : Service() {
         controllerParams = params
         bindController(view)
         view.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+            clampControllerToScreen()
             refreshControllerBoundsSnapshot()
         }
-        view.post { refreshControllerBoundsSnapshot() }
+        view.post {
+            clampControllerToScreen()
+            refreshControllerBoundsSnapshot()
+        }
 
         if (selectedId <= 0) {
             speed = MacroTimeline.clampSpeed(prefs.defaultSpeed)
@@ -540,6 +550,8 @@ class FloatingMenuService : Service() {
 
         updateScreenSize()
         refreshControllerBoundsSnapshot()
+        Log.i(TAG, "Recording start; controller bounds=$controllerBoundsSnapshot")
+        page = PAGE_CONTROLLER
 
         recorded.clear()
         pathPoints.clear()
@@ -583,8 +595,9 @@ class FloatingMenuService : Service() {
         activeRecordingMode = RecordingMode.PASSIVE
         startingPassive = true
         recording = true
-        BotState.setState(ControllerState.RECORDING)
-        BotState.setStatus("Starting passive capture…")
+        BotState.clearRecording()
+        BotState.setState(ControllerState.READY)
+        BotState.setStatus("Starting capture — wait for REC")
         if (!addIndicator()) {
             recording = false
             startingPassive = false
@@ -643,8 +656,10 @@ class FloatingMenuService : Service() {
             startingPassive = false
             recordStartMs = SystemClock.uptimeMillis()
             setControllerKeepScreenOn(true)
+            BotState.setState(ControllerState.RECORDING)
             BotState.setStatus("Recording passive — touches reach the game")
-            toast("Passive recording: touches reach the game.")
+            Log.i(TAG, "Passive source started via ${source.label}")
+            toast("Passive recording started. Swipe now.")
             updateRecordingNotification()
             updateIndicator()
             refreshUi()
@@ -685,6 +700,7 @@ class FloatingMenuService : Service() {
     private fun onPassiveGesture(gesture: BuiltGesture) {
         if (!recording || activeRecordingMode != RecordingMode.PASSIVE) return
         if (BotState.state.value == ControllerState.RECORDING_PAUSED) return
+        Log.d(TAG, "Passive gesture: ${gesture.paths.size} path(s), ${gesture.durationMs} ms")
         commitPassiveGesture(gesture)
     }
 
@@ -752,6 +768,7 @@ class FloatingMenuService : Service() {
         )
         recorded.add(gesture)
         capturedGestures++
+        Log.i(TAG, "Captured $type with ${normalizedPrimary.size} points")
         BotState.setRecordedCount(recorded.size)
         updateRecordingInfo()
         val now = SystemClock.uptimeMillis()
@@ -847,6 +864,23 @@ class FloatingMenuService : Service() {
             location[0] + target.width + pad,
             location[1] + target.height + pad
         )
+    }
+
+    private fun clampControllerToScreen() {
+        val view = controllerView ?: return
+        val params = controllerParams ?: return
+        if (view.width <= 0 || view.height <= 0) return
+        if (screenWidth <= 0 || screenHeight <= 0) return
+        val x = params.x.coerceIn(0, (screenWidth - view.width).coerceAtLeast(0))
+        val y = params.y.coerceIn(0, (screenHeight - view.height).coerceAtLeast(0))
+        if (x == params.x && y == params.y) return
+        params.x = x
+        params.y = y
+        try {
+            windowManager.updateViewLayout(view, params)
+        } catch (_: Exception) {
+            // Window detached.
+        }
     }
 
     private fun refreshControllerBoundsSnapshot() {
@@ -1148,6 +1182,7 @@ class FloatingMenuService : Service() {
         startingPassive = false
         recording = false
         activeRecordingMode = null
+        Log.i(TAG, "Recording stopped with ${recorded.size} gesture(s)")
         if (recorded.isEmpty()) rejectedGestures++
         pathPoints.clear()
         handler.removeCallbacks(timerRunnable)
@@ -1175,6 +1210,9 @@ class FloatingMenuService : Service() {
             return
         }
 
+        // Finish must always reveal the review/save controls.
+        page = PAGE_CONTROLLER
+        if (collapsed) expandController()
         BotState.setRecordedCount(recorded.size)
         if (recorded.isEmpty()) {
             BotState.setState(ControllerState.READY)
@@ -1633,7 +1671,8 @@ class FloatingMenuService : Service() {
             return
         }
         val defaultName = "Macro " + SimpleDateFormat("MMM dd HH:mm", Locale.US).format(Date())
-        showInputDialog("Save macro", defaultName) { name ->
+
+        fun persist(name: String) {
             val gestures = recorded.toList()
             val macro = Macro(
                 id = nextMacroId(),
@@ -1647,12 +1686,15 @@ class FloatingMenuService : Service() {
                 repeatMode = repeatMode,
                 speedMultiplier = speed
             )
+            Log.i(TAG, "Saving \"$name\" with ${gestures.size} gesture(s)")
             scope.launch {
                 val saved = repository.save(macro)
                 if (saved == null) {
+                    Log.e(TAG, "Macro save failed for \"$name\"")
                     toast("Could not save macro")
                     return@launch
                 }
+                Log.i(TAG, "Macro saved id=${saved.id} with ${saved.gestures.size} gesture(s)")
                 recorded.clear()
                 BotState.clearRecording()
                 selectedId = saved.id
@@ -1663,6 +1705,16 @@ class FloatingMenuService : Service() {
                 toast("Macro saved")
             }
         }
+
+        showInputDialog(
+            title = "Save macro",
+            initial = defaultName,
+            onFailure = {
+                // Never lose a finished recording just because the name dialog failed.
+                persist(defaultName)
+                toast("Name dialog unavailable — saved with the default name")
+            }
+        ) { name -> persist(name) }
     }
 
     private fun renameSelected() {
@@ -1737,6 +1789,7 @@ class FloatingMenuService : Service() {
         view.findViewById<Button>(R.id.btnRepeat).text = MacroTimeline.repeatLabel(repeatMode)
 
         view.findViewById<Button>(R.id.btnPlay).isEnabled = selectedId > 0
+        view.findViewById<Button>(R.id.btnRecord).isEnabled = !startingPassive
         view.findViewById<ImageButton>(R.id.btnRename).isEnabled = selectedId > 0
         view.findViewById<ImageButton>(R.id.btnDelete).isEnabled = selectedId > 0
 
@@ -1844,7 +1897,12 @@ class FloatingMenuService : Service() {
         ) { closeEverything() }
     }
 
-    private fun showInputDialog(title: String, initial: String, onConfirm: (String) -> Unit) {
+    private fun showInputDialog(
+        title: String,
+        initial: String,
+        onFailure: (() -> Unit)? = null,
+        onConfirm: (String) -> Unit
+    ) {
         val view = LayoutInflater.from(this).inflate(R.layout.dialog_macro_name, null)
         val dialog = Dialog(this).apply {
             setContentView(view)
@@ -1889,7 +1947,11 @@ class FloatingMenuService : Service() {
             input.requestFocus()
         } catch (e: Exception) {
             Log.e(TAG, "Input dialog failed", e)
-            toast("Could not open dialog")
+            if (onFailure != null) {
+                onFailure.invoke()
+            } else {
+                toast("Could not open dialog")
+            }
         }
     }
 

@@ -5,10 +5,12 @@ import android.content.Context
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.os.IBinder
+import android.util.Log
 import com.clahbot.BuildConfig
 import rikka.shizuku.Shizuku
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 class ShizukuInputSource(context: Context) : InputEventSource {
 
@@ -101,8 +103,12 @@ class ShizukuInputSource(context: Context) : InputEventSource {
             return false
         }
 
+        val firstBatch = AtomicBoolean(false)
         val newCallback = object : IInputEventCallback.Stub() {
             override fun onLines(lines: String) {
+                if (firstBatch.compareAndSet(false, true)) {
+                    Log.i("AutoClashInput", "First getevent batch received (${lines.length} chars)")
+                }
                 onLines(lines)
             }
 
@@ -110,6 +116,7 @@ class ShizukuInputSource(context: Context) : InputEventSource {
                 onFatal(message)
             }
         }
+        Log.i("AutoClashInput", "Starting Shizuku getevent for $devicePath")
         fatal = onFatal
         callback = newCallback
         streaming = true
