@@ -8,6 +8,7 @@ import android.widget.Button
 import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.lifecycle.lifecycleScope
+import com.google.gson.GsonBuilder
 import java.io.File
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
@@ -25,6 +26,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var statusView: TextView
     private lateinit var outputView: TextView
     private lateinit var dumpButton: Button
+    private lateinit var accuracyButton: Button
     private var busy = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -34,6 +36,7 @@ class MainActivity : ComponentActivity() {
         statusView = findViewById(R.id.tvStatus)
         outputView = findViewById(R.id.tvOutput)
         dumpButton = findViewById(R.id.btnDump)
+        accuracyButton = findViewById(R.id.btnAccuracy)
 
         pathView.text = buildString {
             append("Test pack: ")
@@ -48,6 +51,7 @@ class MainActivity : ComponentActivity() {
             append(Build.VERSION.RELEASE)
         }
         dumpButton.setOnClickListener { dumpTestPack() }
+        accuracyButton.setOnClickListener { runAccuracy() }
     }
 
     override fun onDestroy() {
@@ -75,8 +79,7 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        busy = true
-        dumpButton.isEnabled = false
+        setBusy(true)
         lifecycleScope.launch {
             val report = StringBuilder()
             report.appendLine("AUTOCLASH OCR LAB ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})")
@@ -125,9 +128,61 @@ class MainActivity : ComponentActivity() {
             statusView.text = "OCR dump complete: $ok ok, $failed failed"
             outputView.text = report.toString().take(120_000)
             Log.i(TAG, "OCR dump $ok/$failed files=${images.size} file=${outputFile.absolutePath}")
-            busy = false
-            dumpButton.isEnabled = true
+            setBusy(false)
         }
+    }
+
+    private fun runAccuracy() {
+        if (busy) return
+        val directory = testPackDir()
+        if (directory == null) {
+            statusView.text = "External files directory unavailable"
+            return
+        }
+        val images = directory.listFiles()
+            ?.filter { it.isFile && it.extension.lowercase(Locale.US) in IMAGE_EXTENSIONS }
+            .orEmpty()
+        if (images.isEmpty()) {
+            statusView.text = "No images in ${directory.absolutePath}"
+            return
+        }
+        if (!File(directory, "ground_truth.json").isFile) {
+            statusView.text = "ground_truth.json missing in ${directory.absolutePath}"
+            return
+        }
+
+        setBusy(true)
+        statusView.text = "Running accuracy on ${images.size} images…"
+        lifecycleScope.launch {
+            try {
+                val report = AccuracyRunner().run(directory, ocr)
+                val outputFile = File(filesDir, "accuracy_report.json")
+                withContext(Dispatchers.IO) {
+                    outputFile.writeText(
+                        GsonBuilder().setPrettyPrinting().create().toJson(report)
+                    )
+                }
+                statusView.text = "Accuracy complete"
+                outputView.text = report.summary()
+                Log.i(
+                    TAG,
+                    "Accuracy report ${outputFile.absolutePath} " +
+                        "images=${report.images} detected=${report.detectedResults}"
+                )
+            } catch (t: Throwable) {
+                statusView.text = "Accuracy failed: ${t.message}"
+                outputView.text = t.stackTraceToString()
+                Log.e(TAG, "Accuracy run failed", t)
+            } finally {
+                setBusy(false)
+            }
+        }
+    }
+
+    private fun setBusy(value: Boolean) {
+        busy = value
+        dumpButton.isEnabled = !value
+        accuracyButton.isEnabled = !value
     }
 
     companion object {
