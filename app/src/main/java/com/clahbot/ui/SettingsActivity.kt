@@ -383,8 +383,8 @@ fun SettingsScreen(
                         Text("Check again", fontSize = 10.sp, color = ElectricBlue)
                     }
                     Text(
-                        "Shizuku permission is remembered. Install future versions from the " +
-                            "Updates section to keep it; a differently signed APK resets it.",
+                        "Shizuku permission is remembered. Install future updates from the " +
+                            "Updates section so app data and this permission stay intact.",
                         fontSize = 9.sp,
                         color = TextMuted
                     )
