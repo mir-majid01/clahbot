@@ -23,6 +23,7 @@ supabase-pass.txt
 *-pass.txt
 *.jks
 *.keystore
+!keystore/autoclash-release.jks
 .env
 
 # Unrelated local scratch file (Steam depot script, contains account hashes)

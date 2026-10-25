@@ -74,6 +74,8 @@ import com.clahbot.execution.MacroTimeline
 import com.clahbot.input.InputAccessManager
 import com.clahbot.service.FloatingMenuService
 import com.clahbot.ui.theme.AutoClashTheme
+import com.clahbot.update.GitHubUpdater
+import com.clahbot.update.UpdateRelease
 import com.clahbot.ui.theme.ElectricBlue
 import com.clahbot.ui.theme.PauseAmber
 import com.clahbot.ui.theme.ReadyGreen
@@ -83,9 +85,12 @@ import com.clahbot.util.PermissionHelper
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import rikka.shizuku.Shizuku
+import java.io.File
 import java.util.Locale
+import kotlin.math.roundToInt
 
 private const val GITHUB_URL = "https://github.com/mir-majid01/clahbot"
+private const val GITHUB_PROFILE_URL = "https://github.com/mir-majid01"
 private val TELEGRAM_URL: String? = null
 
 class SettingsActivity : ComponentActivity() {
@@ -131,6 +136,10 @@ fun SettingsScreen(
     var showRemoveUnconfirmed by remember { mutableStateOf(false) }
     var showPrivacy by remember { mutableStateOf(false) }
     var showLicences by remember { mutableStateOf(false) }
+    var updateBusy by remember { mutableStateOf(false) }
+    var updateStatus by remember { mutableStateOf<String?>(null) }
+    var availableUpdate by remember { mutableStateOf<UpdateRelease?>(null) }
+    var downloadedUpdate by remember { mutableStateOf<File?>(null) }
 
     LaunchedEffect(Unit) {
         repository.refresh()
@@ -238,11 +247,11 @@ fun SettingsScreen(
             title = { Text("Privacy") },
             text = {
                 Text(
-                    "AutoClash stores macros and settings only on this device. " +
-                        "The app has no network permission and sends nothing anywhere. " +
-                        "Recording reads raw touchscreen events through Shizuku or root; it does not " +
-                        "read screen content. The accessibility service is used only to replay the " +
-                        "gestures you record."
+                    "AutoClash stores macros, attacks and settings only on this device. " +
+                        "It uses the internet only when you ask it to check GitHub for an update; " +
+                        "no macros or gameplay data are uploaded. Recording reads raw touchscreen " +
+                        "events through Shizuku or root and does not read screen content. The " +
+                        "accessibility service is used only to replay the gestures you record."
                 )
             },
             confirmButton = {
@@ -373,6 +382,12 @@ fun SettingsScreen(
                     TextButton(onClick = { tick++ }, contentPadding = PaddingValues(0.dp)) {
                         Text("Check again", fontSize = 10.sp, color = ElectricBlue)
                     }
+                    Text(
+                        "Shizuku permission is remembered. Install future versions from the " +
+                            "Updates section to keep it; a differently signed APK resets it.",
+                        fontSize = 9.sp,
+                        color = TextMuted
+                    )
                 }
             }
 
@@ -501,6 +516,40 @@ fun SettingsScreen(
                         valueRange = SettingsStore.MIN_ALPHA..1f,
                         steps = 4
                     )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Controller size: ${(settings.controllerScale * 100).roundToInt()}%",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Slider(
+                        value = settings.controllerScale,
+                        onValueChange = { value ->
+                            onUpdate { it.copy(controllerScale = value) }
+                        },
+                        valueRange = SettingsStore.MIN_CONTROLLER_SCALE..
+                            SettingsStore.MAX_CONTROLLER_SCALE,
+                        steps = 9
+                    )
+                    Text(
+                        "Floating icon size: ${(settings.bubbleScale * 100).roundToInt()}%",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Slider(
+                        value = settings.bubbleScale,
+                        onValueChange = { value ->
+                            onUpdate { it.copy(bubbleScale = value) }
+                        },
+                        valueRange = SettingsStore.MIN_BUBBLE_SCALE..
+                            SettingsStore.MAX_BUBBLE_SCALE,
+                        steps = 15
+                    )
+                    Text(
+                        "Size changes apply when the controller is reopened.",
+                        fontSize = 9.sp,
+                        color = TextMuted
+                    )
                     Row {
                         TextButton(onClick = onResetPosition) {
                             Text("Reset controller position", fontSize = 11.sp)
@@ -620,6 +669,144 @@ fun SettingsScreen(
             }
 
             item {
+                SettingsSection("Updates") {
+                    InfoRow(
+                        "Installed version",
+                        "${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})"
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Checks the official GitHub releases. Downloads are verified with a " +
+                            "SHA-256 checksum and install over this app with the same signing key.",
+                        fontSize = 10.sp,
+                        color = TextMuted
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Button(
+                        onClick = {
+                            if (!updateBusy) {
+                                updateBusy = true
+                                scope.launch {
+                                    updateStatus = "Checking GitHub…"
+                                    availableUpdate = null
+                                    downloadedUpdate = null
+                                    when (val result = GitHubUpdater.check()) {
+                                        is GitHubUpdater.CheckResult.UpToDate ->
+                                            updateStatus = "You are up to date."
+
+                                        is GitHubUpdater.CheckResult.Available -> {
+                                            availableUpdate = result.release
+                                            updateStatus = "Update available: ${result.release.title}"
+                                        }
+
+                                        is GitHubUpdater.CheckResult.Failure ->
+                                            updateStatus = result.message
+                                    }
+                                    updateBusy = false
+                                }
+                            }
+                        },
+                        enabled = !updateBusy,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(containerColor = ElectricBlue)
+                    ) {
+                        Text(
+                            if (updateBusy) "Working…" else "Check GitHub for updates",
+                            fontSize = 12.sp
+                        )
+                    }
+                    updateStatus?.let { status ->
+                        Spacer(Modifier.height(6.dp))
+                        Text(status, fontSize = 10.sp, color = TextMuted)
+                    }
+                    availableUpdate?.let { release ->
+                        Spacer(Modifier.height(10.dp))
+                        Text(
+                            "${release.title} · ${release.tag}",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        if (release.notes.isNotBlank()) {
+                            Spacer(Modifier.height(3.dp))
+                            Text(
+                                release.notes.take(600),
+                                fontSize = 10.sp,
+                                color = TextMuted
+                            )
+                        }
+                        Spacer(Modifier.height(3.dp))
+                        Text(
+                            "APK ${formatBytes(release.apk.size)}",
+                            fontSize = 10.sp,
+                            color = TextMuted
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        Button(
+                            onClick = {
+                                if (!updateBusy) {
+                                    updateBusy = true
+                                    scope.launch {
+                                        val file = downloadedUpdate ?: run {
+                                            updateStatus = "Downloading ${release.title}…"
+                                            when (val result =
+                                                GitHubUpdater.download(context, release)) {
+                                                is GitHubUpdater.DownloadResult.Ready -> {
+                                                    downloadedUpdate = result.file
+                                                    updateStatus = "Downloaded and checksum verified."
+                                                    result.file
+                                                }
+
+                                                is GitHubUpdater.DownloadResult.Failure -> {
+                                                    updateStatus = result.message
+                                                    null
+                                                }
+                                            }
+                                        }
+                                        if (file != null) {
+                                            when (val launch =
+                                                GitHubUpdater.launchInstaller(context, file)) {
+                                                is GitHubUpdater.InstallResult.Started ->
+                                                    updateStatus = "Android installer opened. Confirm the update."
+
+                                                is GitHubUpdater.InstallResult.NeedsPermission ->
+                                                    updateStatus = launch.message
+
+                                                is GitHubUpdater.InstallResult.Failure ->
+                                                    updateStatus = launch.message
+                                            }
+                                        }
+                                        updateBusy = false
+                                    }
+                                }
+                            },
+                            enabled = !updateBusy,
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.buttonColors(containerColor = ReadyGreen)
+                        ) {
+                            Text(
+                                if (downloadedUpdate == null) {
+                                    "Download & install"
+                                } else {
+                                    "Install downloaded update"
+                                },
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+                }
+            }
+
+            item {
+                SettingsSection("Credits") {
+                    InfoRow("Developer", "Mir Majid")
+                    InfoRow("Clash of Clans profile", "M-A-J-I-D")
+                    LinkRow("GitHub profile", GITHUB_PROFILE_URL)
+                    LinkRow("Source repository", GITHUB_URL)
+                }
+            }
+
+            item {
                 SettingsSection("About") {
                     Column(
                         modifier = Modifier.fillMaxWidth(),
@@ -651,7 +838,6 @@ fun SettingsScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Spacer(Modifier.height(10.dp))
-                    LinkRow("GitHub repository", GITHUB_URL)
                     LinkRow("Telegram community", TELEGRAM_URL)
                     Spacer(Modifier.height(4.dp))
                     TextButton(onClick = { showPrivacy = true }, contentPadding = PaddingValues(0.dp)) {

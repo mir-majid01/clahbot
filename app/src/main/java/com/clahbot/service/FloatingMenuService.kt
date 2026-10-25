@@ -85,6 +85,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
+import kotlin.math.roundToInt
 
 /**
  * Owns the floating controller, the passive touch recorder and macro playback.
@@ -288,18 +289,27 @@ class FloatingMenuService : Service() {
             return
         }
         if (controllerView != null) {
+            page = PAGE_CONTROLLER
+            macros = repository.macros.value
+            renderMacroList()
             expandController()
             return
         }
 
         updateScreenSize()
-        val view = LayoutInflater.from(this).inflate(R.layout.overlay_controller, null)
-        // Keep the macro list as a scrollable window so the footer stays on screen.
-        val listHeight = (screenHeight - dp(300)).coerceIn(dp(72), dp(148))
-        view.findViewById<View>(R.id.macroScroll)?.let { scroll ->
-            scroll.layoutParams = scroll.layoutParams.apply { height = listHeight }
-        }
         val prefs = settingsStore.settings.value
+        val controllerContext = scaledControllerContext(prefs.controllerScale)
+        val view = LayoutInflater.from(controllerContext)
+            .inflate(R.layout.overlay_controller, null)
+        // Fit the list to the usable screen and keep the footer anchored below it.
+        val scaledDensity = controllerContext.resources.displayMetrics.density
+        val listDp = (screenHeight / scaledDensity - 320f).coerceIn(48f, 132f)
+        view.findViewById<View>(R.id.macroScroll)?.let { scroll ->
+            scroll.layoutParams = scroll.layoutParams.apply {
+                height = (listDp * scaledDensity).toInt()
+            }
+        }
+        applyBubbleSize(view, controllerContext, prefs.bubbleScale)
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -339,12 +349,14 @@ class FloatingMenuService : Service() {
         }
         if (prefs.startMinimized) collapseController()
 
+        page = PAGE_CONTROLLER
         BotState.setState(ControllerState.READY)
         BotState.setStatus("Controller ready")
         refreshUi()
         refreshMacros()
         // The repository may have emitted its current list before this window
         // existed; render the value we already have so the list is never blank.
+        macros = repository.macros.value
         renderMacroList()
         scope.launch { attackRepository.refresh() }
     }
@@ -869,6 +881,46 @@ class FloatingMenuService : Service() {
         )
     }
 
+    private fun scaledControllerContext(scale: Float): Context {
+        val config = Configuration(resources.configuration)
+        config.densityDpi = (resources.displayMetrics.densityDpi * scale)
+            .roundToInt()
+            .coerceAtLeast(DisplayMetrics.DENSITY_LOW)
+        return createConfigurationContext(config)
+    }
+
+    private fun applyBubbleSize(view: View, context: Context, bubbleScale: Float) {
+        val density = context.resources.displayMetrics.density
+        val bubblePx = (BUBBLE_SIZE_DP * bubbleScale * density)
+            .roundToInt()
+            .coerceAtLeast(1)
+        val iconPx = (BUBBLE_ICON_DP * bubbleScale * density)
+            .roundToInt()
+            .coerceAtLeast(1)
+        view.findViewById<View>(R.id.bubble)?.let { bubble ->
+            bubble.layoutParams = bubble.layoutParams.apply {
+                width = bubblePx
+                height = bubblePx
+            }
+        }
+        view.findViewById<View>(R.id.bubbleIcon)?.let { icon ->
+            icon.layoutParams = icon.layoutParams.apply {
+                width = iconPx
+                height = iconPx
+            }
+        }
+        view.findViewById<TextView>(R.id.bubbleStatus)?.textSize =
+            (6f * bubbleScale).coerceAtLeast(4.5f)
+    }
+
+    private fun currentBubbleSizePx(): Int {
+        val prefs = settingsStore.settings.value
+        return (BUBBLE_SIZE_DP * prefs.controllerScale * prefs.bubbleScale *
+            resources.displayMetrics.density)
+            .roundToInt()
+            .coerceAtLeast(1)
+    }
+
     private fun clampControllerToScreen() {
         val view = controllerView ?: return
         val params = controllerParams ?: return
@@ -1324,11 +1376,12 @@ class FloatingMenuService : Service() {
         } else {
             dp(BUBBLE_TOP_DP)
         }
+        val bubbleSize = currentBubbleSizePx()
         val corner = PlaybackBubblePlacement.chooseCorner(
             points = macroTouchPoints(macro),
             width = screenWidth,
             height = screenHeight,
-            bubbleSizePx = dp(BUBBLE_SIZE_DP).toFloat(),
+            bubbleSizePx = bubbleSize.toFloat(),
             sideMarginPx = dp(BUBBLE_MARGIN_DP).toFloat(),
             topMarginPx = topMargin.toFloat()
         )
@@ -1337,7 +1390,7 @@ class FloatingMenuService : Service() {
         view.findViewById<View>(R.id.panel).visibility = View.GONE
         view.findViewById<View>(R.id.bubble).visibility = View.VISIBLE
         params.x = if (corner == BubbleCorner.TOP_RIGHT) {
-            screenWidth - dp(BUBBLE_SIZE_DP) - dp(BUBBLE_MARGIN_DP)
+            screenWidth - bubbleSize - dp(BUBBLE_MARGIN_DP)
         } else {
             dp(BUBBLE_MARGIN_DP)
         }
@@ -1633,34 +1686,40 @@ class FloatingMenuService : Service() {
         }
         container.removeAllViews()
         Log.i(TAG, "Rendering ${macros.size} macro(s) in the controller")
+        val rowContext = view.context
 
         view.findViewById<TextView>(R.id.tvLibraryLabel)?.text =
             if (macros.isEmpty()) "Macros" else "Macros · ${macros.size}"
 
         if (macros.isEmpty()) {
-            container.addView(TextView(this).apply {
+            container.addView(TextView(rowContext).apply {
                 text = "No macros yet. Record one to get started."
                 setTextColor(0xFF94A3B8.toInt())
                 textSize = 10f
-                setPadding(dp(6), dp(8), dp(6), dp(8))
+                setPadding(dp(rowContext, 6), dp(rowContext, 8), dp(rowContext, 6), dp(rowContext, 8))
             })
             return
         }
 
         for (macro in macros) {
-            val row = LinearLayout(this).apply {
+            val row = LinearLayout(rowContext).apply {
                 orientation = LinearLayout.VERTICAL
-                setPadding(dp(8), dp(6), dp(8), dp(6))
+                setPadding(
+                    dp(rowContext, 8),
+                    dp(rowContext, 6),
+                    dp(rowContext, 8),
+                    dp(rowContext, 6)
+                )
                 setBackgroundColor(if (macro.id == selectedId) 0x2E3B82F6 else Color.TRANSPARENT)
             }
-            row.addView(TextView(this).apply {
+            row.addView(TextView(rowContext).apply {
                 text = macro.name
                 setTextColor(0xFFE2E8F0.toInt())
                 textSize = 12f
                 maxLines = 1
                 ellipsize = android.text.TextUtils.TruncateAt.END
             })
-            row.addView(TextView(this).apply {
+            row.addView(TextView(rowContext).apply {
                 text = "${macro.gestures.size} gestures · ${formatDuration(macro.durationMs)} · " +
                     MacroTimeline.formatSpeed(macro.speedMultiplier) + " · " +
                     MacroTimeline.repeatLabel(macro.repeatMode)
@@ -2117,6 +2176,9 @@ class FloatingMenuService : Service() {
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
+    private fun dp(context: Context, value: Int): Int =
+        (value * context.resources.displayMetrics.density).toInt()
+
     private fun haptic() {
         if (!settingsStore.settings.value.hapticFeedback) return
         try {
@@ -2151,6 +2213,7 @@ class FloatingMenuService : Service() {
         private const val NOTIFICATION_THROTTLE_MS = 900L
         private const val STATUS_THROTTLE_MS = 500L
         private const val BUBBLE_SIZE_DP = 48
+        private const val BUBBLE_ICON_DP = 34
         private const val BUBBLE_MARGIN_DP = 8
         private const val BUBBLE_TOP_DP = 48
         private const val BUBBLE_TOP_LANDSCAPE_DP = 8

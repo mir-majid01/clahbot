@@ -512,6 +512,7 @@
         android:visibility="gone">
 
         <ImageView
+            android:id="@+id/bubbleIcon"
             android:layout_width="34dp"
             android:layout_height="34dp"
             android:layout_gravity="center"

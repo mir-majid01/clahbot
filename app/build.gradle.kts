@@ -11,13 +11,28 @@ android {
         applicationId = "com.clahbot"
         minSdk = 26
         targetSdk = 34
-        versionCode = 4
-        versionName = "2.2.0"
+        versionCode = 5
+        versionName = "2.3.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        // Stable key: updates must keep the same signature or Android rejects
+        // them and Shizuku permission/app data are lost.
+        create("release") {
+            storeFile = rootProject.file("keystore/autoclash-release.jks")
+            storePassword = "AutoClash-2026-Release"
+            keyAlias = "autoclash"
+            keyPassword = "AutoClash-2026-Release"
+        }
+    }
+
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("release")
+        }
         release {
+            signingConfig = signingConfigs.getByName("release")
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),

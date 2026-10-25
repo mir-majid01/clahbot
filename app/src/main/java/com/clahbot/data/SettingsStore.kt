@@ -20,6 +20,8 @@ data class AppSettings(
     val keepScreenAwake: Boolean = true,
     val startMinimized: Boolean = false,
     val controllerAlpha: Float = 1f,
+    val controllerScale: Float = 1f,
+    val bubbleScale: Float = 1f,
     val theme: ThemeMode = ThemeMode.DARK
 )
 
@@ -49,6 +51,10 @@ class SettingsStore private constructor(private val prefs: SharedPreferences) {
             keepScreenAwake = prefs.getBoolean(KEY_AWAKE, true),
             startMinimized = prefs.getBoolean(KEY_MINIMIZED, false),
             controllerAlpha = prefs.getFloat(KEY_ALPHA, 1f).coerceIn(MIN_ALPHA, 1f),
+            controllerScale = prefs.getFloat(KEY_CONTROLLER_SCALE, 1f)
+                .coerceIn(MIN_CONTROLLER_SCALE, MAX_CONTROLLER_SCALE),
+            bubbleScale = prefs.getFloat(KEY_BUBBLE_SCALE, 1f)
+                .coerceIn(MIN_BUBBLE_SCALE, MAX_BUBBLE_SCALE),
             theme = runCatching { ThemeMode.valueOf(themeName) }.getOrDefault(ThemeMode.DARK)
         )
     }
@@ -58,7 +64,12 @@ class SettingsStore private constructor(private val prefs: SharedPreferences) {
         val normalized = next.copy(
             defaultSpeed = MacroTimeline.clampSpeed(next.defaultSpeed),
             defaultRepeat = normalizeRepeat(next.defaultRepeat),
-            controllerAlpha = next.controllerAlpha.coerceIn(MIN_ALPHA, 1f)
+            controllerAlpha = next.controllerAlpha.coerceIn(MIN_ALPHA, 1f),
+            controllerScale = next.controllerScale.coerceIn(
+                MIN_CONTROLLER_SCALE,
+                MAX_CONTROLLER_SCALE
+            ),
+            bubbleScale = next.bubbleScale.coerceIn(MIN_BUBBLE_SCALE, MAX_BUBBLE_SCALE)
         )
         prefs.edit()
             .putFloat(KEY_SPEED, normalized.defaultSpeed)
@@ -68,6 +79,8 @@ class SettingsStore private constructor(private val prefs: SharedPreferences) {
             .putBoolean(KEY_AWAKE, normalized.keepScreenAwake)
             .putBoolean(KEY_MINIMIZED, normalized.startMinimized)
             .putFloat(KEY_ALPHA, normalized.controllerAlpha)
+            .putFloat(KEY_CONTROLLER_SCALE, normalized.controllerScale)
+            .putFloat(KEY_BUBBLE_SCALE, normalized.bubbleScale)
             .putString(KEY_THEME, normalized.theme.name)
             .apply()
         _settings.value = normalized
@@ -81,6 +94,10 @@ class SettingsStore private constructor(private val prefs: SharedPreferences) {
 
     companion object {
         const val MIN_ALPHA = 0.5f
+        const val MIN_CONTROLLER_SCALE = 0.7f
+        const val MAX_CONTROLLER_SCALE = 1.15f
+        const val MIN_BUBBLE_SCALE = 0.7f
+        const val MAX_BUBBLE_SCALE = 1.5f
 
         private const val PREFS = "autoclash_settings"
         private const val KEY_SPEED = "default_speed"
@@ -90,6 +107,8 @@ class SettingsStore private constructor(private val prefs: SharedPreferences) {
         private const val KEY_AWAKE = "keep_awake"
         private const val KEY_MINIMIZED = "start_minimized"
         private const val KEY_ALPHA = "controller_alpha"
+        private const val KEY_CONTROLLER_SCALE = "controller_scale"
+        private const val KEY_BUBBLE_SCALE = "bubble_scale"
         private const val KEY_THEME = "theme"
 
         @Volatile
