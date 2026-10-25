@@ -9,7 +9,6 @@ class ResultsGateTest {
     private fun read(gold: Long = 1_000L): ResultsRead = ResultsRead(
         outcome = ResultsOutcome.VICTORY,
         stars = null,
-        damagePercent = 70,
         gold = gold,
         elixir = 2_000L,
         darkElixir = 3_000L,

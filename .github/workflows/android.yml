@@ -41,13 +41,21 @@ jobs:
           ./gradlew --no-daemon --stacktrace :app:testDebugUnitTest :ocrlab:testDebugUnitTest
 
       - name: Assemble debug APK
-        run: ./gradlew --no-daemon --stacktrace :app:assembleDebug :ocrlab:assembleDebug
+        run: ./gradlew --no-daemon --stacktrace :app:assembleDebug :ocrlab:assembleDebug :ocrlab:assembleDebugAndroidTest
 
       - name: Upload OCR Lab APK
         uses: actions/upload-artifact@v4
         with:
           name: ocrlab-debug
           path: ocrlab/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload OCR Lab test APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ocrlab-test
+          path: ocrlab/build/outputs/apk/androidTest/debug/*.apk
           if-no-files-found: error
           retention-days: 14
 
