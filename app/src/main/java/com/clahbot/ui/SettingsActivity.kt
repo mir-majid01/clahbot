@@ -57,6 +57,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.clahbot.BuildConfig
@@ -91,7 +92,6 @@ import kotlin.math.roundToInt
 
 private const val GITHUB_URL = "https://github.com/mir-majid01/clahbot"
 private const val GITHUB_PROFILE_URL = "https://github.com/mir-majid01"
-private val TELEGRAM_URL: String? = null
 
 class SettingsActivity : ComponentActivity() {
 
@@ -838,8 +838,6 @@ fun SettingsScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Spacer(Modifier.height(10.dp))
-                    LinkRow("Telegram community", TELEGRAM_URL)
-                    Spacer(Modifier.height(4.dp))
                     TextButton(onClick = { showPrivacy = true }, contentPadding = PaddingValues(0.dp)) {
                         Text("Privacy", fontSize = 11.sp)
                     }
@@ -972,12 +970,22 @@ private fun LinkRow(label: String, url: String?) {
         modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(
-            label,
-            fontSize = 12.sp,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.weight(1f)
-        )
+        Column(Modifier.weight(1f)) {
+            Text(
+                label,
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            if (url != null) {
+                Text(
+                    url.removePrefix("https://").removePrefix("http://"),
+                    fontSize = 9.sp,
+                    color = TextMuted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
         if (url == null) {
             Text("Not configured", fontSize = 10.sp, color = TextMuted)
         } else {
