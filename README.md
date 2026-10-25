@@ -120,8 +120,8 @@ Deleting a macro never deletes its past attack records.
   writes its SHA-256 and publishes both as GitHub release assets.
 
 ```bash
-git tag v5
-git push origin v5
+git tag v6
+git push origin v6
 ```
 
 Version numbers live in `app/build.gradle.kts`.

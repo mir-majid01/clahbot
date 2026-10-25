@@ -8,7 +8,8 @@ data class UpdateAsset(
     val name: String,
     val url: String,
     val size: Long,
-    val digest: String? = null
+    val digest: String? = null,
+    val id: Long? = null
 )
 
 data class UpdateRelease(
@@ -57,7 +58,8 @@ object GitHubReleaseParser {
                     name = name,
                     url = url,
                     size = asset.get("size")?.takeIf { it.isJsonPrimitive }?.asLong ?: 0L,
-                    digest = asset.string("digest")
+                    digest = asset.string("digest"),
+                    id = runCatching { asset.get("id")?.asLong }.getOrNull()
                 )
             }
             val apk = parsedAssets.firstOrNull {
