@@ -18,6 +18,7 @@ class GitHubReleaseParserTest {
               "name": "AutoClash-2.4.0.apk",
               "browser_download_url": "https://example.test/AutoClash-2.4.0.apk",
               "size": 12345,
+              "id": 675211103,
               "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
             },
             {
@@ -44,6 +45,7 @@ class GitHubReleaseParserTest {
             release.apk.url
         )
         assertEquals(12_345L, release.apk.size)
+        assertEquals(675_211_103L, release.apk.id)
         assertEquals(
             "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             release.apk.digest

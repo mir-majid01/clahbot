@@ -18,8 +18,9 @@ import java.security.MessageDigest
 object GitHubUpdater {
 
     private const val TAG = "AutoClashUpdate"
-    private const val API_URL =
-        "https://api.github.com/repos/mir-majid01/clahbot/releases/latest"
+    private const val REPO = "mir-majid01/clahbot"
+    private const val API_URL = "https://api.github.com/repos/$REPO/releases/latest"
+    private const val ASSET_API = "https://api.github.com/repos/$REPO/releases/assets"
     private const val MAX_JSON_BYTES = 2_000_000L
     private const val MAX_CHECKSUM_BYTES = 8_192L
     private const val MAX_APK_BYTES = 200L * 1024L * 1024L
@@ -84,7 +85,6 @@ object GitHubUpdater {
         context: Context,
         release: UpdateRelease
     ): DownloadResult = withContext(Dispatchers.IO) {
-        var connection: HttpURLConnection? = null
         val directory = File(context.cacheDir, "updates").apply { mkdirs() }
         val safeName = release.apk.name
             .replace(Regex("[^A-Za-z0-9._-]"), "_")
@@ -103,17 +103,76 @@ object GitHubUpdater {
                 )
             }
 
-            val conn = open(release.apk.url)
+            val urls = buildList {
+                add(release.apk.url)
+                // A blocked or slow github.com download host must not make the
+                // in-app updater unusable when the API is still reachable.
+                release.apk.id?.let { add("$ASSET_API/$it") }
+            }.distinct()
+            var failure: String? = null
+            for ((index, url) in urls.withIndex()) {
+                val attempt = downloadTo(
+                    url = url,
+                    accept = if (index == 0) {
+                        "application/vnd.github+json"
+                    } else {
+                        "application/octet-stream"
+                    },
+                    temporary = temporary
+                )
+                when (attempt) {
+                    is Attempt.Failed -> failure = attempt.message
+
+                    is Attempt.Ok -> {
+                        if (release.apk.size > 0 && attempt.bytes != release.apk.size) {
+                            temporary.delete()
+                            failure = "Downloaded size does not match the release."
+                        } else if (!attempt.sha256.equals(expected, ignoreCase = true)) {
+                            temporary.delete()
+                            failure = "Checksum mismatch. The update was not installed."
+                        } else {
+                            if (destination.exists()) destination.delete()
+                            if (!temporary.renameTo(destination)) {
+                                temporary.copyTo(destination, overwrite = true)
+                                temporary.delete()
+                            }
+                            return@withContext DownloadResult.Ready(destination)
+                        }
+                    }
+                }
+            }
+            temporary.delete()
+            DownloadResult.Failure(failure ?: "Could not download the update.")
+        } catch (t: Throwable) {
+            temporary.delete()
+            Log.w(TAG, "Update download failed", t)
+            DownloadResult.Failure(
+                "Could not download the update: ${t.message ?: "network error"}"
+            )
+        }
+    }
+
+    private sealed interface Attempt {
+        data class Ok(val bytes: Long, val sha256: String) : Attempt
+        data class Failed(val message: String) : Attempt
+    }
+
+    private fun downloadTo(
+        url: String,
+        accept: String,
+        temporary: File
+    ): Attempt {
+        var connection: HttpURLConnection? = null
+        return try {
+            val conn = open(url, accept)
             connection = conn
             val code = conn.responseCode
             if (code !in 200..299) {
-                return@withContext DownloadResult.Failure(
-                    "Download failed with HTTP $code."
-                )
+                return Attempt.Failed("Download failed with HTTP $code.")
             }
             val announcedSize = conn.contentLengthLong
             if (announcedSize > MAX_APK_BYTES) {
-                return@withContext DownloadResult.Failure("The update APK is too large.")
+                return Attempt.Failed("The update APK is too large.")
             }
 
             val digest = MessageDigest.getInstance("SHA-256")
@@ -134,31 +193,15 @@ object GitHubUpdater {
                     }
                 }
             }
-            if (release.apk.size > 0 && total != release.apk.size) {
-                temporary.delete()
-                return@withContext DownloadResult.Failure(
-                    "Downloaded size does not match the release."
-                )
-            }
-            val actual = digest.digest().joinToString("") {
-                "%02x".format(it.toInt() and 0xff)
-            }
-            if (!actual.equals(expected, ignoreCase = true)) {
-                temporary.delete()
-                return@withContext DownloadResult.Failure(
-                    "Checksum mismatch. The update was not installed."
-                )
-            }
-            if (destination.exists()) destination.delete()
-            if (!temporary.renameTo(destination)) {
-                temporary.copyTo(destination, overwrite = true)
-                temporary.delete()
-            }
-            DownloadResult.Ready(destination)
+            Attempt.Ok(
+                bytes = total,
+                sha256 = digest.digest().joinToString("") {
+                    "%02x".format(it.toInt() and 0xff)
+                }
+            )
         } catch (t: Throwable) {
-            temporary.delete()
-            Log.w(TAG, "Update download failed", t)
-            DownloadResult.Failure(
+            Log.w(TAG, "Download attempt failed", t)
+            Attempt.Failed(
                 "Could not download the update: ${t.message ?: "network error"}"
             )
         } finally {
@@ -208,13 +251,16 @@ object GitHubUpdater {
         }
     }
 
-    private fun open(url: String): HttpURLConnection {
+    private fun open(
+        url: String,
+        accept: String = "application/vnd.github+json"
+    ): HttpURLConnection {
         return (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
             connectTimeout = 12_000
             readTimeout = 20_000
             instanceFollowRedirects = true
-            setRequestProperty("Accept", "application/vnd.github+json")
+            setRequestProperty("Accept", accept)
             setRequestProperty("User-Agent", "AutoClash/${BuildConfig.VERSION_NAME}")
         }
     }

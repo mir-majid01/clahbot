@@ -40,6 +40,15 @@ jobs:
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
           echo "code=$CODE" >> "$GITHUB_OUTPUT"
 
+      - name: Validate release tag
+        run: |
+          TAG="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
+          EXPECTED="v${{ steps.version.outputs.code }}"
+          if [ "$TAG" != "$EXPECTED" ]; then
+            echo "Refusing to publish: tag $TAG does not match version code $EXPECTED."
+            exit 1
+          fi
+
       - name: Unit tests
         run: |
           chmod +x ./gradlew
