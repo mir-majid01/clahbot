@@ -313,7 +313,9 @@ class AccuracyRunner(private val context: Context) {
     suspend fun run(
         directory: File,
         ocr: OcrEngine,
-        strategy: ReaderStrategy = ReaderStrategy.CHEAP_FIRST
+        strategy: ReaderStrategy = ReaderStrategy.CHEAP_FIRST,
+        imageNames: Set<String>? = null,
+        saveCrops: Boolean = true
     ): AccuracyReport {
         val truthFile = File(directory, "ground_truth.json")
         require(truthFile.isFile) { "ground_truth.json missing" }
@@ -321,7 +323,11 @@ class AccuracyRunner(private val context: Context) {
         require(truth.isNotEmpty()) { "ground_truth.json has no results_screens" }
 
         val images = directory.listFiles()
-            ?.filter { it.isFile && it.extension.lowercase(Locale.US) in IMAGE_EXTENSIONS }
+            ?.filter {
+                it.isFile &&
+                    it.extension.lowercase(Locale.US) in IMAGE_EXTENSIONS &&
+                    (imageNames == null || it.name in imageNames)
+            }
             ?.sortedBy { it.name }
             .orEmpty()
         require(images.isNotEmpty()) { "no screenshots in ${directory.absolutePath}" }
@@ -357,7 +363,14 @@ class AccuracyRunner(private val context: Context) {
         notes += "A value is accepted only when at least two readers agree and hold a strict majority of the readers with evidence, or one reader plus an exact balance-identity match; a lone reader is never accepted."
         notes += "Digit templates were built from the four labelled result screens in the 11-image pack (08-11); template votes and field scores are excluded on those screens. They were not trained on the non-result frames."
         notes += "RapidOCR is PP-OCRv4 rec (PaddleOCR) on ONNX Runtime; digit templates are 24x32 neutral-channel glyphs extracted from the labelled pack (leave-one-row-out 199/199)."
-        notes += "The exact crop fed to each reader is saved under the run directory."
+        if (saveCrops) {
+            notes += "The exact crop fed to each reader is saved under the run directory."
+        } else {
+            notes += "Crop persistence is disabled for this timing run; reader timings are unchanged."
+        }
+        if (imageNames != null) {
+            notes += "Result-screen subset: only ${imageNames.size} named result screens were processed."
+        }
         notes += "Strategy $strategy: full/crop ML Kit and Tesseract run first; RapidOCR runs only when they cannot agree; templates run last and only when still needed."
         notes += "Reader timings exclude crop PNG persistence; screen read time is wall time and crop save time is reported separately."
         notes += "Balance cross-check is applied only between a defeat and the next victory when all balances, bonuses and a search cost are available; a mismatch is needs-review, not a value substitution."
@@ -508,10 +521,14 @@ class AccuracyRunner(private val context: Context) {
                     runDirectory,
                     "crops/${file.nameWithoutExtension.replace(Regex("[^A-Za-z0-9._-]"), "_")}"
                 )
-                val cropSink = CropSink(screenDirectory)
+                val cropSink = if (saveCrops) CropSink(screenDirectory) else null
                 val fullPageSaveStart = System.nanoTime()
-                val fullPageCrop = cropSink.save("full_mlkit", bitmap)
-                val fullPageSaveMs = elapsed(fullPageSaveStart)
+                val fullPageCrop = cropSink?.save("full_mlkit", bitmap)
+                val fullPageSaveMs = if (cropSink != null) {
+                    elapsed(fullPageSaveStart)
+                } else {
+                    0L
+                }
                 val cropReader = RowCropReader(
                     mlKit = ocr,
                     tesseract = tesseract,

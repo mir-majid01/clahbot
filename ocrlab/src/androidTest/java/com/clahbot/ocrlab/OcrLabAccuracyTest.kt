@@ -27,20 +27,42 @@ class OcrLabAccuracyTest {
             "external testpack directory unavailable"
         }
         require(directory.isDirectory) { "testpack folder missing at ${directory.absolutePath}" }
-        val images = directory.listFiles()
+        val allImages = directory.listFiles()
             ?.filter { it.isFile && it.extension.lowercase() in setOf("jpg", "jpeg", "png", "webp") }
             .orEmpty()
-        assertTrue("expected the 11-image pack, found ${images.size}", images.size >= 11)
+        val args = InstrumentationRegistry.getArguments()
+        val subset = args.getString("subset") == "results"
+        val imageNames = if (subset) RESULT_IMAGES else null
+        val saveCrops = !subset
+        val available = if (imageNames == null) {
+            allImages
+        } else {
+            allImages.filter { it.name in imageNames }
+        }
+        if (subset) {
+            assertEquals("expected the four result screens, found ${available.size}", 4, available.size)
+        } else {
+            assertTrue("expected the 11-image pack, found ${available.size}", available.size >= 11)
+        }
 
-        val strategy = when (InstrumentationRegistry.getArguments().getString("strategy")) {
+        val strategy = when (args.getString("strategy")) {
             "all" -> ReaderStrategy.ALL
             else -> ReaderStrategy.CHEAP_FIRST
         }
         val ocr = MlKitOcrEngine()
         try {
-            val report = AccuracyRunner(context).run(directory, ocr, strategy)
+            val report = AccuracyRunner(context).run(
+                directory = directory,
+                ocr = ocr,
+                strategy = strategy,
+                imageNames = imageNames,
+                saveCrops = saveCrops
+            )
             val json = GsonBuilder().setPrettyPrinting().create().toJson(report)
-            val suffix = if (strategy == ReaderStrategy.ALL) "_all" else ""
+            val suffix = buildString {
+                if (strategy == ReaderStrategy.ALL) append("_all")
+                if (subset) append("_results")
+            }
             val internal = File(context.filesDir, "accuracy_report$suffix.json")
             internal.writeText(json)
             val runReport = File(report.runDirectory, "accuracy_report.json")
@@ -49,10 +71,14 @@ class OcrLabAccuracyTest {
             Log.i(
                 "OCR_LAB",
                 "Headless accuracy report ${runReport.absolutePath} strategy=${report.strategy} " +
-                    "images=${report.images} detected=${report.detectedResults} " +
+                    "subset=$subset images=${report.images} detected=${report.detectedResults} " +
                     "wrong=${report.wrongCaptures} missing=${report.notCaptured}"
             )
-            assertTrue("no screenshots processed", report.images >= 11)
+            if (subset) {
+                assertEquals("result screens processed", 4, report.images)
+            } else {
+                assertTrue("no screenshots processed", report.images >= 11)
+            }
             assertEquals(
                 "result screens missed: ${report.missedResults}",
                 report.expectedResults,
@@ -67,5 +93,14 @@ class OcrLabAccuracyTest {
         } finally {
             ocr.close()
         }
+    }
+
+    companion object {
+        private val RESULT_IMAGES = setOf(
+            "08_results_victory_2star_70.jpg",
+            "09_results_defeat_35.jpg",
+            "10_results_victory_3star_100.jpg",
+            "11_results_victory_2star_71_reference.jpg"
+        )
     }
 }
