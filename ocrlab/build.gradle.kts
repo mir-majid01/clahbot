@@ -11,9 +11,15 @@ android {
         applicationId = "com.clahbot.ocrlab"
         minSdk = 26
         targetSdk = 34
-        versionCode = 3
-        versionName = "0.3.0"
+        versionCode = 4
+        versionName = "0.4.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // The lab runs on the arm64 test phone; keeping one ABI avoids a 143 MB
+        // multi-ABI download for ONNX Runtime and Tesseract.
+        ndk {
+            abiFilters.add("arm64-v8a")
+        }
     }
 
     signingConfigs {
@@ -67,6 +73,9 @@ dependencies {
 
     // Row-crop comparison engine; model is bundled in assets/tessdata.
     implementation("cz.adaptech.tesseract4android:tesseract4android:4.9.0")
+
+    // PP-OCRv4 recognition on ONNX Runtime; model and dictionary are bundled.
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.17.3")
 
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test:runner:1.5.2")

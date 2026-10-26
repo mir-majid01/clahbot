@@ -30,9 +30,6 @@ data class Inspection(
     val lootRows: List<RowCandidate>,
     val bonusRows: List<RowCandidate>,
     val balanceRows: List<RowCandidate>,
-    val fullLoot: AssignedValues,
-    val fullBonus: AssignedValues,
-    val balances: Triple<Long?, Long?, Long?>,
     val issues: List<String>
 )
 
@@ -67,30 +64,17 @@ data class ResultsRead(
     ).joinToString("|")
 }
 
-sealed interface ScreenRead {
-    data class Results(val read: ResultsRead) : ScreenRead
-    data class Ignored(val reason: String) : ScreenRead
-}
-
 /**
- * Anchor-based results-screen parser.
+ * Anchor-based results-screen row detector.
  *
- * "You got", "Victory"/"Defeat" and "Total damage" are all required; "Return
- * Home" is never an anchor because the searching screen also has it. Damage is
- * not read; the anchor only classifies the screen. Loot is assigned to a
- * resource by icon colour, never by row order. Values must pass the grouped
- * numeric format; failed reads stay null.
+ * "You got", "Victory"/"Defeat" and "Total damage" are all required. Loot
+ * rows must sit in the right-aligned value column and have a recognised
+ * resource icon, which keeps the Sour Elixir panel and label text out. Values
+ * are not assigned here: the accuracy harness feeds every row to all readers.
  */
 class ResultsScreenParser(
     private val colorSampler: IconColorSampler?
 ) {
-
-    fun parse(page: OcrPage): ScreenRead {
-        val inspection = inspect(page) ?: return ScreenRead.Ignored(ignoredReason(page))
-        return ScreenRead.Results(
-            buildRead(inspection, lootValues = null, bonusValues = null, balances = null)
-        )
-    }
 
     fun inspect(page: OcrPage): Inspection? {
         val anchors = findAnchors(page) ?: return null
@@ -102,76 +86,17 @@ class ResultsScreenParser(
         } else {
             emptyList()
         }
-        val balanceRows = readBalanceRows(page)
-        val fullLoot = assignFull(lootRows, "loot", issues) { NumberParser.parseGrouped(it) }
-        val fullBonus = assignFull(bonusRows, "bonus", issues) { NumberParser.parseBonus(it) }
-        val balances = fullBalances(balanceRows, issues)
+        val balanceRows = readBalanceRows(page, issues)
         return Inspection(
             outcome = outcome,
             lootRows = lootRows,
             bonusRows = bonusRows,
             balanceRows = balanceRows,
-            fullLoot = fullLoot,
-            fullBonus = fullBonus,
-            balances = balances,
             issues = issues
         )
     }
 
-    /**
-     * Builds the final read. When [lootValues]/[bonusValues] are supplied they
-     * align with the row candidates and come from the dual-engine crop pass.
-     */
-    fun buildRead(
-        inspection: Inspection,
-        lootValues: List<Long?>?,
-        bonusValues: List<Long?>?,
-        balances: Triple<Long?, Long?, Long?>?
-    ): ResultsRead {
-        val usingCropValues = lootValues != null && bonusValues != null
-        val issues = if (usingCropValues) {
-            mutableListOf()
-        } else {
-            inspection.issues.toMutableList()
-        }
-        val loot = assignProvided(inspection.lootRows, lootValues, inspection.fullLoot, "loot", issues)
-        val bonus = assignProvided(inspection.bonusRows, bonusValues, inspection.fullBonus, "bonus", issues)
-        val balance = balances ?: inspection.balances
-        val missingLoot = listOf(loot.gold, loot.elixir, loot.dark).count { it == null }
-        var confidence = 0.55
-        confidence += 0.1 * (3 - missingLoot)
-        if (inspection.outcome == ResultsOutcome.DEFEAT) {
-            confidence += 0.1
-        } else if (bonus.gold != null && bonus.elixir != null && bonus.dark != null) {
-            confidence += 0.1
-        }
-        if (balance.first != null && balance.second != null && balance.third != null) {
-            confidence += 0.05
-        }
-        confidence -= issues.size.coerceAtMost(8) * 0.03
-        confidence = confidence.coerceIn(0.05, 1.0)
-        return ResultsRead(
-            outcome = inspection.outcome,
-            stars = null,
-            gold = loot.gold,
-            elixir = loot.elixir,
-            darkElixir = loot.dark,
-            bonusGold = bonus.gold,
-            bonusElixir = bonus.elixir,
-            bonusDarkElixir = bonus.dark,
-            balanceGold = balance.first,
-            balanceElixir = balance.second,
-            balanceDarkElixir = balance.third,
-            confidence = confidence,
-            needsReview = missingLoot > 0 || issues.any {
-                it.contains("unknown") || it.contains("duplicate") || it.contains("conflict") ||
-                    it.contains("not captured")
-            },
-            issues = issues
-        )
-    }
-
-    private fun ignoredReason(page: OcrPage): String {
+    fun ignoredReason(page: OcrPage): String {
         val youGot = page.lines.any { normalized(it.text).contains("yougot") }
         val result = page.lines.any {
             FuzzyMatch.matchesResult(it.text, "victory") ||
@@ -192,7 +117,7 @@ class ResultsScreenParser(
             FuzzyMatch.matchesResult(it.text, "victory") ||
                 FuzzyMatch.matchesResult(it.text, "defeat")
         } ?: return null
-        val totalDamage = page.lines.firstOrNull {
+        page.lines.firstOrNull {
             normalized(it.text).contains("totaldamage")
         } ?: return null
         val youGotBox = youGot.box
@@ -204,7 +129,7 @@ class ResultsScreenParser(
             ResultsOutcome.VICTORY
         }
         val bonus = page.lines.firstOrNull { normalized(it.text).contains("bonus") }
-        return Anchors(youGot, totalDamage, bonus, outcome)
+        return Anchors(youGot, bonus, outcome)
     }
 
     private fun readLootRows(
@@ -218,18 +143,29 @@ class ResultsScreenParser(
         val bottom = troops?.box?.top
             ?.takeIf { it > top }
             ?: (top + page.height / 4).coerceAtMost(page.height)
-        val centerX = youGotBox.centerX
-        val minX = (centerX - page.width * 0.22).toInt()
-        val maxX = (centerX + page.width * 0.15).toInt()
+
+        // The loot values are right-aligned under "You got". A wide left margin
+        // still contains a clipped leading digit but not the Sour Elixir panel.
+        val columnCenter = youGotBox.centerX
+        val rightTolerance = (page.width * 0.05).toInt()
+        val columnLeft = (columnCenter - page.width * 0.16).toInt()
+        val rightMin = columnCenter - rightTolerance
+        val rightMax = columnCenter + rightTolerance
 
         val rows = page.lines.mapNotNull { line ->
             val box = line.box ?: return@mapNotNull null
             if (box.centerY < top || box.centerY > bottom) return@mapNotNull null
-            if (box.centerX < minX || box.centerX > maxX) return@mapNotNull null
+            if (box.right < rightMin || box.right > rightMax) return@mapNotNull null
+            if (box.left < columnLeft) return@mapNotNull null
             if (line.text.contains("+")) return@mapNotNull null
             if (isNonLootText(line.text)) return@mapNotNull null
-            if (!NumberParser.isNumericLike(line.text)) return@mapNotNull null
-            RowCandidate(box, line.text, RowRole.LOOT, colorSampler?.classify(box))
+            if (NumberParser.lootCandidates(line.text).isEmpty()) return@mapNotNull null
+            val resource = colorSampler?.classify(box)
+            if (resource == null) {
+                issues += "loot row '${line.text}': icon colour unknown"
+                return@mapNotNull null
+            }
+            RowCandidate(box, line.text, RowRole.LOOT, resource)
         }.sortedBy { it.box.top }
 
         val deduped = dedupe(rows).take(3)
@@ -247,32 +183,38 @@ class ResultsScreenParser(
         val anchorBox = anchor.box ?: return emptyList()
         val top = anchorBox.bottom
         val bottom = (youGot.box?.bottom ?: anchorBox.bottom) + page.height / 4
-        val minX = anchorBox.centerX - page.width * 0.12
+        val minX = anchorBox.centerX - page.width * 0.06
+        val maxX = anchorBox.centerX + page.width * 0.08
         val rows = page.lines.mapNotNull { line ->
             val box = line.box ?: return@mapNotNull null
             if (box.centerY < top || box.centerY > bottom) return@mapNotNull null
-            if (box.centerX < minX) return@mapNotNull null
+            if (box.centerX < minX || box.centerX > maxX) return@mapNotNull null
             if (normalized(line.text).contains("bonus")) return@mapNotNull null
-            if (!NumberParser.isNumericLike(line.text, allowBonusPrefix = true)) {
+            if (NumberParser.bonusCandidates(line.text).isEmpty()) return@mapNotNull null
+            val resource = colorSampler?.classify(box)
+            if (resource == null) {
+                issues += "bonus row '${line.text}': icon colour unknown"
                 return@mapNotNull null
             }
-            RowCandidate(box, line.text, RowRole.BONUS, colorSampler?.classify(box))
+            RowCandidate(box, line.text, RowRole.BONUS, resource)
         }.sortedBy { it.box.top }
         val deduped = dedupe(rows).take(3)
         if (deduped.size < 3) issues += "bonus rows found ${deduped.size}/3"
         return deduped
     }
 
-    private fun readBalanceRows(page: OcrPage): List<RowCandidate> {
+    private fun readBalanceRows(
+        page: OcrPage,
+        issues: MutableList<String>
+    ): List<RowCandidate> {
         val rows = page.lines.mapNotNull { line ->
             val box = line.box ?: return@mapNotNull null
             if (box.centerY > page.height * 0.22) return@mapNotNull null
             if (box.centerX < page.width * 0.62) return@mapNotNull null
-            val mapped = NumberParser.mapNumeric(line.text) ?: return@mapNotNull null
-            if (mapped.count { it.isDigit() } < 4) return@mapNotNull null
+            if (NumberParser.balanceCandidates(line.text).isEmpty()) return@mapNotNull null
             RowCandidate(box, line.text, RowRole.BALANCE, null)
         }.sortedBy { it.box.centerY }
-        return rows.take(3).mapIndexed { index, row ->
+        val assigned = rows.take(3).mapIndexed { index, row ->
             row.copy(
                 resource = when (index) {
                     0 -> ResourceKind.GOLD
@@ -281,97 +223,8 @@ class ResultsScreenParser(
                 }
             )
         }
-    }
-
-    private fun fullBalances(
-        rows: List<RowCandidate>,
-        issues: MutableList<String>
-    ): Triple<Long?, Long?, Long?> {
-        if (rows.size < 3) return Triple(null, null, null)
-        val values = rows.map { row ->
-            val value = NumberParser.parseGrouped(row.rawText)
-            if (value == null) issues += "balance rejected: ${row.rawText}"
-            value
-        }
-        return Triple(values[0], values[1], values[2])
-    }
-
-    private fun assignFull(
-        rows: List<RowCandidate>,
-        label: String,
-        issues: MutableList<String>,
-        parser: (String) -> Long?
-    ): AssignedValues {
-        var gold: Long? = null
-        var elixir: Long? = null
-        var dark: Long? = null
-        for ((index, row) in rows.withIndex()) {
-            val value = parser(row.rawText)
-            if (value == null) {
-                issues += "$label row ${index + 1}: rejected format '${row.rawText}'"
-                continue
-            }
-            val resource = row.resource
-            if (resource == null) {
-                issues += "$label row ${index + 1}: icon colour unknown"
-                continue
-            }
-            val existing = when (resource) {
-                ResourceKind.GOLD -> gold
-                ResourceKind.ELIXIR -> elixir
-                ResourceKind.DARK -> dark
-            }
-            if (existing != null) {
-                issues += "$label row ${index + 1}: duplicate ${resource.name.lowercase(Locale.US)}"
-                continue
-            }
-            when (resource) {
-                ResourceKind.GOLD -> gold = value
-                ResourceKind.ELIXIR -> elixir = value
-                ResourceKind.DARK -> dark = value
-            }
-        }
-        return AssignedValues(gold, elixir, dark)
-    }
-
-    private fun assignProvided(
-        rows: List<RowCandidate>,
-        provided: List<Long?>?,
-        fallback: AssignedValues,
-        label: String,
-        issues: MutableList<String>
-    ): AssignedValues {
-        if (provided == null || provided.size != rows.size) return fallback
-        var gold: Long? = null
-        var elixir: Long? = null
-        var dark: Long? = null
-        for ((index, row) in rows.withIndex()) {
-            val value = provided[index]
-            if (value == null) {
-                issues += "$label row ${index + 1}: not captured"
-                continue
-            }
-            val resource = row.resource
-            if (resource == null) {
-                issues += "$label row ${index + 1}: icon colour unknown"
-                continue
-            }
-            val existing = when (resource) {
-                ResourceKind.GOLD -> gold
-                ResourceKind.ELIXIR -> elixir
-                ResourceKind.DARK -> dark
-            }
-            if (existing != null) {
-                issues += "$label row ${index + 1}: duplicate ${resource.name.lowercase(Locale.US)}"
-                continue
-            }
-            when (resource) {
-                ResourceKind.GOLD -> gold = value
-                ResourceKind.ELIXIR -> elixir = value
-                ResourceKind.DARK -> dark = value
-            }
-        }
-        return AssignedValues(gold, elixir, dark)
+        if (assigned.size < 3) issues += "balance rows found ${assigned.size}/3"
+        return assigned
     }
 
     private fun dedupe(rows: List<RowCandidate>): List<RowCandidate> {
@@ -387,11 +240,14 @@ class ResultsScreenParser(
     private fun isNonLootText(text: String): Boolean {
         val normalized = normalized(text)
         return normalized.contains("bonus") ||
+            normalized.contains("sour") ||
             normalized.contains("totaldamage") ||
             normalized.contains("yougot") ||
             normalized.contains("troops") ||
             normalized.contains("damage") ||
-            normalized.contains("returnhome")
+            normalized.contains("returnhome") ||
+            normalized.contains("findamatch") ||
+            normalized.contains("storage")
     }
 
     private fun normalized(text: String): String =
@@ -399,7 +255,6 @@ class ResultsScreenParser(
 
     private data class Anchors(
         val youGot: OcrLine,
-        val totalDamage: OcrLine,
         val bonus: OcrLine?,
         val outcome: ResultsOutcome
     )

@@ -156,18 +156,25 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             try {
                 val report = AccuracyRunner(this@MainActivity).run(directory, ocr)
+                val json = GsonBuilder().setPrettyPrinting().create().toJson(report)
                 val outputFile = File(filesDir, "accuracy_report.json")
+                val runReport = File(report.runDirectory, "accuracy_report.json")
                 withContext(Dispatchers.IO) {
-                    outputFile.writeText(
-                        GsonBuilder().setPrettyPrinting().create().toJson(report)
-                    )
+                    runReport.parentFile?.mkdirs()
+                    outputFile.writeText(json)
+                    runReport.writeText(json)
                 }
-                statusView.text = "Accuracy complete"
+                statusView.text = if (report.wrongCaptures > 0) {
+                    "Accuracy FAILED: ${report.wrongCaptures} wrong captures"
+                } else {
+                    "Accuracy complete: 0 wrong captures, ${report.notCaptured} missing"
+                }
                 outputView.text = report.summary()
                 Log.i(
                     TAG,
-                    "Accuracy report ${outputFile.absolutePath} " +
-                        "images=${report.images} detected=${report.detectedResults}"
+                    "Accuracy report ${runReport.absolutePath} " +
+                        "images=${report.images} detected=${report.detectedResults} " +
+                        "wrong=${report.wrongCaptures} missing=${report.notCaptured}"
                 )
             } catch (t: Throwable) {
                 statusView.text = "Accuracy failed: ${t.message}"
