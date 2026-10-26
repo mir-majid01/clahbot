@@ -95,7 +95,7 @@ updates from this repository's Releases. See
 | `SettingsStore` | Shared preferences as a `StateFlow`. |
 | `GitHubUpdater` | Release check, checksum-verified download and installer launch. |
 | `:ocr` | Shared on-device result-screen reader: ML Kit full/crop, Tesseract, RapidOCR PP-OCRv4 and digit templates with strict-majority consensus. |
-| `ResultsCaptureCoordinator` | Watches for the result screen after playback, reads it, and creates one confirmed attack record only when the results anchors are actually detected. |
+| `ResultsCaptureCoordinator` | Watches for the result screen from playback start through four minutes after it ends, reads it, and creates one confirmed attack record only when the results anchors are actually detected. |
 
 ## Attack history
 
@@ -114,13 +114,15 @@ Deleting a macro never deletes its past attack records.
 - Coordinates are normalized to the recording display; a very different aspect
   ratio can shift touch positions.
 - Speed changes apply at the next playback run.
-- The v2.4.0 build is **arm64-only** because the bundled OCR native libraries
+- The v2.4.1 build is **arm64-only** because the bundled OCR native libraries
   made the universal APK about 151 MB. The lab and app are verified on the
   arm64 test phone; other ABIs are not packaged in this build.
 - Result-screen OCR needs the accessibility screenshot permission (Android 11+)
-  and the game to be in the foreground when playback ends. A result screen that
-  was already open before playback is ignored as stale; a missing or partial
-  read stays `loot not captured`.
+  and the game to be in the foreground while the result screen is open. The
+  result screen is watched for from playback start, because a recorded macro
+  normally taps Return Home while it is open. A result screen that was already
+  open before playback is ignored as stale; a missing or partial read stays
+  `loot not captured`.
 - Playback pauses when Clash of Clans leaves the foreground and the session is
   marked interrupted; resuming is manual.
 
@@ -133,8 +135,8 @@ Deleting a macro never deletes its past attack records.
   writes its SHA-256 and publishes both as GitHub release assets.
 
 ```bash
-git tag v9
-git push origin v9
+git tag v10
+git push origin v10
 ```
 
 Version numbers live in `app/build.gradle.kts`.
