@@ -2,6 +2,7 @@ package com.clahbot.results
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.util.Log
 import com.clahbot.ocr.BitmapIconColorSampler
 import com.clahbot.ocr.DigitTemplateEngine
 import com.clahbot.ocr.DigitTemplateStore
@@ -84,7 +85,11 @@ class AppResultsReader(private val context: Context) {
     suspend fun isResultsScreen(bitmap: Bitmap): Boolean = readMutex.withLock {
         val page = mlKit.recognize(bitmap)
         val parser = ResultsScreenParser(BitmapIconColorSampler(bitmap))
-        parser.inspect(page) != null
+        val inspection = parser.inspect(page)
+        if (inspection == null) {
+            Log.i("AutoClashResults", "Detection miss: ${parser.ignoredReason(page)}")
+        }
+        inspection != null
     }
 
     suspend fun read(bitmap: Bitmap): ReadResult? {

@@ -12,16 +12,22 @@ Ranked is untouched. Product Features 2-5 have not been started.
 - App 2.4.0 (versionCode 9) was installed on the phone with data preserved.
   Installing it did not change `macros.json` or `attacks.json` (SHA-256 checked
   before and after).
-- One real attack was played with the recorded `New` macro. The attack finished
-  and the village loot increased by about 1.61M gold, 1.64M elixir and 14.3k
-  dark elixir, but **no screenshot and no attack record were created**. The
-  results screen was open only while the macro was still playing and the macro
-  tapped Return Home at 80.2 s; the watcher in 2.4.0 started at playback end
-  (about 9 s later) and therefore missed it.
-- The fix is in 2.4.1 (versionCode 10): the result watcher now starts at
-  playback start and keeps watching until four minutes after playback ends. It
-  is compiled and unit-tested locally, but **not installed or verified on the
-  phone** yet.
+- First real attack (2.4.0): the attack finished and the village loot increased
+  by about 1.61M gold, 1.64M elixir and 14.3k dark elixir, but **no screenshot
+  and no attack record were created**. The results screen was open only while
+  the macro was still playing and the macro tapped Return Home at 80.2 s; the
+  watcher in 2.4.0 started at playback end (about 9 s later) and missed it.
+- 2.4.1 (versionCode 10) was installed and a second real attack was played. The
+  watcher did start at playback start (baseline at 00:21:54, playback end at
+  00:23:23), and the attack again completed (loot rose by about 1.39M gold,
+  1.46M elixir and 8.8k dark), but there was still no capture. Detection ran on
+  a half-scale frame where the small "You got" anchor is only about 10 px tall;
+  that is the leading suspect for the missed detection. There is no per-poll
+  log in 2.4.1 to prove where it failed.
+- 2.4.2 (versionCode 11) changes detection to the full-resolution frame, drops
+  the 1 s retry delay between polls, logs every poll's screenshot/detection
+  time and the parser's anchor-miss reason, and shortens the clean-capture
+  delay to 600 ms. It is not built, installed or verified yet.
 - The earlier lab run on the 11-image pack scored 0 wrong / 0 missing, but the
   digit templates voted in that run. That is **not** a valid score under the
   current rule, which excludes templates on their training images.
@@ -103,11 +109,13 @@ Measured on the phone with the four result screens and no crop saving
   after playback ends (hard cap 15 minutes). Watching only after playback is
   wrong: the first real run proved that the macro taps Return Home while the
   result screen is open, before playback finishes. The bubble stays usable
-  while polling. Detection uses a half-scale screenshot; once the result
-  anchors appear, the bubble is hidden for a clean full-resolution capture,
-  then restored. If the clean frame no longer shows results (for example
-  because the macro tapped Return Home during the delay), the detection frame
-  is read instead.
+  while polling. Detection uses the full-resolution screenshot (2.4.2); the
+  half-scale frame in 2.4.0/2.4.1 shrank "You got" to about 10 px and is the
+  likely reason the second attack was missed. Polls have no artificial delay,
+  so the loop runs at screenshot+OCR speed. Once the anchors appear, the bubble
+  is hidden for a clean full-resolution capture, then restored. If the clean
+  frame no longer shows results (for example because the macro tapped Return
+  Home during the delay), the detection frame is read instead.
 - A detected result screen creates exactly one confirmed attack record. Playback
   completion alone never writes a record. The existing `AttackRecordPolicy`
   gate is enforced in the coordinator.
@@ -133,9 +141,9 @@ Measured on the phone with the four result screens and no crop saving
 |---|---|---|---|
 | 1. Template provenance + exclusion | Exact source images recorded above. Template classification is excluded from votes/scores on 08-11 in code. The earlier 0/0 run included templates, so it is not counted. The current-rule four-screen timing run scored 0 wrong / 0 missing with template votes excluded. | Code + source evidence + current-rule device run on 4 training images | A non-training accuracy score (real captures) |
 | 2. Speed before/after | Four result screens, no crop saving: all readers 14.66 s compute (3.7 s/screen) versus cheap-first 3.12 s compute (0.61-1.01 s/screen) and 3.62 s wall. Per-reader tables are in "Verified numbers". RapidOCR and templates were skipped entirely by cheap-first. | Automated-device measurement with the lab instrumentation | Timing with the app's own warm-up and a real results screen |
-| 3. App reader integration + phantom fix | `:ocr` shared library; app 2.4.0 (9) installed over existing data with file hashes unchanged; accessibility screenshot path exercised (the watcher took detection screenshots after playback); 108 app unit tests and CI green. One real attack created **no** record and no screenshot, which confirms playback completion alone does not create a record, but also exposed the watcher-start bug. The 2.4.1 fix is compiled and unit-tested, not yet on the phone. | Install + unit/CI + one real attack (negative capture) | Automatic capture and record on a real attack with 2.4.1; stale-result rejection in the app |
-| 4. “Save results screenshots” setting | Setting in `SettingsStore`; Settings UI switch rendered and the switch was checked=true on the phone; PNG + JSON + TXT sidecar store; null-not-zero mapping; compile/unit tests. | Setting UI verified on-device; writer unit tested | Actual PNG/sidecar contents from a real attack; 30+ capture collection |
-| 5. AGENT_CONTEXT.md | This file | Updated with measured speed, the real-attack finding and the pending verification | Final on-device evidence for 2.4.1 |
+| 3. App reader integration + phantom fix | `:ocr` shared library; 2.4.0 (9) and 2.4.1 (10) installed over existing data with file hashes unchanged; 108 app unit tests and CI green. Two real attacks created **no** record and no screenshot, confirming playback completion alone never records, but both missed the capture. The first proved the watcher must run during playback; the second still missed, and the half-scale anchor is the leading suspect. 2.4.2 uses full-resolution detection plus poll logging and is not installed yet. | Install + unit/CI + two real attacks (negative capture) | Automatic capture and record on a real attack with 2.4.2; poll logs; stale-result rejection in the app |
+| 4. “Save results screenshots” setting | Setting in `SettingsStore`; Settings UI switch rendered and checked=true on the phone; PNG + JSON + TXT sidecar store; null-not-zero mapping; compile/unit tests. | Setting UI verified on-device; writer unit tested | Actual PNG/sidecar contents from a real attack; 30+ capture collection |
+| 5. AGENT_CONTEXT.md | This file | Updated with measured speed, both real-attack findings and the pending 2.4.2 verification | Final on-device evidence for 2.4.2 |
 
 ## Verified numbers
 
@@ -169,16 +177,19 @@ under the current rule): 4/4 results, 11/11 classification, 0 false
 positives, 0 wrong, 0 missing; 578 s wall. That run included startup, model
 loading, full-page OCR of all 11 frames, every reader and crop saving.
 
-Real attack, app 2.4.0:
+Real attacks:
 
-- Loot counters before: 5,702,517 gold / 3,895,944 elixir / 189,102 dark.
-  After: 7,312,999 / 5,537,504 / 203,455. The attack completed.
-- `attacks.json` was unchanged and `results_captures` was not created.
-- Log: `Playback ended (interrupted=false); watching for results` followed by
-  `Baseline results screen=false`; no `Results screen detected` line.
-- Conclusion: the results screen was dismissed by the macro's Return Home tap
-  at 80.2 s, before the 2.4.0 watcher started. The phantom-record guard worked
-  (playback completion created nothing), but the capture window was wrong.
+- 2.4.0, first run: 5,702,517 gold / 3,895,944 elixir / 189,102 dark before;
+  7,312,999 / 5,537,504 / 203,455 after. `attacks.json` unchanged and no
+  `results_captures` folder. Log: playback end then baseline false; no
+  detection. The results screen was dismissed by the macro's Return Home tap at
+  80.2 s, before the 2.4.0 watcher started.
+- 2.4.1, second run: 7,312,999 / 5,537,504 / 203,455 before; 8,700,806 /
+  7,002,199 / 212,267 after. `attacks.json` still unchanged and no captures.
+  Log: baseline false at 00:21:54, playback end at 00:23:23, no detection.
+- Both runs: the phantom-record guard worked (playback completion created
+  nothing). Neither run produced data on where detection failed; 2.4.2 adds
+  per-poll logs and the parser's anchor-miss reason.
 
 ## Build and test commands used
 
@@ -206,11 +217,11 @@ cached; CI uses the repository wrapper (8.2).
 
 ## Next actions
 
-1. Ask the user before installing app 2.4.1 (versionCode 10). After approval,
-   run one real attack and verify: results screen detected during playback,
-   clean PNG plus JSON/TXT sidecar, exactly one confirmed record, values match
-   the screen, missing fields stay null, and no record for a stale results
-   screen or for playback completion alone.
+1. Build 2.4.2 (versionCode 11) in CI, then ask the user before installing it.
+   After approval, run one real attack and verify from the new per-poll logs:
+   results screen detected during playback, clean PNG plus JSON/TXT sidecar,
+   exactly one confirmed record, values match the screen, missing fields stay
+   null, and no record for a stale results screen or playback completion alone.
 2. Restore the original `macros.json` from `.ocr-work/macros.before.json` after
    the verification, because selecting the macro and cycling repeat persists
    playback settings into the file (existing app behavior). Confirm its
@@ -234,11 +245,12 @@ cached; CI uses the repository wrapper (8.2).
 - The current build is arm64-only. Other phone ABIs are not packaged.
 - OCR can miss fields; the app records nulls and marks them, and the user can
   correct them from attack history.
-- The results watcher now polls every ~1 s during playback as well as for up to
-  4 minutes after it. Detection OCR runs at half resolution while the battle is
-  running; this has not been battery- or heat-tested on the phone. If polling
-  is too heavy during a long attack, the debug setting can be used to collect
-  captures manually instead.
+- The results watcher polls continuously during playback and for up to 4
+  minutes after it. In 2.4.2 detection OCR runs on the full-resolution frame,
+  so the loop rate is bounded by the screenshot plus OCR (about 1 s on this
+  phone). This has not been battery- or heat-tested during a long attack. If
+  polling is too heavy, the debug setting can be used to collect captures
+  manually instead.
 - The results screen may be visible for only a few seconds before the macro
   taps Return Home (about 4 s in the first real run). Detection uses a 1 s
   poll; if the clean capture lands after the tap, the retained detection frame

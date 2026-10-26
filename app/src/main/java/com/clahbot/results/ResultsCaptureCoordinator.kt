@@ -130,15 +130,26 @@ class ResultsCaptureCoordinator(
                     delay(RETRY_DELAY_MS)
                     continue
                 }
+                val shotStart = System.nanoTime()
                 val detectionBitmap = ClahAccessibilityService.captureScreenshot()
+                val shotMs = (System.nanoTime() - shotStart) / 1_000_000L
                 if (detectionBitmap == null) {
+                    Log.i(TAG, "Poll screenshot failed after ${shotMs}ms")
                     delay(RETRY_DELAY_MS)
                     continue
                 }
+                val detectStart = System.nanoTime()
                 val detected = isResultsScreen(detectionBitmap)
+                val detectMs = (System.nanoTime() - detectStart) / 1_000_000L
+                val elapsed = System.currentTimeMillis() - state.session.startedAt
+                Log.i(
+                    TAG,
+                    "Poll at ${elapsed}ms: shot=${shotMs}ms detect=${detectMs}ms results=$detected"
+                )
                 if (!detected) {
                     detectionBitmap.recycle()
-                    delay(RETRY_DELAY_MS)
+                    // No retry delay: the result screen can be dismissed within
+                    // a second by the macro's Return Home gesture.
                     continue
                 }
 
@@ -197,16 +208,8 @@ class ResultsCaptureCoordinator(
         }
     }
 
-    private suspend fun isResultsScreen(bitmap: Bitmap): Boolean {
-        val width = (bitmap.width / DETECTION_SCALE).coerceAtLeast(1)
-        val height = (bitmap.height / DETECTION_SCALE).coerceAtLeast(1)
-        val scaled = Bitmap.createScaledBitmap(bitmap, width, height, true)
-        return try {
-            reader.isResultsScreen(scaled)
-        } finally {
-            scaled.recycle()
-        }
-    }
+    private suspend fun isResultsScreen(bitmap: Bitmap): Boolean =
+        reader.isResultsScreen(bitmap)
 
     private suspend fun saveAndRecord(
         state: SessionState,
@@ -280,7 +283,6 @@ class ResultsCaptureCoordinator(
         private const val MAX_WATCH_MS = 15 * 60_000L
         private const val RETRY_DELAY_MS = 1_000L
         private const val READ_TIMEOUT_MS = 25_000L
-        private const val CLEAN_CAPTURE_DELAY_MS = 1_100L
-        private const val DETECTION_SCALE = 2
+        private const val CLEAN_CAPTURE_DELAY_MS = 600L
     }
 }
