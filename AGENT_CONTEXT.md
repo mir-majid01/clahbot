@@ -9,16 +9,24 @@ Ranked is untouched. Product Features 2-5 have not been started.
 
 - The shared OCR core lives in the `:ocr` library; both the OCR lab and the
   AutoClash app consume it.
-- The app is version 2.4.0 (versionCode 9), arm64-only for the test phone.
-- The app integration compiles and its unit tests pass. It is **not installed
-  on the phone** yet, so capture, automatic attack records, screenshots, and
-  the phantom-record guards have **not** been verified on a real attack.
+- App 2.4.0 (versionCode 9) was installed on the phone with data preserved.
+  Installing it did not change `macros.json` or `attacks.json` (SHA-256 checked
+  before and after).
+- One real attack was played with the recorded `New` macro. The attack finished
+  and the village loot increased by about 1.61M gold, 1.64M elixir and 14.3k
+  dark elixir, but **no screenshot and no attack record were created**. The
+  results screen was open only while the macro was still playing and the macro
+  tapped Return Home at 80.2 s; the watcher in 2.4.0 started at playback end
+  (about 9 s later) and therefore missed it.
+- The fix is in 2.4.1 (versionCode 10): the result watcher now starts at
+  playback start and keeps watching until four minutes after playback ends. It
+  is compiled and unit-tested locally, but **not installed or verified on the
+  phone** yet.
 - The earlier lab run on the 11-image pack scored 0 wrong / 0 missing, but the
   digit templates voted in that run. That is **not** a valid score under the
   current rule, which excludes templates on their training images.
-- The all-readers timing baseline was run with templates excluded from
-  consensus/scoring, but the phone disconnected before the report was pulled.
-  The cheap-first after measurement is therefore still pending.
+- Speed on the four result screens is now measured for both strategies; see
+  "Verified numbers". The cheap-first strategy is inside the target.
 - The 30+ real-capture set has not been collected or scored.
 
 ## Digit-template provenance
@@ -68,6 +76,21 @@ page OCR time, consensus time, crop-save time, and wall/compute time per result
 screen. The app reuses the cheap-first strategy but saves only the full result
 screenshot, not per-row crops.
 
+Measured on the phone with the four result screens and no crop saving
+(`strategy=all` before, `strategy=cheap` after):
+
+- All readers: 40 row reads, ML Kit full 1,124 ms, crop 1,899 ms, Tesseract
+  750 ms, RapidOCR 1,155 ms, template segmentation 212 ms, template
+  classification 9,520 ms after removing a 438 s OS freeze artifact, consensus
+  <1 ms. Corrected compute 14.66 s total, about 3.7 s per screen.
+- Cheap first: RapidOCR and template classification were skipped on all 33 rows.
+  ML Kit full 775 ms, crop 1,470 ms, Tesseract 670 ms, template segmentation
+  207 ms, consensus <1 ms. Compute 3.12 s total (1.01 / 0.61 / 0.77 / 0.74 s
+  per screen); wall 3.62 s total (1.19 / 0.68 / 0.88 / 0.87 s per screen).
+- Both strategies: 4/4 result screens, 0 false positives, 0 wrong captures,
+  0 missing values, consensus 37/37. Template votes were excluded on these
+  four training images.
+
 ## App integration
 
 - Accessibility is used for capture: `AccessibilityService.takeScreenshot`
@@ -76,11 +99,15 @@ screenshot, not per-row crops.
 - Playback start captures a baseline screenshot and checks it for result-screen
   anchors. If the results screen was already open before playback, it is treated
   as stale and no record is created.
-- Playback end starts a bounded results watcher (4 min) because the battle can
-  outlast the macro playback. The bubble stays usable while polling. Detection
-  uses a half-scale screenshot; once the result anchors appear, the bubble is
-  hidden for a clean full-resolution capture, then restored. This avoids hiding
-  the controller for a whole battle.
+- The results watcher starts at playback start and runs until four minutes
+  after playback ends (hard cap 15 minutes). Watching only after playback is
+  wrong: the first real run proved that the macro taps Return Home while the
+  result screen is open, before playback finishes. The bubble stays usable
+  while polling. Detection uses a half-scale screenshot; once the result
+  anchors appear, the bubble is hidden for a clean full-resolution capture,
+  then restored. If the clean frame no longer shows results (for example
+  because the macro tapped Return Home during the delay), the detection frame
+  is read instead.
 - A detected result screen creates exactly one confirmed attack record. Playback
   completion alone never writes a record. The existing `AttackRecordPolicy`
   gate is enforced in the coordinator.
@@ -96,7 +123,7 @@ screenshot, not per-row crops.
   by installing the update. A new attack record is written only after a real
   detected result screen. The repository schema is now 3, with new nullable
   `outcome`, `resultsScreenshot`, and `resultsSidecar` fields.
-- The current app APK is arm64-only (57 MB debug) because the OCR native
+- The current app APK is arm64-only (58 MB debug) because the OCR native
   libraries made the universal APK about 151 MB. The lab APK is also arm64-only
   (50 MB). This is a deliberate limitation of this build.
 
@@ -104,25 +131,54 @@ screenshot, not per-row crops.
 
 | Item | Evidence | Level | Still unverified |
 |---|---|---|---|
-| 1. Template provenance + exclusion | Exact source images recorded above. Template classification is excluded from votes/scores on 08-11 in code. The earlier 0/0 run included templates, so it is not counted. | Code + source evidence; current-rule device rerun pending | Current-rule accuracy on 08-11 after exclusion |
-| 2. Speed before/after | Initial v0.4 lab run took 578 s for 11 images with every reader and template votes (not a per-reader table). Timing instrumentation and cheap-first logic are implemented. An all-readers timing run completed on the phone, but adb disconnected before the report could be pulled; the cheap-first after run is pending. | Partial: only the 578 s total is measured; no per-screen before/after numbers claimed | Per-reader/per-screen before and after; target “a few seconds per screen” |
-| 3. App reader integration + phantom fix | `:ocr` shared library; app v2.4.0 (9) compiles; 108 app unit tests pass; APK builds; CI `40368076334` green for the shared-library integration. Results-to-record mapping and capture policy are unit tested. No playback-completion record path exists. | Build + unit tests + CI; on-device unverified | Accessibility screenshot success, auto record on a real attack, stale-result rejection, no phantom record on a real menu/home screen |
-| 4. “Save results screenshots” setting | Setting in `SettingsStore`; Settings UI switch; PNG + JSON + TXT sidecar store; null-not-zero mapping; compile/unit tests. | Build + unit tests; UI/on-device unverified | Switch rendering, file paths, sidecar contents, 30+ capture collection |
-| 5. AGENT_CONTEXT.md | This file | Written | It must be updated with the pending speed numbers and the on-device results |
+| 1. Template provenance + exclusion | Exact source images recorded above. Template classification is excluded from votes/scores on 08-11 in code. The earlier 0/0 run included templates, so it is not counted. The current-rule four-screen timing run scored 0 wrong / 0 missing with template votes excluded. | Code + source evidence + current-rule device run on 4 training images | A non-training accuracy score (real captures) |
+| 2. Speed before/after | Four result screens, no crop saving: all readers 14.66 s compute (3.7 s/screen) versus cheap-first 3.12 s compute (0.61-1.01 s/screen) and 3.62 s wall. Per-reader tables are in "Verified numbers". RapidOCR and templates were skipped entirely by cheap-first. | Automated-device measurement with the lab instrumentation | Timing with the app's own warm-up and a real results screen |
+| 3. App reader integration + phantom fix | `:ocr` shared library; app 2.4.0 (9) installed over existing data with file hashes unchanged; accessibility screenshot path exercised (the watcher took detection screenshots after playback); 108 app unit tests and CI green. One real attack created **no** record and no screenshot, which confirms playback completion alone does not create a record, but also exposed the watcher-start bug. The 2.4.1 fix is compiled and unit-tested, not yet on the phone. | Install + unit/CI + one real attack (negative capture) | Automatic capture and record on a real attack with 2.4.1; stale-result rejection in the app |
+| 4. “Save results screenshots” setting | Setting in `SettingsStore`; Settings UI switch rendered and the switch was checked=true on the phone; PNG + JSON + TXT sidecar store; null-not-zero mapping; compile/unit tests. | Setting UI verified on-device; writer unit tested | Actual PNG/sidecar contents from a real attack; 30+ capture collection |
+| 5. AGENT_CONTEXT.md | This file | Updated with measured speed, the real-attack finding and the pending verification | Final on-device evidence for 2.4.1 |
 
 ## Verified numbers
 
-- Initial lab v0.4 on the phone, all readers including templates:
-  11 images, 4/4 result screens, 11/11 classification, 0 false positives,
-  0 wrong captures, 0 missing. **Templates were part of consensus, so this does
-  not validate the current scoring rule.**
-- Initial per-engine accuracy from that run (also template-contaminated):
-  ML Kit full 37/37, ML Kit crop 33/33, Tesseract 25/33 (4 wrong, 4 missing),
-  RapidOCR 32/33 (1 wrong), templates 33/33, consensus 37/37.
-  The Tesseract/Rapid errors were outvoted by consensus.
-- The 10/09 balance identity passed (`balanceCheck=pass` for screen 10).
-- Total wall time of that run: 578 s for 11 images (includes startup, model
-  loading, full-page OCR of non-result frames, all readers, and crop saving).
+Speed, four result screens (`08`-`11`), crop saving off, templates excluded
+from votes and scoring:
+
+| Run | Test time | Compute | Wall | Per-screen compute | Per-screen wall |
+|---|---|---|---|---|---|
+| All readers | 455.4 s raw* | 14.66 s corrected | — | 3.7 s | — |
+| Cheap first | 4.485 s | 3.12 s | 3.62 s | 0.61-1.01 s | 0.68-1.19 s |
+
+\* The raw 455.4 s contains a 438 s OS freeze on screen 08 (phone was in use).
+The corrected compute removes that single outlier. Reader totals in the raw
+report were: ML Kit full 1,124 ms, crop 1,899 ms, Tesseract 750 ms, RapidOCR
+1,155 ms, template segmentation 212 ms, template classification 447,870 ms raw
+/ 9,520 ms corrected.
+
+Accuracy, same four screens:
+
+- All readers: 4/4 result screens, 0 false positives, 0 wrong captures,
+  0 missing. On the 33 field rows: ML Kit full 33/33, crop 33/33, Tesseract
+  25/33 (4 wrong, 4 missing), RapidOCR 32/33 (1 wrong balance), consensus
+  33/33; consensus also read 4/4 outcomes.
+- Cheap first: 4/4 result screens, 0 false positives, 0 wrong captures,
+  0 missing. On the 33 field rows: ML Kit full 33/33, crop 33/33, Tesseract
+  25/33, consensus 33/33 plus 4/4 outcomes; RapidOCR and templates were
+  skipped on every row.
+
+Initial v0.4 11-image run (templates included, therefore not a valid score
+under the current rule): 4/4 results, 11/11 classification, 0 false
+positives, 0 wrong, 0 missing; 578 s wall. That run included startup, model
+loading, full-page OCR of all 11 frames, every reader and crop saving.
+
+Real attack, app 2.4.0:
+
+- Loot counters before: 5,702,517 gold / 3,895,944 elixir / 189,102 dark.
+  After: 7,312,999 / 5,537,504 / 203,455. The attack completed.
+- `attacks.json` was unchanged and `results_captures` was not created.
+- Log: `Playback ended (interrupted=false); watching for results` followed by
+  `Baseline results screen=false`; no `Results screen detected` line.
+- Conclusion: the results screen was dismissed by the macro's Return Home tap
+  at 80.2 s, before the 2.4.0 watcher started. The phantom-record guard worked
+  (playback completion created nothing), but the capture window was wrong.
 
 ## Build and test commands used
 
@@ -137,16 +193,28 @@ cached; CI uses the repository wrapper (8.2).
   test APK, uploads).
 - CI run `40368076334` for commit `ebd0dec` (shared `:ocr` library and app
   integration) was green: unit tests, app/lab debug APKs, lab test APK and
-  uploads. The later watcher/timing-only app commit still needs its CI run.
+  uploads.
+- CI run `40371851457` for commit `34f398e` (the 4-minute watcher and clean
+  capture) was green: unit tests, app/lab debug APKs, lab test APK and uploads.
+- 2026-10-26: local `:app:compileDebugKotlin :ocrlab:compileDebugKotlin` and
+  `:app:testDebugUnitTest :ocr:testDebugUnitTest` passed with Gradle 8.9 and
+  JDK 17 after the watcher-start fix. CI for the 2.4.1 commit is pending.
+- Lab benchmark commands used on the phone:
+  `adb shell am instrument -w -e strategy all -e subset results -e saveCrops false -e class com.clahbot.ocrlab.OcrLabAccuracyTest com.clahbot.ocrlab.test/androidx.test.runner.AndroidJUnitRunner`
+  and the same with `strategy` omitted for cheap-first. Reports pulled to
+  `.ocr-work/speed_before.json` and `.ocr-work/speed_after.json`.
 
 ## Next actions
 
-1. Reconnect the phone (USB adb is currently disconnected). Pull the completed
-   all-readers timing report, then install the current lab build and run the
-   cheap-first timing pass to fill the before/after table.
-2. Ask the user before installing app v2.4.0. After approval, run one real
-   attack and verify: accessibility screenshot, automatic confirmed record,
-   sidecar values, null-not-zero, and no record on a stale results screen.
+1. Ask the user before installing app 2.4.1 (versionCode 10). After approval,
+   run one real attack and verify: results screen detected during playback,
+   clean PNG plus JSON/TXT sidecar, exactly one confirmed record, values match
+   the screen, missing fields stay null, and no record for a stale results
+   screen or for playback completion alone.
+2. Restore the original `macros.json` from `.ocr-work/macros.before.json` after
+   the verification, because selecting the macro and cycling repeat persists
+   playback settings into the file (existing app behavior). Confirm its
+   SHA-256 matches the pre-install value.
 3. Turn on “Save results screenshots” and collect the 30+ real result screens.
    Score them as a fresh (non-training) set, keeping template votes for those
    real captures.
@@ -166,6 +234,16 @@ cached; CI uses the repository wrapper (8.2).
 - The current build is arm64-only. Other phone ABIs are not packaged.
 - OCR can miss fields; the app records nulls and marks them, and the user can
   correct them from attack history.
-- The results watcher runs for up to 4 minutes after playback. Detection OCR
-  runs periodically at half resolution while the battle can still be running;
-  this has not yet been battery-tested on the phone.
+- The results watcher now polls every ~1 s during playback as well as for up to
+  4 minutes after it. Detection OCR runs at half resolution while the battle is
+  running; this has not been battery- or heat-tested on the phone. If polling
+  is too heavy during a long attack, the debug setting can be used to collect
+  captures manually instead.
+- The results screen may be visible for only a few seconds before the macro
+  taps Return Home (about 4 s in the first real run). Detection uses a 1 s
+  poll; if the clean capture lands after the tap, the retained detection frame
+  is read instead. If both fail, no record is written rather than a fake one.
+- Changing speed or repeat in the controller persists those playback settings
+  into `macros.json` for the selected macro (existing behavior, not new). The
+  verification changed the `New` macro's repeat; the original file is restored
+  from backup after testing.

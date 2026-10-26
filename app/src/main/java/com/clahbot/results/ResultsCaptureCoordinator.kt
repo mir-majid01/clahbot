@@ -21,7 +21,10 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.coroutineContext
 
 /**
- * Watches for the result screen after playback. The controller overlay is
+ * Watches for the result screen from playback start until four minutes after
+ * playback ends. The watch has to run during playback because a recorded macro
+ * normally taps Return Home while the result screen is open; waiting for the
+ * playback to end would miss the screen entirely. The controller overlay is
  * hidden so screenshots contain only the game. A playback ending never writes
  * a record; only a detected result screen can. A result screen that was
  * already open before playback started is stale and is ignored.
@@ -38,10 +41,15 @@ class ResultsCaptureCoordinator(
     private val onRecordSaved: () -> Unit
 ) {
 
-    private data class SessionState(
-        val session: CaptureSession,
-        val baseline: CompletableDeferred<Boolean> = CompletableDeferred()
-    )
+    private class SessionState(val session: CaptureSession) {
+        val baseline = CompletableDeferred<Boolean>()
+
+        @Volatile
+        var playbackEndedAt: Long? = null
+
+        @Volatile
+        var interrupted: Boolean = false
+    }
 
     @Volatile
     private var current: SessionState? = null
@@ -65,6 +73,9 @@ class ResultsCaptureCoordinator(
             }.getOrDefault(false)
             state.baseline.complete(startedOnResults)
         }
+        watchJob = scope.launch(Dispatchers.Default) {
+            watch(state)
+        }
     }
 
     fun finish(
@@ -74,9 +85,12 @@ class ResultsCaptureCoordinator(
     ) {
         val state = current ?: return
         if (state.session.id != session.id) return
-        watchJob?.cancel()
-        watchJob = scope.launch(Dispatchers.Default) {
-            watch(state, playbackEndedAt, interrupted)
+        state.playbackEndedAt = playbackEndedAt
+        state.interrupted = interrupted
+        if (watchJob?.isActive != true) {
+            watchJob = scope.launch(Dispatchers.Default) {
+                watch(state)
+            }
         }
     }
 
@@ -91,11 +105,7 @@ class ResultsCaptureCoordinator(
         }
     }
 
-    private suspend fun watch(
-        state: SessionState,
-        playbackEndedAt: Long,
-        interrupted: Boolean
-    ) {
+    private suspend fun watch(state: SessionState) {
         val startedOnResults = withTimeoutOrNull(5_000) { state.baseline.await() } ?: false
         Log.i(TAG, "Baseline results screen=$startedOnResults")
         if (startedOnResults) {
@@ -105,8 +115,17 @@ class ResultsCaptureCoordinator(
         }
 
         try {
-            val deadline = System.currentTimeMillis() + CAPTURE_WINDOW_MS
-            while (coroutineContext.isActive && System.currentTimeMillis() < deadline) {
+            while (coroutineContext.isActive) {
+                val endedAt = state.playbackEndedAt
+                val deadline = if (endedAt != null) {
+                    minOf(
+                        endedAt + CAPTURE_WINDOW_MS,
+                        state.session.startedAt + MAX_WATCH_MS
+                    )
+                } else {
+                    state.session.startedAt + MAX_WATCH_MS
+                }
+                if (System.currentTimeMillis() >= deadline) break
                 if (!ClahAccessibilityService.isGameForeground()) {
                     delay(RETRY_DELAY_MS)
                     continue
@@ -138,13 +157,7 @@ class ResultsCaptureCoordinator(
                             reader.read(clean)
                         }
                         if (cleanResult != null) {
-                            saveAndRecord(
-                                state,
-                                clean,
-                                cleanResult,
-                                playbackEndedAt,
-                                interrupted
-                            )
+                            saveAndRecord(state, clean, cleanResult)
                             clear(state)
                             return
                         }
@@ -155,13 +168,7 @@ class ResultsCaptureCoordinator(
                         reader.read(detectionBitmap)
                     }
                     if (fallback != null) {
-                        saveAndRecord(
-                            state,
-                            detectionBitmap,
-                            fallback,
-                            playbackEndedAt,
-                            interrupted
-                        )
+                        saveAndRecord(state, detectionBitmap, fallback)
                         clear(state)
                         return
                     }
@@ -176,7 +183,9 @@ class ResultsCaptureCoordinator(
                 }
                 delay(RETRY_DELAY_MS)
             }
-            status("No results screen detected; no attack recorded.")
+            if (state.playbackEndedAt != null) {
+                status("No results screen detected; no attack recorded.")
+            }
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (throwable: Throwable) {
@@ -202,11 +211,11 @@ class ResultsCaptureCoordinator(
     private suspend fun saveAndRecord(
         state: SessionState,
         bitmap: Bitmap,
-        result: AppResultsReader.ReadResult,
-        playbackEndedAt: Long,
-        interrupted: Boolean
+        result: AppResultsReader.ReadResult
     ) {
         val session = state.session
+        val playbackEndedAt = state.playbackEndedAt ?: System.currentTimeMillis()
+        val interrupted = state.interrupted
         val saved = if (settingsStore.settings.value.saveResultsScreenshots) {
             withContext(Dispatchers.IO) {
                 runCatching {
@@ -268,6 +277,7 @@ class ResultsCaptureCoordinator(
     companion object {
         private const val TAG = "AutoClashResults"
         private const val CAPTURE_WINDOW_MS = 240_000L
+        private const val MAX_WATCH_MS = 15 * 60_000L
         private const val RETRY_DELAY_MS = 1_000L
         private const val READ_TIMEOUT_MS = 25_000L
         private const val CLEAN_CAPTURE_DELAY_MS = 1_100L
