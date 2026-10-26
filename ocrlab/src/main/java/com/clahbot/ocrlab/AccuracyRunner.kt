@@ -9,14 +9,17 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 data class FieldScore(
+    var expected: Int = 0,
+    var captured: Int = 0,
     var correct: Int = 0,
-    var total: Int = 0
+    var wrong: Int = 0
 ) {
-    val percent: Double
-        get() = if (total == 0) 0.0 else 100.0 * correct / total
+    val missing: Int get() = (expected - captured).coerceAtLeast(0)
+    val percent: Double get() = if (expected == 0) 0.0 else 100.0 * correct / expected
 }
 
 data class EngineValues(
+    val result: String?,
     val gold: Long?,
     val elixir: Long?,
     val dark: Long?,
@@ -26,22 +29,28 @@ data class EngineValues(
     val balanceGold: Long?,
     val balanceElixir: Long?,
     val balanceDark: Long?
-)
+) {
+    companion object {
+        fun empty(): EngineValues = EngineValues(
+            null, null, null, null, null, null, null, null, null, null
+        )
+    }
+}
 
 data class ScreenResult(
     val file: String,
     val expectedResult: String?,
     val detected: Boolean,
     val ignoredReason: String?,
-    val mlKitFull: ResultsRead?,
-    val mlKitCrop: EngineValues?,
-    val tesseractCrop: EngineValues?,
+    val engines: Map<String, EngineValues>,
     val combined: ResultsRead?,
     val fieldMatches: Map<String, Boolean>,
     val failures: List<String>,
     val rows: List<RowReading>,
     val balanceCheck: String,
-    val screenshot: String?
+    val screenshot: String?,
+    val wrongCaptures: Int,
+    val notCaptured: Int
 )
 
 data class DataSplit(
@@ -57,12 +66,17 @@ data class AccuracyReport(
     val expectedResults: Int,
     val classificationCorrect: Int,
     val detectedResults: Int,
+    val missedResults: Int,
     val falsePositives: Int,
     val fields: Map<String, FieldScore>,
     val engines: Map<String, Map<String, FieldScore>>,
     val screens: List<ScreenResult>,
     val duplicatesCounted: Int,
     val duplicatesIgnored: Int,
+    val wrongCaptures: Int,
+    val notCaptured: Int,
+    val wrongCaptureList: List<String>,
+    val runDirectory: String,
     val dataSplit: DataSplit,
     val notes: List<String>
 ) {
@@ -70,15 +84,41 @@ data class AccuracyReport(
         val builder = StringBuilder()
         builder.appendLine("Images: $images")
         builder.appendLine("Screen classification: $classificationCorrect/$images")
-        builder.appendLine("Results detected: $detectedResults/$expectedResults (false positives $falsePositives)")
-        builder.appendLine("Combined fields:")
-        appendFields(builder, fields)
+        builder.appendLine("Results detected: $detectedResults/$expectedResults (missed $missedResults, false positives $falsePositives)")
+        builder.appendLine("Wrong captures: $wrongCaptures")
+        builder.appendLine("Not captured: $notCaptured")
+        if (wrongCaptureList.isNotEmpty()) {
+            builder.appendLine("Wrong capture details:")
+            for (item in wrongCaptureList) builder.appendLine("  - $item")
+        }
+        builder.appendLine()
+        appendFieldTable(builder, "Consensus field table", fields)
+        builder.appendLine()
         for ((engine, scores) in engines) {
-            if (engine == "combined") continue
-            builder.appendLine("$engine fields:")
-            appendFields(builder, scores)
+            appendFieldTable(builder, "Engine $engine", scores)
+            val total = scores.values.fold(FieldScore()) { acc, score ->
+                acc.expected += score.expected
+                acc.captured += score.captured
+                acc.correct += score.correct
+                acc.wrong += score.wrong
+                acc
+            }
+            builder.appendLine(
+                String.format(
+                    Locale.US,
+                    "  total: expected=%d captured=%d correct=%d wrong=%d missing=%d (%.1f%%)",
+                    total.expected,
+                    total.captured,
+                    total.correct,
+                    total.wrong,
+                    total.missing,
+                    total.percent
+                )
+            )
+            builder.appendLine()
         }
         builder.appendLine("Duplicates: counted $duplicatesCounted, ignored $duplicatesIgnored")
+        builder.appendLine("Run directory: $runDirectory")
         builder.appendLine("Data split: tuning=${dataSplit.tuning.size}, scoring=${dataSplit.scoring.size}, cleanHoldout=${dataSplit.cleanHoldout}")
         for (note in notes) builder.appendLine("Note: $note")
         builder.appendLine()
@@ -86,14 +126,16 @@ data class AccuracyReport(
             builder.appendLine(
                 "${screen.file}: " +
                     if (screen.detected) {
-                        "detected ${screen.combined?.outcome?.name?.lowercase(Locale.US)} " +
+                        val outcome = screen.combined?.outcome?.name?.lowercase(Locale.US) ?: "?"
+                        "detected $outcome " +
                             "G=${screen.combined?.gold ?: "-"} " +
                             "E=${screen.combined?.elixir ?: "-"} " +
                             "D=${screen.combined?.darkElixir ?: "-"} " +
                             "BG=${screen.combined?.bonusGold ?: "-"} " +
                             "BE=${screen.combined?.bonusElixir ?: "-"} " +
                             "BD=${screen.combined?.bonusDarkElixir ?: "-"} " +
-                            "balance=${screen.balanceCheck}"
+                            "balance=${screen.balanceCheck} " +
+                            "wrong=${screen.wrongCaptures} missing=${screen.notCaptured}"
                     } else {
                         "ignored (${screen.ignoredReason ?: "no reason"})"
                     }
@@ -105,37 +147,96 @@ data class AccuracyReport(
                 builder.appendLine(
                     "  ${row.role.name.lowercase(Locale.US)} ${row.index + 1} " +
                         "${row.resource?.name ?: "?"}: " +
-                        "ml='${row.mlKit.text}'=${row.mlKit.value ?: "-"} | " +
-                        "tess='${row.tesseract.text}'=${row.tesseract.value ?: "-"} | " +
-                        "combined=${row.combined ?: "-"} (${row.source})"
+                        "combined=${row.combined ?: "-"} " +
+                        "sources=${row.sources.joinToString("/").ifEmpty { "-" }} " +
+                        "status=${row.status}" +
+                        if (row.expectedFromMath != null) " math=${row.expectedFromMath}" else ""
                 )
+                for (read in row.reads) {
+                    builder.appendLine(
+                        "    ${read.reader}: '${read.text}' " +
+                            "candidates=${read.candidates.joinToString(",").ifEmpty { "-" }} " +
+                            "chosen=${read.chosen ?: "-"}" +
+                            if (read.error != null) " error=${read.error}" else ""
+                    )
+                }
             }
         }
         return builder.toString()
     }
 
-    private fun appendFields(builder: StringBuilder, scores: Map<String, FieldScore>) {
-        for ((name, score) in scores) {
+    private fun appendFieldTable(
+        builder: StringBuilder,
+        title: String,
+        scores: Map<String, FieldScore>
+    ) {
+        builder.appendLine("$title:")
+        if (scores.isEmpty()) {
+            builder.appendLine("  (unavailable)")
+            return
+        }
+        builder.appendLine(
+            String.format(
+                Locale.US,
+                "  %-16s %8s %8s %7s %7s %8s %9s",
+                "Field", "Expected", "Captured", "Correct", "Wrong", "Missing", "Accuracy"
+            )
+        )
+        for (name in FIELD_ORDER) {
+            val score = scores[name] ?: continue
             builder.appendLine(
                 String.format(
                     Locale.US,
-                    "  %s: %d/%d (%.1f%%)",
+                    "  %-16s %8d %8d %7d %7d %8d %8.1f%%",
                     name,
+                    score.expected,
+                    score.captured,
                     score.correct,
-                    score.total,
+                    score.wrong,
+                    score.missing,
                     score.percent
                 )
             )
         }
     }
+
+    companion object {
+        val FIELD_ORDER = listOf(
+            "result",
+            "gold",
+            "elixir",
+            "dark",
+            "bonus_gold",
+            "bonus_elixir",
+            "bonus_dark",
+            "balance_gold",
+            "balance_elixir",
+            "balance_dark"
+        )
+    }
 }
 
 /**
- * Runs the full 11-image pack. ML Kit and Tesseract both read every loot,
- * bonus and balance row from a 3x upscaled crop; the final value is the agreed
- * value, or the only valid engine value, and a conflict becomes "not captured".
+ * Runs the accuracy pack through five readers per row: full-page ML Kit,
+ * crop ML Kit, Tesseract, RapidOCR and digit templates. A final value needs a
+ * reader consensus or exact balance arithmetic; single-reader values are
+ * reported as missing. Every crop is written under the run directory.
  */
 class AccuracyRunner(private val context: Context) {
+
+    private data class Comparison(
+        val name: String,
+        val expected: Any?,
+        val actual: Any?
+    ) {
+        val wrong: Boolean get() = actual != null && actual != expected
+        val missing: Boolean get() = actual == null
+        fun failure(): String = if (actual == null) {
+            "$name missing (expected=$expected)"
+        } else {
+            "$name expected=$expected actual=$actual"
+        }
+    }
 
     suspend fun run(directory: File, ocr: OcrEngine): AccuracyReport {
         val truthFile = File(directory, "ground_truth.json")
@@ -149,36 +250,58 @@ class AccuracyRunner(private val context: Context) {
             .orEmpty()
         require(images.isNotEmpty()) { "no screenshots in ${directory.absolutePath}" }
 
+        val runDirectory = File(
+            context.getExternalFilesDir(null) ?: context.filesDir,
+            "accuracy_runs/${System.currentTimeMillis()}"
+        ).apply { mkdirs() }
+        runCatching {
+            truthFile.copyTo(File(runDirectory, "ground_truth.json"), overwrite = true)
+        }
+
         val fields = linkedMapOf<String, FieldScore>()
-        val engines = linkedMapOf(
-            "mlkit_full" to linkedMapOf<String, FieldScore>(),
-            "mlkit_crop" to linkedMapOf<String, FieldScore>(),
-            "tesseract_crop" to linkedMapOf<String, FieldScore>(),
-            "combined" to linkedMapOf<String, FieldScore>()
-        )
+        val engines = linkedMapOf<String, LinkedHashMap<String, FieldScore>>()
+        for (engine in ENGINE_NAMES) engines[engine] = linkedMapOf()
         val screens = mutableListOf<ScreenResult>()
         var classificationCorrect = 0
         var detectedResults = 0
+        var missedResults = 0
         var falsePositives = 0
-        val gate = ResultsGate(requiredAgreement = 2)
         var duplicatesCounted = 0
         var duplicatesIgnored = 0
         var searchCostGold: Long? = null
         var previousResult: ResultsRead? = null
+        val gate = ResultsGate(requiredAgreement = 2)
+        val wrongCaptureList = mutableListOf<String>()
+
+        val notes = mutableListOf<String>()
+        notes += "Numeric parsing is digits-only with optional grouping; confusable letters expand to candidate digits and labels are separated from numbers."
+        notes += "Loot rows must be in the right-aligned value column and have a recognised resource icon, so the Sour Elixir panel is excluded."
+        notes += "A value is accepted only with at least two independent readers, or one reader plus an exact balance-identity match; a lone reader is never accepted."
+        notes += "RapidOCR is PP-OCRv4 rec (PaddleOCR) on ONNX Runtime; digit templates are 24x32 neutral-channel glyphs extracted from the labelled pack (leave-one-row-out 199/199)."
+        notes += "The exact crop fed to each reader is saved under the run directory."
+        notes += "Balance cross-check is applied only between a defeat and the next victory when all balances, bonuses and a search cost are available; a mismatch is needs-review, not a value substitution."
+        notes += "Stars are not parsed by this spike; stored as unknown for now."
+        notes += "The 11-image pack informed all fixes and the templates, so it is not a clean holdout. The separate 30+ set is the final scoring set."
 
         val tesseract = try {
             TesseractRowEngine.create(context)
         } catch (_: Throwable) {
+            notes += "Tesseract failed to initialize; Tesseract crop fields are unavailable in this run."
             null
         }
-        val cropReader = RowCropReader(ocr, tesseract)
-        val notes = mutableListOf<String>()
-        notes += "Loot/balance values require the grouped 'xxx xxx' format; bonuses use the ungrouped +N panel format."
-        notes += "A format failure or engine conflict is not captured (null), never 0 or a guessed value."
-        notes += "Balance cross-check is applied only when a previous defeat result and a read search cost are available; a mismatch is needs-review, not a value substitution."
-        notes += "Stars are not parsed by this spike; stored as unknown for now."
-        notes += "The 11-image pack is a development/regression set; fixes were informed by its first pass, so this is not a clean holdout. The separate 30+ set is the final scoring set."
-        if (tesseract == null) notes += "Tesseract failed to initialize; Tesseract crop fields are unavailable in this run."
+        val rapidOcr = try {
+            RapidOcrRowEngine.create(context)
+        } catch (throwable: Throwable) {
+            notes += "RapidOCR failed to initialize: ${throwable.message ?: throwable.javaClass.simpleName}"
+            null
+        }
+        val templates = try {
+            DigitTemplateStore.load(context)?.let { DigitTemplateEngine(it) }
+        } catch (throwable: Throwable) {
+            notes += "Digit templates failed to load: ${throwable.message ?: throwable.javaClass.simpleName}"
+            null
+        }
+        if (templates == null) notes += "Digit-template fields are unavailable in this run."
 
         try {
             for (file in images) {
@@ -191,154 +314,234 @@ class AccuracyRunner(private val context: Context) {
                         expectedResult = truth[file.name]?.result,
                         detected = false,
                         ignoredReason = "DECODE_FAILED",
-                        mlKitFull = null,
-                        mlKitCrop = null,
-                        tesseractCrop = null,
+                        engines = emptyMap(),
                         combined = null,
                         fieldMatches = emptyMap(),
                         failures = listOf("image could not be decoded"),
                         rows = emptyList(),
                         balanceCheck = "not_available",
-                        screenshot = null
+                        screenshot = null,
+                        wrongCaptures = 0,
+                        notCaptured = 0
                     )
                     continue
                 }
 
+                val expected = truth[file.name]
                 val page = try {
                     ocr.recognize(bitmap)
-                } catch (t: Throwable) {
-                    bitmap.recycle()
-                    screens += ScreenResult(
-                        file = file.name,
-                        expectedResult = truth[file.name]?.result,
-                        detected = false,
-                        ignoredReason = "OCR_FAILED",
-                        mlKitFull = null,
-                        mlKitCrop = null,
-                        tesseractCrop = null,
-                        combined = null,
-                        fieldMatches = emptyMap(),
-                        failures = listOf("full-page OCR failed: ${t.message}"),
-                        rows = emptyList(),
-                        balanceCheck = "not_available",
-                        screenshot = saveFailure(file)
-                    )
-                    continue
-                }
-                val parser = ResultsScreenParser(BitmapIconColorSampler(bitmap))
-                val inspection = parser.inspect(page)
-                val expected = truth[file.name]
-
-                if (inspection == null) {
-                    if (page.lines.any {
-                            normalized(it.text).contains("findamatch")
-                        }
-                    ) {
-                        readSearchCost(page)?.let { searchCostGold = it }
-                    }
-                    if (expected == null) {
-                        classificationCorrect++
-                    } else {
-                        falsePositives++
-                    }
-                    gate.observe(null)
-                    previousResult = null
-                    val ignored = (parser.parse(page) as? ScreenRead.Ignored)?.reason
-                        ?: "not a results screen"
+                } catch (throwable: Throwable) {
                     screens += ScreenResult(
                         file = file.name,
                         expectedResult = expected?.result,
                         detected = false,
-                        ignoredReason = ignored,
-                        mlKitFull = null,
-                        mlKitCrop = null,
-                        tesseractCrop = null,
+                        ignoredReason = "OCR_FAILED",
+                        engines = emptyMap(),
                         combined = null,
                         fieldMatches = emptyMap(),
-                        failures = if (expected == null) emptyList()
-                        else listOf("result screen not detected"),
+                        failures = listOf("full-page OCR failed: ${throwable.message}"),
                         rows = emptyList(),
                         balanceCheck = "not_available",
-                        screenshot = if (expected == null) null else saveFailure(file)
+                        screenshot = saveFailure(runDirectory, file),
+                        wrongCaptures = 0,
+                        notCaptured = 0
                     )
                     bitmap.recycle()
                     continue
                 }
 
-                val fullRead = (parser.parse(page) as? ScreenRead.Results)?.read
-                val rows = mutableListOf<RowReading>()
+                val parser = ResultsScreenParser(BitmapIconColorSampler(bitmap))
+                val inspection = parser.inspect(page)
+
+                if (inspection == null) {
+                    readSearchCost(page)?.let { searchCostGold = it }
+                    if (expected == null) {
+                        classificationCorrect++
+                        screens += ScreenResult(
+                            file = file.name,
+                            expectedResult = null,
+                            detected = false,
+                            ignoredReason = parser.ignoredReason(page),
+                            engines = emptyMap(),
+                            combined = null,
+                            fieldMatches = emptyMap(),
+                            failures = emptyList(),
+                            rows = emptyList(),
+                            balanceCheck = "not_available",
+                            screenshot = null,
+                            wrongCaptures = 0,
+                            notCaptured = 0
+                        )
+                    } else {
+                        missedResults++
+                        val comparisons = finalComparisons(expected, null)
+                        scoreAll(fields, comparisons)
+                        val emptyValues = EngineValues.empty()
+                        for (engine in ENGINE_NAMES) {
+                            scoreAll(
+                                engines.getValue(engine),
+                                engineComparisons(expected, engine, emptyValues)
+                            )
+                        }
+                        screens += ScreenResult(
+                            file = file.name,
+                            expectedResult = expected.result,
+                            detected = false,
+                            ignoredReason = parser.ignoredReason(page),
+                            engines = ENGINE_NAMES.associateWith { emptyValues },
+                            combined = null,
+                            fieldMatches = comparisons.associate { it.name to false },
+                            failures = comparisons.map { it.failure() },
+                            rows = emptyList(),
+                            balanceCheck = "not_available",
+                            screenshot = saveFailure(runDirectory, file),
+                            wrongCaptures = 0,
+                            notCaptured = comparisons.count { it.missing }
+                        )
+                    }
+                    gate.observe(null)
+                    previousResult = null
+                    bitmap.recycle()
+                    continue
+                }
+
+                val screenDirectory = File(
+                    runDirectory,
+                    "crops/${file.nameWithoutExtension.replace(Regex("[^A-Za-z0-9._-]"), "_")}"
+                )
+                val cropSink = CropSink(screenDirectory)
+                val fullPageCrop = cropSink.save("full_mlkit", bitmap)
+                val cropReader = RowCropReader(ocr, tesseract, rapidOcr, templates, cropSink)
+                val readings = mutableListOf<RowReading>()
                 for ((index, row) in inspection.lootRows.withIndex()) {
-                    rows += cropReader.read(bitmap, row, index)
+                    readings += cropReader.read(bitmap, row, index, fullPageCrop)
                 }
                 for ((index, row) in inspection.bonusRows.withIndex()) {
-                    rows += cropReader.read(bitmap, row, index)
+                    readings += cropReader.read(bitmap, row, index, fullPageCrop)
                 }
                 for ((index, row) in inspection.balanceRows.withIndex()) {
-                    rows += cropReader.read(bitmap, row, index)
+                    readings += cropReader.read(bitmap, row, index, fullPageCrop)
                 }
 
-                val mlKitCrop = engineValues(rows) { it.mlKit.value }
-                val tesseractCrop = engineValues(rows) { it.tesseract.value }
-                val combinedValues = engineValues(rows) { it.combined }
-                var combined = parser.buildRead(
-                    inspection = inspection,
-                    lootValues = valuesFor(rows, RowRole.LOOT) { it.combined },
-                    bonusValues = valuesFor(rows, RowRole.BONUS) { it.combined },
-                    balances = balancesFor(rows)
-                )
+                var finalRead = ResultsAssembler.assemble(inspection, readings)
+                val math = BalanceMath.expectedLoot(previousResult, finalRead, searchCostGold)
+                if (math != null && math.any) {
+                    val updated = readings.map { row ->
+                        val expectedLoot = row.resource?.let { math.value(it) }
+                        if (row.role == RowRole.LOOT &&
+                            row.combined == null &&
+                            expectedLoot != null
+                        ) {
+                            val resolved = RowConsensus.resolve(row.reads, expectedLoot)
+                            if (resolved.value != null) {
+                                row.withResult(expectedLoot, resolved)
+                            } else {
+                                row
+                            }
+                        } else {
+                            row
+                        }
+                    }
+                    if (updated != readings) {
+                        readings.clear()
+                        readings += updated
+                        finalRead = ResultsAssembler.assemble(inspection, readings)
+                    }
+                }
 
-                val balanceCheck = crossCheck(previousResult, combined, searchCostGold)
+                val balanceCheck = BalanceMath.crossCheck(previousResult, finalRead, searchCostGold)
                 if (balanceCheck == "mismatch") {
-                    combined = combined.copy(
+                    finalRead = finalRead.copy(
                         needsReview = true,
-                        issues = combined.issues + "balance cross-check mismatch"
+                        issues = finalRead.issues + "balance cross-check mismatch"
                     )
                 }
-                previousResult = combined
+
+                val engineValues = linkedMapOf<String, EngineValues>()
+                for (engine in ENGINE_NAMES) {
+                    var values = valuesForEngine(readings, engine)
+                    if (engine == Readers.MLKIT_FULL) {
+                        values = values.copy(
+                            result = inspection.outcome.name.lowercase(Locale.US)
+                        )
+                    } else if (engine == Readers.CONSENSUS) {
+                        values = values.copy(
+                            result = finalRead.outcome.name.lowercase(Locale.US)
+                        )
+                    }
+                    engineValues[engine] = values
+                }
+
+                val comparisons = if (expected != null) {
+                    finalComparisons(expected, finalRead)
+                } else {
+                    emptyList()
+                }
+                if (expected != null) {
+                    scoreAll(fields, comparisons)
+                    for (engine in ENGINE_NAMES) {
+                        scoreAll(
+                            engines.getValue(engine),
+                            engineComparisons(expected, engine, engineValues.getValue(engine))
+                        )
+                    }
+                }
+                val wrong = comparisons.filter { it.wrong }
+                wrongCaptureList += wrong.map { "${file.name} ${it.failure()}" }
+                val screenWrong = wrong.size
+                val screenMissing = comparisons.count { it.missing }
+
+                val screenshot = if (expected == null) {
+                    saveFailure(runDirectory, file)
+                } else if (!finalRead.lootComplete || finalRead.needsReview) {
+                    saveFailure(runDirectory, file)
+                } else {
+                    null
+                }
 
                 if (expected != null) {
                     classificationCorrect++
                     detectedResults++
-                    scoreRead(engines.getValue("mlkit_full"), expected, fullRead)
-                    scoreValues(engines.getValue("mlkit_crop"), expected, mlKitCrop, combined.outcome)
-                    scoreValues(engines.getValue("tesseract_crop"), expected, tesseractCrop, combined.outcome)
-                    scoreRead(engines.getValue("combined"), expected, combined)
-                    scoreRead(fields, expected, combined)
+                    feedResult(gate, finalRead) { duplicatesIgnored++ }.let { duplicatesCounted += it }
+                    previousResult = finalRead
                 } else {
                     falsePositives++
+                    feedResult(gate, finalRead) { duplicatesIgnored++ }.let { duplicatesCounted += it }
+                    previousResult = null
                 }
 
-                duplicatesCounted += feedResult(gate, combined) { duplicatesIgnored++ }
-
-                val matches = linkedMapOf<String, Boolean>()
-                val failures = mutableListOf<String>()
-                if (expected != null) {
-                    compareFields(matches, failures, expected, combined)
-                }
-                val screenshot = if (combined.lootComplete && !combined.needsReview) {
-                    null
-                } else {
-                    saveFailure(file)
-                }
                 screens += ScreenResult(
                     file = file.name,
                     expectedResult = expected?.result,
                     detected = true,
                     ignoredReason = null,
-                    mlKitFull = fullRead,
-                    mlKitCrop = mlKitCrop,
-                    tesseractCrop = tesseractCrop,
-                    combined = combined,
-                    fieldMatches = matches,
-                    failures = failures,
-                    rows = rows,
+                    engines = engineValues,
+                    combined = finalRead,
+                    fieldMatches = comparisons.associate { it.name to (it.actual == it.expected) },
+                    failures = if (expected == null) {
+                        listOf("unexpected results screen")
+                    } else {
+                        comparisons.filter { it.actual != it.expected }.map { it.failure() }
+                    },
+                    rows = readings,
                     balanceCheck = balanceCheck,
-                    screenshot = screenshot
+                    screenshot = screenshot,
+                    wrongCaptures = screenWrong,
+                    notCaptured = screenMissing
                 )
                 bitmap.recycle()
             }
         } finally {
             tesseract?.close()
+            rapidOcr?.close()
+        }
+
+        val orderedFields = linkedMapOf<String, FieldScore>()
+        for (name in AccuracyReport.FIELD_ORDER) {
+            fields[name]?.let { orderedFields[name] = it }
+        }
+        for ((name, score) in fields) {
+            if (!orderedFields.containsKey(name)) orderedFields[name] = score
         }
 
         return AccuracyReport(
@@ -346,12 +549,17 @@ class AccuracyRunner(private val context: Context) {
             expectedResults = truth.size,
             classificationCorrect = classificationCorrect,
             detectedResults = detectedResults,
+            missedResults = missedResults,
             falsePositives = falsePositives,
-            fields = fields,
+            fields = orderedFields,
             engines = engines,
             screens = screens,
             duplicatesCounted = duplicatesCounted,
             duplicatesIgnored = duplicatesIgnored,
+            wrongCaptures = orderedFields.values.sumOf { it.wrong },
+            notCaptured = orderedFields.values.sumOf { it.missing },
+            wrongCaptureList = wrongCaptureList,
+            runDirectory = runDirectory.absolutePath,
             dataSplit = DataSplit(
                 tuning = listOf(
                     "08_results_victory_2star_70.jpg",
@@ -363,16 +571,13 @@ class AccuracyRunner(private val context: Context) {
                 ),
                 finalScoring = "The 30+ screenshots you will supply, not used for tuning.",
                 cleanHoldout = false,
-                note = "The 11 pack informed the fixes, so the scoring split is a regression check, not a clean holdout."
+                note = "The 11 pack informed every fix and the digit templates, so the scoring split is a regression check, not a clean holdout."
             ),
             notes = notes
         )
     }
 
-    private fun engineValues(
-        rows: List<RowReading>,
-        selector: (RowReading) -> Long?
-    ): EngineValues {
+    private fun valuesForEngine(rows: List<RowReading>, engine: String): EngineValues {
         var gold: Long? = null
         var elixir: Long? = null
         var dark: Long? = null
@@ -383,7 +588,11 @@ class AccuracyRunner(private val context: Context) {
         var balanceElixir: Long? = null
         var balanceDark: Long? = null
         for (row in rows) {
-            val value = selector(row) ?: continue
+            val value = if (engine == Readers.CONSENSUS) {
+                row.combined
+            } else {
+                row.reads.firstOrNull { it.reader == engine }?.chosen
+            } ?: continue
             val resource = row.resource ?: continue
             when (row.role) {
                 RowRole.LOOT -> when (resource) {
@@ -406,96 +615,117 @@ class AccuracyRunner(private val context: Context) {
             }
         }
         return EngineValues(
-            gold, elixir, dark,
-            bonusGold, bonusElixir, bonusDark,
-            balanceGold, balanceElixir, balanceDark
+            result = null,
+            gold = gold,
+            elixir = elixir,
+            dark = dark,
+            bonusGold = bonusGold,
+            bonusElixir = bonusElixir,
+            bonusDark = bonusDark,
+            balanceGold = balanceGold,
+            balanceElixir = balanceElixir,
+            balanceDark = balanceDark
         )
     }
 
-    private fun valuesFor(
-        rows: List<RowReading>,
-        role: RowRole,
-        selector: (RowReading) -> Long?
-    ): List<Long?> = rows.filter { it.role == role }.map(selector)
-
-    private fun balancesFor(rows: List<RowReading>): Triple<Long?, Long?, Long?> {
-        val balanceRows = rows.filter { it.role == RowRole.BALANCE }
-        fun value(resource: ResourceKind): Long? =
-            balanceRows.firstOrNull { it.resource == resource }?.combined
-        return Triple(
-            value(ResourceKind.GOLD),
-            value(ResourceKind.ELIXIR),
-            value(ResourceKind.DARK)
-        )
-    }
-
-    private fun scoreRead(
-        fields: MutableMap<String, FieldScore>,
+    private fun finalComparisons(
         expected: GroundTruth,
         read: ResultsRead?
-    ) {
-        score(fields, "result", expected.result, read?.outcome?.name?.lowercase(Locale.US))
-        score(fields, "gold", expected.gold, read?.gold)
-        score(fields, "elixir", expected.elixir, read?.elixir)
-        score(fields, "dark", expected.darkElixir, read?.darkElixir)
-        score(fields, "bonus_gold", expected.bonusGold, read?.bonusGold)
-        score(fields, "bonus_elixir", expected.bonusElixir, read?.bonusElixir)
-        score(fields, "bonus_dark", expected.bonusDarkElixir, read?.bonusDarkElixir)
-        score(fields, "balance_gold", expected.balanceGold, read?.balanceGold)
-        score(fields, "balance_elixir", expected.balanceElixir, read?.balanceElixir)
-        score(fields, "balance_dark", expected.balanceDarkElixir, read?.balanceDarkElixir)
-    }
-
-    private fun scoreValues(
-        fields: MutableMap<String, FieldScore>,
-        expected: GroundTruth,
-        values: EngineValues?,
-        outcome: ResultsOutcome?
-    ) {
-        score(fields, "result", expected.result, outcome?.name?.lowercase(Locale.US))
-        score(fields, "gold", expected.gold, values?.gold)
-        score(fields, "elixir", expected.elixir, values?.elixir)
-        score(fields, "dark", expected.darkElixir, values?.dark)
-        score(fields, "bonus_gold", expected.bonusGold, values?.bonusGold)
-        score(fields, "bonus_elixir", expected.bonusElixir, values?.bonusElixir)
-        score(fields, "bonus_dark", expected.bonusDarkElixir, values?.bonusDark)
-        score(fields, "balance_gold", expected.balanceGold, values?.balanceGold)
-        score(fields, "balance_elixir", expected.balanceElixir, values?.balanceElixir)
-        score(fields, "balance_dark", expected.balanceDarkElixir, values?.balanceDark)
-    }
-
-    private fun compareFields(
-        matches: MutableMap<String, Boolean>,
-        failures: MutableList<String>,
-        expected: GroundTruth,
-        read: ResultsRead
-    ) {
-        fun check(name: String, expectedValue: Any?, actual: Any?) {
-            val ok = expectedValue == actual
-            matches[name] = ok
-            if (!ok) failures += "$name expected=$expectedValue actual=$actual"
+    ): List<Comparison> {
+        val result = mutableListOf<Comparison>()
+        result += Comparison(
+            "result",
+            expected.result,
+            read?.outcome?.name?.lowercase(Locale.US)
+        )
+        expected.gold?.let { result += Comparison("gold", it, read?.gold) }
+        expected.elixir?.let { result += Comparison("elixir", it, read?.elixir) }
+        expected.darkElixir?.let { result += Comparison("dark", it, read?.darkElixir) }
+        expected.bonusGold?.let { result += Comparison("bonus_gold", it, read?.bonusGold) }
+        expected.bonusElixir?.let { result += Comparison("bonus_elixir", it, read?.bonusElixir) }
+        expected.bonusDarkElixir?.let {
+            result += Comparison("bonus_dark", it, read?.bonusDarkElixir)
         }
-        check("result", expected.result, read.outcome.name.lowercase(Locale.US))
-        check("gold", expected.gold, read.gold)
-        check("elixir", expected.elixir, read.elixir)
-        check("dark", expected.darkElixir, read.darkElixir)
-        check("bonus_gold", expected.bonusGold, read.bonusGold)
-        check("bonus_elixir", expected.bonusElixir, read.bonusElixir)
-        check("bonus_dark", expected.bonusDarkElixir, read.bonusDarkElixir)
-        check("balance_gold", expected.balanceGold, read.balanceGold)
-        check("balance_elixir", expected.balanceElixir, read.balanceElixir)
-        check("balance_dark", expected.balanceDarkElixir, read.balanceDarkElixir)
+        expected.balanceGold?.let {
+            result += Comparison("balance_gold", it, read?.balanceGold)
+        }
+        expected.balanceElixir?.let {
+            result += Comparison("balance_elixir", it, read?.balanceElixir)
+        }
+        expected.balanceDarkElixir?.let {
+            result += Comparison("balance_dark", it, read?.balanceDarkElixir)
+        }
+        return result
     }
 
-    private fun score(
-        fields: MutableMap<String, FieldScore>,
-        name: String,
-        expected: Any?,
-        actual: Any?
-    ) {
-        val score = fields.getOrPut(name) { FieldScore() }
-        score.total++
-        if (expected == actual) score.correct++
+    private fun engineComparisons(
+        expected: GroundTruth,
+        engine: String,
+        values: EngineValues
+    ): List<Comparison> {
+        val result = mutableListOf<Comparison>()
+        val readsResult = engine == Readers.MLKIT_FULL || engine == Readers.CONSENSUS
+        if (readsResult) {
+            result += Comparison("result", expected.result, values.result)
+        }
+        expected.gold?.let { result += Comparison("gold", it, values.gold) }
+        expected.elixir?.let { result += Comparison("elixir", it, values.elixir) }
+        expected.darkElixir?.let { result += Comparison("dark", it, values.dark) }
+        expected.bonusGold?.let { result += Comparison("bonus_gold", it, values.bonusGold) }
+        expected.bonusElixir?.let {
+            result += Comparison("bonus_elixir", it, values.bonusElixir)
+        }
+        expected.bonusDarkElixir?.let {
+            result += Comparison("bonus_dark", it, values.bonusDark)
+        }
+        expected.balanceGold?.let {
+            result += Comparison("balance_gold", it, values.balanceGold)
+        }
+        expected.balanceElixir?.let {
+            result += Comparison("balance_elixir", it, values.balanceElixir)
+        }
+        expected.balanceDarkElixir?.let {
+            result += Comparison("balance_dark", it, values.balanceDark)
+        }
+        return result
+    }
+
+    private fun scoreAll(target: MutableMap<String, FieldScore>, comparisons: List<Comparison>) {
+        for (comparison in comparisons) {
+            val score = target.getOrPut(comparison.name) { FieldScore() }
+            score.expected++
+            if (comparison.actual != null) score.captured++
+            if (comparison.expected == comparison.actual) {
+                score.correct++
+            } else if (comparison.actual != null) {
+                score.wrong++
+            }
+        }
+    }
+
+    private fun readSearchCost(page: OcrPage): Long? {
+        val anchors = page.lines
+            .filter { normalized(it.text).contains("findamatch") }
+            .sortedBy { it.box?.centerX ?: Int.MAX_VALUE }
+        for (anchor in anchors) {
+            val anchorBox = anchor.box ?: continue
+            val minX = anchorBox.centerX - page.width * 0.08
+            val maxX = anchorBox.centerX + page.width * 0.08
+            val best = page.lines.mapNotNull { line ->
+                val box = line.box ?: return@mapNotNull null
+                if (line.text.contains("/")) return@mapNotNull null
+                if (box.centerX < minX || box.centerX > maxX) return@mapNotNull null
+                val distance = box.centerY - anchorBox.bottom
+                if (distance < 0 || distance > page.height * 0.18) return@mapNotNull null
+                val value = NumberParser.searchCostCandidates(line.text)
+                    .map { it.value }
+                    .firstOrNull { it in 100..999_999 }
+                    ?: return@mapNotNull null
+                value to distance
+            }.minByOrNull { it.second }?.first
+            if (best != null) return best
+        }
+        return null
     }
 
     private fun feedResult(
@@ -504,7 +734,11 @@ class AccuracyRunner(private val context: Context) {
         onDuplicate: () -> Unit
     ): Int {
         var counted = 0
-        gate.observe(read)
+        when (gate.observe(read)) {
+            is GateResult.Counted -> counted++
+            is GateResult.Duplicate -> onDuplicate()
+            else -> Unit
+        }
         when (gate.observe(read)) {
             is GateResult.Counted -> counted++
             is GateResult.Duplicate -> onDuplicate()
@@ -518,60 +752,9 @@ class AccuracyRunner(private val context: Context) {
         return counted
     }
 
-    private fun crossCheck(
-        previous: ResultsRead?,
-        current: ResultsRead,
-        searchCostGold: Long?
-    ): String {
-        if (previous == null || searchCostGold == null) return "not_available"
-        if (previous.outcome != ResultsOutcome.DEFEAT ||
-            current.outcome != ResultsOutcome.VICTORY
-        ) {
-            return "not_applicable"
-        }
-        val prevGold = previous.balanceGold ?: return "not_available"
-        val prevElixir = previous.balanceElixir ?: return "not_available"
-        val prevDark = previous.balanceDarkElixir ?: return "not_available"
-        val gold = current.balanceGold ?: return "not_available"
-        val elixir = current.balanceElixir ?: return "not_available"
-        val dark = current.balanceDarkElixir ?: return "not_available"
-        val lootGold = current.gold ?: return "not_available"
-        val lootElixir = current.elixir ?: return "not_available"
-        val lootDark = current.darkElixir ?: return "not_available"
-        val bonusGold = current.bonusGold ?: 0L
-        val bonusElixir = current.bonusElixir ?: 0L
-        val bonusDark = current.bonusDarkElixir ?: 0L
-        val pass = gold - lootGold - bonusGold + searchCostGold == prevGold &&
-            elixir - lootElixir - bonusElixir == prevElixir &&
-            dark - lootDark - bonusDark == prevDark
-        return if (pass) "pass" else "mismatch"
-    }
-
-    private fun readSearchCost(page: OcrPage): Long? {
-        val anchor = page.lines.firstOrNull {
-            normalized(it.text).contains("findamatch")
-        } ?: return null
-        val anchorBox = anchor.box ?: return null
-        return page.lines.mapNotNull { line ->
-            val box = line.box ?: return@mapNotNull null
-            val mapped = NumberParser.mapNumeric(line.text) ?: return@mapNotNull null
-            val digits = mapped.replace(" ", "")
-            val value = digits.toLongOrNull()
-                ?.takeIf { digits.length in 3..6 }
-                ?: return@mapNotNull null
-            val distance = box.centerY - anchorBox.bottom
-            if (distance < 0 || distance > 160) return@mapNotNull null
-            value to distance
-        }.minByOrNull { it.second }?.first
-    }
-
-    private fun saveFailure(file: File): String? {
+    private fun saveFailure(runDirectory: File, file: File): String? {
         return try {
-            val directory = File(context.filesDir, "failed_captures").apply { mkdirs() }
-            val existing = directory.listFiles()?.sortedBy { it.lastModified() }.orEmpty()
-            if (existing.size >= MAX_FAILED_SCREENSHOTS) {
-                existing.take(existing.size - MAX_FAILED_SCREENSHOTS + 1).forEach { it.delete() }
-            }
+            val directory = File(runDirectory, "failures").apply { mkdirs() }
             val destination = File(directory, "${System.currentTimeMillis()}-${file.name}")
             file.copyTo(destination, overwrite = true)
             destination.absolutePath
@@ -584,7 +767,14 @@ class AccuracyRunner(private val context: Context) {
         text.lowercase(Locale.US).filter { it.isLetterOrDigit() }
 
     companion object {
-        private const val MAX_FAILED_SCREENSHOTS = 20
         private val IMAGE_EXTENSIONS = setOf("jpg", "jpeg", "png", "webp")
+        private val ENGINE_NAMES = listOf(
+            Readers.MLKIT_FULL,
+            Readers.MLKIT_CROP,
+            Readers.TESSERACT_CROP,
+            Readers.RAPIDOCR_CROP,
+            Readers.TEMPLATE_CROP,
+            Readers.CONSENSUS
+        )
     }
 }

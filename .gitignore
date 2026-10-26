@@ -18,6 +18,9 @@ captures/
 *.ap_
 *.aab
 
+# Local OCR-lab scratch/workspace
+.ocr-work/
+
 # Local secrets and scratch files — never commit
 supabase-pass.txt
 *-pass.txt

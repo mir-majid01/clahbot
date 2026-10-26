@@ -6,6 +6,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import com.google.gson.GsonBuilder
 import java.io.File
 import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -32,14 +33,29 @@ class OcrLabAccuracyTest {
         val ocr = MlKitOcrEngine()
         try {
             val report = AccuracyRunner(context).run(directory, ocr)
-            val file = File(context.filesDir, "accuracy_report.json")
-            file.writeText(GsonBuilder().setPrettyPrinting().create().toJson(report))
+            val json = GsonBuilder().setPrettyPrinting().create().toJson(report)
+            val internal = File(context.filesDir, "accuracy_report.json")
+            internal.writeText(json)
+            val runReport = File(report.runDirectory, "accuracy_report.json")
+            runReport.parentFile?.mkdirs()
+            runReport.writeText(json)
             Log.i(
                 "OCR_LAB",
-                "Headless accuracy report ${file.absolutePath} images=${report.images} " +
-                    "detected=${report.detectedResults}"
+                "Headless accuracy report ${runReport.absolutePath} images=${report.images} " +
+                    "detected=${report.detectedResults} wrong=${report.wrongCaptures}"
             )
             assertTrue("no screenshots processed", report.images >= 11)
+            assertEquals(
+                "result screens missed: ${report.missedResults}",
+                report.expectedResults,
+                report.detectedResults
+            )
+            assertEquals("false-positive results screens", 0, report.falsePositives)
+            assertTrue(
+                "wrong captures=${report.wrongCaptures}: " +
+                    report.wrongCaptureList.joinToString("; "),
+                report.wrongCaptures == 0
+            )
         } finally {
             ocr.close()
         }

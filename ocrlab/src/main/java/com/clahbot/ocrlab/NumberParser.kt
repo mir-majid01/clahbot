@@ -1,84 +1,236 @@
 package com.clahbot.ocrlab
 
 /**
- * Numeric validation for OCR output.
+ * Digits-only numeric parsing.
  *
- * The game groups loot and balance values by three digits ("1 200 960").
- * Bonus-panel values are ungrouped and prefixed with "+" ("+370000").
- * Letters that ML Kit commonly confuses with digits are corrected, but only
- * when every remaining character is valid for the field. A token that does not
- * match the expected format is rejected (null), never guessed.
+ * The game's OCR often loses grouping spaces, substitutes letters that look
+ * like digits, clips a leading digit, or leaves label text on the same line.
+ * Parsing therefore treats grouping as optional, splits label text from the
+ * number, and expands confusable letters to every plausible digit. Every
+ * plausible digit string is returned; choosing one is the consensus layer's
+ * job, never a single guess.
  */
 object NumberParser {
 
-    private val CONFUSIONS = mapOf(
-        'O' to '0', 'o' to '0',
-        'S' to '5', 's' to '5',
-        'G' to '6', 'g' to '6',
-        'B' to '8', 'b' to '8',
-        'I' to '1', 'i' to '1', 'l' to '1', '|' to '1',
-        'Z' to '2', 'z' to '2'
+    data class Candidate(val value: Long, val digits: String)
+
+    private val DIGIT_ALTERNATIVES: Map<Char, CharArray> = mapOf(
+        'O' to charArrayOf('0'), 'o' to charArrayOf('0'),
+        'Q' to charArrayOf('0'), 'D' to charArrayOf('0'),
+        'I' to charArrayOf('1'), 'i' to charArrayOf('1'),
+        'l' to charArrayOf('1'), '|' to charArrayOf('1'), '!' to charArrayOf('1'),
+        'Z' to charArrayOf('2'), 'z' to charArrayOf('2'),
+        'S' to charArrayOf('5'), 's' to charArrayOf('5'),
+        'G' to charArrayOf('6'),
+        'g' to charArrayOf('9'), 'q' to charArrayOf('9'),
+        'B' to charArrayOf('8'),
+        'b' to charArrayOf('6', '8'),
+        'A' to charArrayOf('4'),
+        'T' to charArrayOf('7')
     )
 
-    /** One to three digits, then zero or more groups of exactly three digits. */
-    private val GROUPED = Regex("""^\d{1,3}(?: \d{3})*$""")
-    private val BONUS = Regex("""^\d{3,7}$""")
+    private val SEPARATORS = setOf(
+        ' ', '\u00A0', '\u202F', '\u2009', ',', '\'', '_'
+    )
+    private val PREFIXES = setOf('+', '•', '·', '∙', '#', '^', '~')
+
+    private const val MAX_DIGITS = 12
+    private const val MAX_CANDIDATES = 64
+
+    fun lootCandidates(raw: String): List<Candidate> =
+        candidates(raw, minDigits = 3, maxDigits = MAX_DIGITS)
+
+    fun balanceCandidates(raw: String): List<Candidate> =
+        candidates(raw, minDigits = 3, maxDigits = MAX_DIGITS)
+
+    fun bonusCandidates(raw: String): List<Candidate> =
+        candidates(raw, minDigits = 3, maxDigits = 8)
+
+    fun searchCostCandidates(raw: String): List<Candidate> =
+        candidates(raw, minDigits = 3, maxDigits = 7)
+
+    fun parseLoot(raw: String): Long? = single(lootCandidates(raw))
+
+    fun parseBalance(raw: String): Long? = single(balanceCandidates(raw))
+
+    fun parseBonus(raw: String): Long? = single(bonusCandidates(raw))
+
+    fun isNumericLike(raw: String, allowBonusPrefix: Boolean = false): Boolean =
+        if (allowBonusPrefix) bonusCandidates(raw).isNotEmpty() else lootCandidates(raw).isNotEmpty()
+
+    private fun single(candidates: List<Candidate>): Long? =
+        candidates.singleOrNull()?.value
+
+    private data class Segment(
+        val alternatives: List<String>,
+        val length: Int,
+        val actualDigits: Int
+    )
+
+    private data class Token(
+        val segment: Segment?,
+        val hasUnknown: Boolean,
+        val prefixOnly: Boolean
+    )
+
+    private fun candidates(raw: String, minDigits: Int, maxDigits: Int): List<Candidate> {
+        val text = raw.replace('\u00A0', ' ').trim()
+        if (text.isEmpty()) return emptyList()
+
+        val runs = mutableListOf<List<String>>()
+        var run = listOf("")
+        var runLength = 0
+        var pendingPrefix: List<String>? = null
+        var pendingLength = 0
+
+        fun flushRun() {
+            if (runLength in minDigits..maxDigits && run.any { it.isNotEmpty() }) {
+                runs += run
+            }
+            run = listOf("")
+            runLength = 0
+        }
+
+        fun clearPending() {
+            pendingPrefix = null
+            pendingLength = 0
+        }
+
+        fun append(current: List<String>, alternatives: List<String>): List<String> {
+            val next = LinkedHashSet<String>(current.size * alternatives.size)
+            for (prefix in current) {
+                for (suffix in alternatives) {
+                    next.add(prefix + suffix)
+                    if (next.size >= MAX_CANDIDATES) return next.toList()
+                }
+            }
+            return next.toList()
+        }
+
+        for (tokenText in text.split(WHITESPACE)) {
+            if (tokenText.isEmpty()) continue
+            val token = tokenize(tokenText)
+            if (token == null) {
+                flushRun()
+                clearPending()
+                continue
+            }
+            if (token.hasUnknown) {
+                flushRun()
+                clearPending()
+                val segment = token.segment ?: continue
+                if (segment.actualDigits > 0 &&
+                    segment.length in minDigits..maxDigits
+                ) {
+                    runs += segment.alternatives
+                }
+                continue
+            }
+            if (token.prefixOnly) continue
+            val segment = token.segment ?: continue
+            if (segment.actualDigits == 0) {
+                if (runLength > 0) {
+                    run = append(run, segment.alternatives)
+                    runLength += segment.length
+                } else {
+                    pendingPrefix = append(pendingPrefix ?: listOf(""), segment.alternatives)
+                    pendingLength += segment.length
+                }
+                continue
+            }
+            if (runLength == 0) {
+                run = pendingPrefix ?: listOf("")
+                runLength = pendingLength
+                pendingPrefix = null
+                pendingLength = 0
+            }
+            run = append(run, segment.alternatives)
+            runLength += segment.length
+        }
+        flushRun()
+
+        val values = LinkedHashMap<Long, String>()
+        for (digits in runs.flatten()) {
+            val value = digits.toLongOrNull() ?: continue
+            values.putIfAbsent(value, digits)
+        }
+        return values.map { (value, digits) -> Candidate(value, digits) }
+    }
 
     /**
-     * Returns a digit string with spaces as grouping, or null if the token
-     * contains any character that is not a digit, a known confusion, a comma,
-     * whitespace, or (for bonus) a leading "+" / bullet.
+     * A token is clean when every character is a digit, separator, prefix or
+     * confusable letter. Tokens containing other letters are split into clean
+     * segments; only the segment with the most real digits is considered, so
+     * labels such as "Sour Elixir" cannot contribute digits to the number.
      */
-    fun mapNumeric(raw: String, allowBonusPrefix: Boolean = false): String? {
-        val text = raw.replace('\u00A0', ' ').trim()
-        if (text.isEmpty()) return null
-        val output = StringBuilder()
-        var seenDigit = false
-        var prefixUsed = false
-        for (char in text) {
-            when {
-                char.isDigit() -> {
-                    output.append(char)
-                    seenDigit = true
-                }
-
-                char == ' ' || char == ',' -> {
-                    if (output.isNotEmpty() && output.last() != ' ') output.append(' ')
-                }
-
-                (char == '+' || char == '•') && allowBonusPrefix &&
-                    !seenDigit && !prefixUsed -> {
-                    prefixUsed = true
-                }
-
-                CONFUSIONS.containsKey(char) -> {
-                    output.append(CONFUSIONS.getValue(char))
-                    seenDigit = true
-                }
-
-                else -> return null
-            }
+    private fun tokenize(text: String): Token? {
+        val cleanAlternatives = parseClean(text)
+        if (cleanAlternatives != null) {
+            val segment = cleanAlternatives
+            return Token(
+                segment = segment,
+                hasUnknown = false,
+                prefixOnly = segment.alternatives.isEmpty()
+            )
         }
-        return output.toString().trim().replace(Regex(" {2,}"), " ")
+
+        val segments = mutableListOf<Segment>()
+        var start = 0
+        for (index in 0..text.length) {
+            val boundary = index == text.length || !isKnown(text[index])
+            if (!boundary) continue
+            if (index > start) {
+                parseClean(text.substring(start, index))?.let { segment ->
+                    if (segment.actualDigits > 0) segments += segment
+                }
+            }
+            start = index + 1
+        }
+        if (segments.isEmpty()) return null
+        val best = segments.maxWithOrNull(
+            compareBy<Segment> { it.actualDigits }.thenBy { it.length }
+        )
+        return Token(segment = best, hasUnknown = true, prefixOnly = false)
     }
 
-    fun isNumericLike(raw: String, allowBonusPrefix: Boolean = false): Boolean {
-        val mapped = mapNumeric(raw, allowBonusPrefix) ?: return false
-        return mapped.count { it.isDigit() } >= 3
+    private fun parseClean(text: String): Segment? {
+        if (text.isEmpty()) return null
+        var current = listOf("")
+        var actualDigits = 0
+        var length = 0
+        for (char in text) {
+            val alternatives: CharArray? = when {
+                char.isDigit() -> {
+                    actualDigits++
+                    charArrayOf(char)
+                }
+
+                SEPARATORS.contains(char) -> continue
+                PREFIXES.contains(char) -> continue
+                else -> DIGIT_ALTERNATIVES[char]
+            }
+            if (alternatives == null) return null
+            val next = LinkedHashSet<String>(current.size * alternatives.size)
+            for (prefix in current) {
+                for (digit in alternatives) {
+                    next.add(prefix + digit)
+                    if (next.size >= MAX_CANDIDATES) break
+                }
+                if (next.size >= MAX_CANDIDATES) break
+            }
+            current = next.toList()
+            length++
+        }
+        return Segment(
+            alternatives = if (length == 0) emptyList() else current,
+            length = length,
+            actualDigits = actualDigits
+        )
     }
 
-    /** Loot/balance value; the OCR text must still contain the digit grouping. */
-    fun parseGrouped(raw: String): Long? {
-        val mapped = mapNumeric(raw, allowBonusPrefix = false) ?: return null
-        if (!GROUPED.matches(mapped)) return null
-        return mapped.replace(" ", "").toLongOrNull()
-    }
+    private fun isKnown(char: Char): Boolean =
+        char.isDigit() || SEPARATORS.contains(char) || PREFIXES.contains(char) ||
+            DIGIT_ALTERNATIVES.containsKey(char)
 
-    /** Bonus-panel value: optional "+"/bullet, ungrouped 3-7 digits. */
-    fun parseBonus(raw: String): Long? {
-        val mapped = mapNumeric(raw, allowBonusPrefix = true) ?: return null
-        val digits = mapped.replace(" ", "")
-        if (!BONUS.matches(digits)) return null
-        return digits.toLongOrNull()
-    }
+    private val WHITESPACE = Regex("\\s+")
 }

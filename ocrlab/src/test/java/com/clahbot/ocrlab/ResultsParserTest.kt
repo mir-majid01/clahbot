@@ -18,11 +18,10 @@ class ResultsParserTest {
 
     private fun victoryPage(
         resultText: String = "VicoRY",
-        darkRow: String = "3 007"
-    ): OcrPage = OcrPage(
-        width = 2576,
-        height = 1159,
-        lines = listOf(
+        darkRow: String = "3 007",
+        sourPanel: Boolean = false
+    ): OcrPage {
+        val lines = mutableListOf(
             line("Total damage:", 1100, 80, 1400, 140),
             line(resultText, 1000, 240, 1300, 310),
             line("You got:", 1050, 380, 1300, 430),
@@ -38,12 +37,17 @@ class ResultsParserTest {
             line("19 074 837", 1700, 90, 1950, 140),
             line("279 811", 1700, 150, 1950, 200)
         )
-    )
+        if (sourPanel) {
+            lines += line("Sour Elixir", 600, 580, 900, 620)
+            lines += line("300", 700, 620, 800, 650)
+        }
+        return OcrPage(2576, 1159, lines)
+    }
 
     private fun defeatPage(): OcrPage = OcrPage(
-        width = 2576,
-        height = 1159,
-        lines = listOf(
+        2576,
+        1159,
+        listOf(
             line("Total damage:", 1100, 80, 1400, 140),
             line("Defeat", 1000, 240, 1300, 310),
             line("You got:", 1050, 380, 1300, 430),
@@ -66,9 +70,52 @@ class ResultsParserTest {
         }
     }
 
+    private fun readings(inspection: Inspection): List<RowReading> {
+        val result = mutableListOf<RowReading>()
+        fun add(rows: List<RowCandidate>, role: RowRole) {
+            for ((index, row) in rows.withIndex()) {
+                val value = when (role) {
+                    RowRole.BONUS -> NumberParser.parseBonus(row.rawText)
+                    else -> NumberParser.parseLoot(row.rawText)
+                }
+                result += RowReading(
+                    role = role,
+                    index = index,
+                    resource = row.resource,
+                    box = row.box,
+                    reads = emptyList(),
+                    combined = value,
+                    sources = if (value != null) listOf(Readers.CONSENSUS) else emptyList(),
+                    status = if (value != null) "consensus" else "not_captured"
+                )
+            }
+        }
+        add(inspection.lootRows, RowRole.LOOT)
+        add(inspection.bonusRows, RowRole.BONUS)
+        add(inspection.balanceRows, RowRole.BALANCE)
+        return result
+    }
+
     @Test
-    fun fuzzyVictoryAndStrictGroupedValuesAreParsed() {
-        val read = (ResultsScreenParser(sampler()).parse(victoryPage()) as ScreenRead.Results).read
+    fun findsOnlyLootRowsInTheValueColumnAndExcludesTheSourPanel() {
+        val inspection = requireNotNull(
+            ResultsScreenParser(sampler()).inspect(victoryPage(sourPanel = true))
+        )
+
+        assertEquals(3, inspection.lootRows.size)
+        assertTrue(inspection.lootRows.none { it.rawText.contains("300") })
+        assertEquals(
+            listOf(ResourceKind.GOLD, ResourceKind.ELIXIR, ResourceKind.DARK),
+            inspection.lootRows.map { it.resource }
+        )
+        assertEquals(3, inspection.bonusRows.size)
+        assertEquals(3, inspection.balanceRows.size)
+    }
+
+    @Test
+    fun valuesAreParsedWithSoftGroupingAndLetterCandidates() {
+        val inspection = requireNotNull(ResultsScreenParser(sampler()).inspect(victoryPage()))
+        val read = ResultsAssembler.assemble(inspection, readings(inspection))
 
         assertEquals(ResultsOutcome.VICTORY, read.outcome)
         assertEquals(503_859L, read.gold)
@@ -94,28 +141,30 @@ class ResultsParserTest {
                 else -> null
             }
         }
-        val read = (ResultsScreenParser(swapped).parse(victoryPage()) as ScreenRead.Results).read
+        val inspection = requireNotNull(ResultsScreenParser(swapped).inspect(victoryPage()))
+        assertEquals(ResourceKind.ELIXIR, inspection.lootRows[0].resource)
+        assertEquals(ResourceKind.GOLD, inspection.lootRows[1].resource)
 
+        val read = ResultsAssembler.assemble(inspection, readings(inspection))
         assertEquals(603_605L, read.gold)
         assertEquals(503_859L, read.elixir)
         assertEquals(3_007L, read.darkElixir)
     }
 
     @Test
-    fun ungroupedLootIsRejectedButTheRowStillExistsForCropOcr() {
-        val parser = ResultsScreenParser(sampler())
-        val page = victoryPage(darkRow = "4959")
-        val inspection = requireNotNull(parser.inspect(page))
-        assertEquals(3, inspection.lootRows.size)
-        val read = (parser.parse(page) as ScreenRead.Results).read
-        assertNull(read.darkElixir)
-        assertTrue(read.needsReview)
-        assertTrue(read.issues.any { it.contains("rejected format") })
+    fun ungroupedLootIsAcceptedNowThatGroupingIsSoft() {
+        val inspection = requireNotNull(
+            ResultsScreenParser(sampler()).inspect(victoryPage(darkRow = "4959"))
+        )
+        val read = ResultsAssembler.assemble(inspection, readings(inspection))
+        assertEquals(4_959L, read.darkElixir)
+        assertFalse(read.needsReview)
     }
 
     @Test
-    fun defeatHasLootButNoBonus() {
-        val read = (ResultsScreenParser(sampler()).parse(defeatPage()) as ScreenRead.Results).read
+    fun defeatHasLootButNoBonusRows() {
+        val inspection = requireNotNull(ResultsScreenParser(sampler()).inspect(defeatPage()))
+        val read = ResultsAssembler.assemble(inspection, readings(inspection))
 
         assertEquals(ResultsOutcome.DEFEAT, read.outcome)
         assertEquals(363_609L, read.gold)
@@ -127,10 +176,11 @@ class ResultsParserTest {
         assertEquals(16_584_626L, read.balanceGold)
         assertEquals(17_006_562L, read.balanceElixir)
         assertEquals(263_839L, read.balanceDarkElixir)
+        assertTrue(inspection.bonusRows.isEmpty())
     }
 
     @Test
-    fun aScreenWithReturnHomeButNoLootIsNotAResult() {
+    fun aScreenWithReturnHomeButNoAnchorsIsNotAResult() {
         val page = OcrPage(
             2576,
             1159,
@@ -139,23 +189,29 @@ class ResultsParserTest {
                 line("Return Home", 200, 900, 500, 980)
             )
         )
-        val parsed = ResultsScreenParser(sampler()).parse(page)
-        assertTrue(parsed is ScreenRead.Ignored)
+        val parser = ResultsScreenParser(sampler())
+        assertNull(parser.inspect(page))
+        assertTrue(parser.ignoredReason(page).contains("You got"))
     }
 
     @Test
-    fun unknownIconColourLeavesTheFieldUncapturedAndMarksReview() {
-        val read = (ResultsScreenParser { null }.parse(victoryPage()) as ScreenRead.Results).read
+    fun unknownIconColourDropsTheRowAndLeavesTheFieldUncaptured() {
+        val inspection = requireNotNull(
+            ResultsScreenParser { null }.inspect(victoryPage())
+        )
+        assertTrue(inspection.lootRows.isEmpty())
+        assertTrue(inspection.bonusRows.isEmpty())
+        assertTrue(inspection.issues.any { it.contains("icon colour unknown") })
 
+        val read = ResultsAssembler.assemble(inspection, readings(inspection))
         assertNull(read.gold)
         assertNull(read.elixir)
         assertNull(read.darkElixir)
         assertTrue(read.needsReview)
-        assertTrue(read.issues.any { it.contains("icon colour unknown") })
     }
 
     @Test
-    fun failedLootReadIsNullNotZero() {
+    fun missingLootStaysNullNotZero() {
         val page = OcrPage(
             2576,
             1159,
@@ -166,7 +222,8 @@ class ResultsParserTest {
                 line("Troops expended:", 1000, 650, 1400, 700)
             )
         )
-        val read = (ResultsScreenParser(sampler()).parse(page) as ScreenRead.Results).read
+        val inspection = requireNotNull(ResultsScreenParser(sampler()).inspect(page))
+        val read = ResultsAssembler.assemble(inspection, readings(inspection))
         assertNull(read.gold)
         assertNull(read.elixir)
         assertNull(read.darkElixir)
