@@ -97,14 +97,13 @@ class ResultsCaptureCoordinator(
         interrupted: Boolean
     ) {
         val startedOnResults = withTimeoutOrNull(5_000) { state.baseline.await() } ?: false
+        Log.i(TAG, "Baseline results screen=$startedOnResults")
         if (startedOnResults) {
             status("Already on a results screen; no new attack recorded.")
             clear(state)
             return
         }
 
-        withContext(Dispatchers.Main) { hideOverlay() }
-        delay(OVERLAY_HIDE_SETTLE_MS)
         try {
             val deadline = System.currentTimeMillis() + CAPTURE_WINDOW_MS
             while (coroutineContext.isActive && System.currentTimeMillis() < deadline) {
@@ -112,30 +111,69 @@ class ResultsCaptureCoordinator(
                     delay(RETRY_DELAY_MS)
                     continue
                 }
-                val bitmap = ClahAccessibilityService.captureScreenshot()
-                if (bitmap == null) {
+                val detectionBitmap = ClahAccessibilityService.captureScreenshot()
+                if (detectionBitmap == null) {
                     delay(RETRY_DELAY_MS)
                     continue
                 }
-                val result = try {
-                    withTimeoutOrNull(READ_TIMEOUT_MS) { reader.read(bitmap) }
+                val detected = isResultsScreen(detectionBitmap)
+                if (!detected) {
+                    detectionBitmap.recycle()
+                    delay(RETRY_DELAY_MS)
+                    continue
+                }
+
+                Log.i(TAG, "Results screen detected; taking clean capture")
+                var cleanBitmap: Bitmap? = null
+                try {
+                    // Hide the bubble only for the clean capture. The results
+                    // screen can stay open for minutes, so keeping the overlay
+                    // hidden for the whole watch would be wrong.
+                    withContext(Dispatchers.Main) { hideOverlay() }
+                    delay(CLEAN_CAPTURE_DELAY_MS)
+                    cleanBitmap = ClahAccessibilityService.captureScreenshot()
+                    val clean = cleanBitmap
+                    if (clean != null) {
+                        val cleanResult = withTimeoutOrNull(READ_TIMEOUT_MS) {
+                            reader.read(clean)
+                        }
+                        if (cleanResult != null) {
+                            saveAndRecord(
+                                state,
+                                clean,
+                                cleanResult,
+                                playbackEndedAt,
+                                interrupted
+                            )
+                            clear(state)
+                            return
+                        }
+                    }
+                    // The clean frame failed; the detection frame is still a
+                    // valid read (the bubble may be in a corner).
+                    val fallback = withTimeoutOrNull(READ_TIMEOUT_MS) {
+                        reader.read(detectionBitmap)
+                    }
+                    if (fallback != null) {
+                        saveAndRecord(
+                            state,
+                            detectionBitmap,
+                            fallback,
+                            playbackEndedAt,
+                            interrupted
+                        )
+                        clear(state)
+                        return
+                    }
                 } catch (cancelled: CancellationException) {
-                    bitmap.recycle()
                     throw cancelled
                 } catch (throwable: Throwable) {
                     Log.w(TAG, "Results OCR failed", throwable)
-                    null
+                } finally {
+                    cleanBitmap?.recycle()
+                    detectionBitmap.recycle()
+                    withContext(Dispatchers.Main) { runCatching { showOverlay() } }
                 }
-                if (result != null) {
-                    try {
-                        saveAndRecord(state, bitmap, result, playbackEndedAt, interrupted)
-                    } finally {
-                        bitmap.recycle()
-                    }
-                    clear(state)
-                    return
-                }
-                bitmap.recycle()
                 delay(RETRY_DELAY_MS)
             }
             status("No results screen detected; no attack recorded.")
@@ -147,6 +185,17 @@ class ResultsCaptureCoordinator(
         } finally {
             withContext(Dispatchers.Main) { runCatching { showOverlay() } }
             if (current === state) current = null
+        }
+    }
+
+    private suspend fun isResultsScreen(bitmap: Bitmap): Boolean {
+        val width = (bitmap.width / DETECTION_SCALE).coerceAtLeast(1)
+        val height = (bitmap.height / DETECTION_SCALE).coerceAtLeast(1)
+        val scaled = Bitmap.createScaledBitmap(bitmap, width, height, true)
+        return try {
+            reader.isResultsScreen(scaled)
+        } finally {
+            scaled.recycle()
         }
     }
 
@@ -193,6 +242,11 @@ class ResultsCaptureCoordinator(
             status("Results screen read, but the attack record was not saved.")
             return
         }
+        Log.i(
+            TAG,
+            "Attack record saved id=${added.id} outcome=${added.outcome} " +
+                "lootCaptured=${added.hasLoot} screenshot=${added.resultsScreenshot ?: "-"}"
+        )
         status(
             if (record.hasLoot) {
                 "Attack saved: ${record.outcome ?: "result"} (loot captured)"
@@ -213,9 +267,10 @@ class ResultsCaptureCoordinator(
 
     companion object {
         private const val TAG = "AutoClashResults"
-        private const val CAPTURE_WINDOW_MS = 25_000L
-        private const val RETRY_DELAY_MS = 800L
+        private const val CAPTURE_WINDOW_MS = 240_000L
+        private const val RETRY_DELAY_MS = 1_000L
         private const val READ_TIMEOUT_MS = 25_000L
-        private const val OVERLAY_HIDE_SETTLE_MS = 150L
+        private const val CLEAN_CAPTURE_DELAY_MS = 1_100L
+        private const val DETECTION_SCALE = 2
     }
 }

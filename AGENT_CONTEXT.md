@@ -76,8 +76,11 @@ screenshot, not per-row crops.
 - Playback start captures a baseline screenshot and checks it for result-screen
   anchors. If the results screen was already open before playback, it is treated
   as stale and no record is created.
-- Playback end starts a bounded results watcher (25 s). The controller window is
-  hidden while watching so the screenshot contains only the game.
+- Playback end starts a bounded results watcher (4 min) because the battle can
+  outlast the macro playback. The bubble stays usable while polling. Detection
+  uses a half-scale screenshot; once the result anchors appear, the bubble is
+  hidden for a clean full-resolution capture, then restored. This avoids hiding
+  the controller for a whole battle.
 - A detected result screen creates exactly one confirmed attack record. Playback
   completion alone never writes a record. The existing `AttackRecordPolicy`
   gate is enforced in the coordinator.
@@ -103,7 +106,7 @@ screenshot, not per-row crops.
 |---|---|---|---|
 | 1. Template provenance + exclusion | Exact source images recorded above. Template classification is excluded from votes/scores on 08-11 in code. The earlier 0/0 run included templates, so it is not counted. | Code + source evidence; current-rule device rerun pending | Current-rule accuracy on 08-11 after exclusion |
 | 2. Speed before/after | Initial v0.4 lab run took 578 s for 11 images with every reader and template votes (not a per-reader table). Timing instrumentation and cheap-first logic are implemented. An all-readers timing run completed on the phone, but adb disconnected before the report could be pulled; the cheap-first after run is pending. | Partial: only the 578 s total is measured; no per-screen before/after numbers claimed | Per-reader/per-screen before and after; target “a few seconds per screen” |
-| 3. App reader integration + phantom fix | `:ocr` shared library; app v2.4.0 (9) compiles; 108 app unit tests pass; APK builds. Results-to-record mapping and capture policy are unit tested. No playback-completion record path exists. | Build + unit tests; on-device unverified | Accessibility screenshot success, auto record on a real attack, stale-result rejection, no phantom record on a real menu/home screen |
+| 3. App reader integration + phantom fix | `:ocr` shared library; app v2.4.0 (9) compiles; 108 app unit tests pass; APK builds; CI `40368076334` green for the shared-library integration. Results-to-record mapping and capture policy are unit tested. No playback-completion record path exists. | Build + unit tests + CI; on-device unverified | Accessibility screenshot success, auto record on a real attack, stale-result rejection, no phantom record on a real menu/home screen |
 | 4. “Save results screenshots” setting | Setting in `SettingsStore`; Settings UI switch; PNG + JSON + TXT sidecar store; null-not-zero mapping; compile/unit tests. | Build + unit tests; UI/on-device unverified | Switch rendering, file paths, sidecar contents, 30+ capture collection |
 | 5. AGENT_CONTEXT.md | This file | Written | It must be updated with the pending speed numbers and the on-device results |
 
@@ -130,9 +133,11 @@ cached; CI uses the repository wrapper (8.2).
   tests, lab 36 tests, both green at the time of writing.
 - APKs: `:app:assembleDebug`, `:ocrlab:assembleDebug`,
   `:ocrlab:assembleDebugAndroidTest` — build successfully.
-- Previous CI run `40301269207` for commit `78fd535` was green (unit tests,
-  lab APK, test APK, uploads). The Feature-1 integration/shared-library commit
-  still needs its own CI run.
+- CI run `40301269207` for commit `78fd535` was green (unit tests, lab APK,
+  test APK, uploads).
+- CI run `40368076334` for commit `ebd0dec` (shared `:ocr` library and app
+  integration) was green: unit tests, app/lab debug APKs, lab test APK and
+  uploads. The later watcher/timing-only app commit still needs its CI run.
 
 ## Next actions
 
@@ -161,3 +166,6 @@ cached; CI uses the repository wrapper (8.2).
 - The current build is arm64-only. Other phone ABIs are not packaged.
 - OCR can miss fields; the app records nulls and marks them, and the user can
   correct them from attack history.
+- The results watcher runs for up to 4 minutes after playback. Detection OCR
+  runs periodically at half resolution while the battle can still be running;
+  this has not yet been battery-tested on the phone.
