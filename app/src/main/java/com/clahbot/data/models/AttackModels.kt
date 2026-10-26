@@ -20,15 +20,21 @@ data class AttackRecord(
     val bonusGold: Long? = null,
     val bonusElixir: Long? = null,
     val bonusDarkElixir: Long? = null,
-    /** "none" (never observed) or "manual" (entered/corrected by the user). */
+    /** "none" (never observed), "manual" (entered by the user) or "ocr". */
     val lootSource: String = LOOT_NONE,
     /** "unknown", "completed", or "interrupted". */
     val result: String = RESULT_UNKNOWN,
+    /** "victory" or "defeat" when the result screen was read automatically. */
+    val outcome: String? = null,
+    /** Local PNG of the result screen, when screenshot saving was enabled. */
+    val resultsScreenshot: String? = null,
+    /** JSON sidecar with the app's own read, next to [resultsScreenshot]. */
+    val resultsSidecar: String? = null,
     val verified: Boolean = false,
     val complete: Boolean = true,
     /**
-     * A playback session is not an attack. Only a record the user confirmed
-     * (or a future verified result-screen capture) counts as an attack.
+     * A playback session is not an attack. Only a detected results screen
+     * creates a confirmed attack record.
      */
     val confirmed: Boolean = false,
     val note: String = ""
@@ -39,6 +45,7 @@ data class AttackRecord(
     companion object {
         const val LOOT_NONE = "none"
         const val LOOT_MANUAL = "manual"
+        const val LOOT_OCR = "ocr"
         const val RESULT_UNKNOWN = "unknown"
         const val RESULT_COMPLETED = "completed"
         const val RESULT_INTERRUPTED = "interrupted"

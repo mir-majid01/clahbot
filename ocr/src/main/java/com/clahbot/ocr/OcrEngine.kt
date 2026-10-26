@@ -1,4 +1,4 @@
-package com.clahbot.ocrlab
+package com.clahbot.ocr
 
 import android.graphics.Bitmap
 import com.google.mlkit.vision.common.InputImage

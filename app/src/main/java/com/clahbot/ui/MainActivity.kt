@@ -589,7 +589,8 @@ private fun AttackSummaryCard(
             if (summary.count > 0 && summary.lootedCount == 0) {
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    "Loot is not read automatically. Tap a record to add gold, elixir or dark elixir.",
+                    "Loot is read automatically when a result screen is detected. A failed read " +
+                        "stays \"loot not captured\"; tap a record to correct it.",
                     fontSize = 10.sp,
                     color = TextMuted
                 )
@@ -702,7 +703,8 @@ private fun AttackHistoryRow(
                 )
                 Text(
                     record.macroName + " · " + MacroTimeline.formatSpeed(record.speedMultiplier) +
-                        " · " + if (record.confirmed) "Confirmed" else "Unconfirmed",
+                        " · " + if (record.confirmed) "Confirmed" else "Unconfirmed" +
+                        (record.outcome?.let { " · " + it.replaceFirstChar { c -> c.uppercase() } } ?: ""),
                     fontSize = 10.sp,
                     color = if (record.confirmed) TextMuted else PauseAmber,
                     maxLines = 1,
@@ -714,11 +716,15 @@ private fun AttackHistoryRow(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(9.dp)
                     ) {
-                        LootChip(R.drawable.ic_gold, record.gold ?: 0L)
-                        LootChip(R.drawable.ic_elixir, record.elixir ?: 0L)
-                        LootChip(R.drawable.ic_dark, record.darkElixir ?: 0L)
-                        if (record.verified) {
-                            Text("edited", fontSize = 9.sp, color = TextMuted)
+                        LootChip(R.drawable.ic_gold, record.gold)
+                        LootChip(R.drawable.ic_elixir, record.elixir)
+                        LootChip(R.drawable.ic_dark, record.darkElixir)
+                        when (record.lootSource) {
+                            AttackRecord.LOOT_OCR ->
+                                Text("read", fontSize = 9.sp, color = TextMuted)
+
+                            AttackRecord.LOOT_MANUAL ->
+                                Text("edited", fontSize = 9.sp, color = TextMuted)
                         }
                     }
                 } else {
@@ -776,7 +782,7 @@ private fun AttackHistoryRow(
 }
 
 @Composable
-private fun LootChip(iconRes: Int, value: Long) {
+private fun LootChip(iconRes: Int, value: Long?) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         androidx.compose.foundation.Image(
             painter = painterResource(iconRes),
@@ -784,7 +790,11 @@ private fun LootChip(iconRes: Int, value: Long) {
             modifier = Modifier.size(12.dp)
         )
         Spacer(Modifier.width(3.dp))
-        Text(formatNumber(value), fontSize = 10.sp, color = ReadyGreen)
+        Text(
+            value?.let { formatNumber(it) } ?: "—",
+            fontSize = 10.sp,
+            color = if (value != null) ReadyGreen else TextMuted
+        )
     }
 }
 

@@ -2,9 +2,17 @@ package com.clahbot.service
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
+import android.graphics.Bitmap
+import android.os.Build
 import android.util.Log
+import android.view.Display
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityWindowInfo
+import kotlin.coroutines.resume
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 class ClahAccessibilityService : AccessibilityService() {
 
@@ -27,6 +35,50 @@ class ClahAccessibilityService : AccessibilityService() {
     override fun onDestroy() {
         instance = null
         super.onDestroy()
+    }
+
+    private suspend fun captureDisplayScreenshot(): Bitmap? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
+        return withContext(Dispatchers.Main.immediate) {
+            withTimeoutOrNull(SCREENSHOT_TIMEOUT_MS) {
+                suspendCancellableCoroutine { continuation ->
+                    val callback = object : AccessibilityService.TakeScreenshotCallback {
+                        override fun onSuccess(result: AccessibilityService.ScreenshotResult) {
+                            val buffer = result.hardwareBuffer
+                            try {
+                                val wrapped = Bitmap.wrapHardwareBuffer(
+                                    buffer,
+                                    result.colorSpace
+                                )
+                                val copy = wrapped?.copy(Bitmap.Config.ARGB_8888, false)
+                                wrapped?.recycle()
+                                if (continuation.isActive) {
+                                    continuation.resume(copy)
+                                } else {
+                                    copy?.recycle()
+                                }
+                            } catch (throwable: Throwable) {
+                                Log.w(TAG, "Could not convert screenshot", throwable)
+                                if (continuation.isActive) continuation.resume(null)
+                            } finally {
+                                runCatching { buffer.close() }
+                            }
+                        }
+
+                        override fun onFailure(errorCode: Int) {
+                            Log.w(TAG, "Accessibility screenshot failed: $errorCode")
+                            if (continuation.isActive) continuation.resume(null)
+                        }
+                    }
+                    try {
+                        takeScreenshot(Display.DEFAULT_DISPLAY, mainExecutor, callback)
+                    } catch (throwable: Throwable) {
+                        Log.w(TAG, "takeScreenshot rejected", throwable)
+                        if (continuation.isActive) continuation.resume(null)
+                    }
+                }
+            }
+        }
     }
 
     private fun clearTouchExploration() {
@@ -90,5 +142,11 @@ class ClahAccessibilityService : AccessibilityService() {
 
         fun foregroundLabel(): String =
             currentForegroundPackage() ?: foregroundPackage ?: "another app"
+
+        suspend fun captureScreenshot(): Bitmap? =
+            instance?.captureDisplayScreenshot()
+
+        private const val TAG = "AutoClashAccessibility"
+        private const val SCREENSHOT_TIMEOUT_MS = 3_000L
     }
 }

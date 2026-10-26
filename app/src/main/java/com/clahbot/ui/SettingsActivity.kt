@@ -250,8 +250,10 @@ fun SettingsScreen(
                     "AutoClash stores macros, attacks and settings only on this device. " +
                         "It uses the internet only when you ask it to check GitHub for an update; " +
                         "no macros or gameplay data are uploaded. Recording reads raw touchscreen " +
-                        "events through Shizuku or root and does not read screen content. The " +
-                        "accessibility service is used only to replay the gestures you record."
+                        "events through Shizuku or root. During playback the accessibility service " +
+                        "dispatches your recorded gestures and then captures the result screen to " +
+                        "read loot. A screenshot is saved only when \"Save results screenshots\" is " +
+                        "enabled, and it is never uploaded."
                 )
             },
             confirmButton = {
@@ -588,6 +590,27 @@ fun SettingsScreen(
             }
 
             item {
+                SettingsSection("Results capture (debug)") {
+                    SwitchRow(
+                        title = "Save results screenshots",
+                        subtitle = "Save each detected result screen as PNG plus a JSON/TXT sidecar with the app's own read. Missing values stay \"loot not captured\".",
+                        checked = settings.saveResultsScreenshots,
+                        onCheckedChange = { value ->
+                            onUpdate { it.copy(saveResultsScreenshots = value) }
+                        }
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "Stored only on this device under results_captures. Nothing is uploaded. " +
+                            "Zero is written only when the game actually showed zero; a failed read " +
+                            "is saved as \"loot not captured\".",
+                        fontSize = 10.sp,
+                        color = TextMuted
+                    )
+                }
+            }
+
+            item {
                 SettingsSection("Macro storage") {
                     InfoRow("Saved macros", macros.size.toString())
                     InfoRow("Storage used", formatBytes(storageBytes))
@@ -638,9 +661,9 @@ fun SettingsScreen(
                     }
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        "Only confirmed records count as attacks. Playback sessions stay unconfirmed " +
-                            "until you enter the result-screen loot. Loot values are only stored when you " +
-                            "enter them; the app never invents a number it did not observe.",
+                        "A detected result screen creates a confirmed attack automatically. If the " +
+                            "read fails, loot stays \"loot not captured\" and can be corrected here. " +
+                            "The app never invents a value it did not observe.",
                         fontSize = 10.sp,
                         color = TextMuted
                     )

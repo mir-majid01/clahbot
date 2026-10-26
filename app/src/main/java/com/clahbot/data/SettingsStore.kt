@@ -22,6 +22,7 @@ data class AppSettings(
     val controllerAlpha: Float = 1f,
     val controllerScale: Float = 1f,
     val bubbleScale: Float = 1f,
+    val saveResultsScreenshots: Boolean = false,
     val theme: ThemeMode = ThemeMode.DARK
 )
 
@@ -55,6 +56,7 @@ class SettingsStore private constructor(private val prefs: SharedPreferences) {
                 .coerceIn(MIN_CONTROLLER_SCALE, MAX_CONTROLLER_SCALE),
             bubbleScale = prefs.getFloat(KEY_BUBBLE_SCALE, 1f)
                 .coerceIn(MIN_BUBBLE_SCALE, MAX_BUBBLE_SCALE),
+            saveResultsScreenshots = prefs.getBoolean(KEY_SAVE_RESULTS, false),
             theme = runCatching { ThemeMode.valueOf(themeName) }.getOrDefault(ThemeMode.DARK)
         )
     }
@@ -81,6 +83,7 @@ class SettingsStore private constructor(private val prefs: SharedPreferences) {
             .putFloat(KEY_ALPHA, normalized.controllerAlpha)
             .putFloat(KEY_CONTROLLER_SCALE, normalized.controllerScale)
             .putFloat(KEY_BUBBLE_SCALE, normalized.bubbleScale)
+            .putBoolean(KEY_SAVE_RESULTS, normalized.saveResultsScreenshots)
             .putString(KEY_THEME, normalized.theme.name)
             .apply()
         _settings.value = normalized
@@ -109,6 +112,7 @@ class SettingsStore private constructor(private val prefs: SharedPreferences) {
         private const val KEY_ALPHA = "controller_alpha"
         private const val KEY_CONTROLLER_SCALE = "controller_scale"
         private const val KEY_BUBBLE_SCALE = "bubble_scale"
+        private const val KEY_SAVE_RESULTS = "save_results_screenshots"
         private const val KEY_THEME = "theme"
 
         @Volatile

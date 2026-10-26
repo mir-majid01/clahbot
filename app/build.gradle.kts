@@ -11,9 +11,15 @@ android {
         applicationId = "com.clahbot"
         minSdk = 26
         targetSdk = 34
-        versionCode = 8
-        versionName = "2.3.3"
+        versionCode = 9
+        versionName = "2.4.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // The current build is for the arm64 test phone; the OCR stack's
+        // native libraries otherwise make a universal APK ~151 MB.
+        ndk {
+            abiFilters.add("arm64-v8a")
+        }
     }
 
     signingConfigs {
@@ -68,6 +74,8 @@ android {
 }
 
 dependencies {
+    implementation(project(":ocr"))
+
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.core:core-splashscreen:1.0.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")

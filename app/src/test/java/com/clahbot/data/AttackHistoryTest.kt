@@ -167,6 +167,28 @@ class AttackHistoryTest {
     }
 
     @Test
+    fun ocrRecordKeepsNullLootAndItsProvenance() = runBlocking {
+        val ocr = record(1, gold = 503_859L, elixir = null, dark = 5_713L).copy(
+            confirmed = true,
+            lootSource = AttackRecord.LOOT_OCR,
+            outcome = "victory",
+            resultsScreenshot = "/tmp/screen.png",
+            resultsSidecar = "/tmp/screen.json",
+            note = "Read automatically from the result screen."
+        )
+        repository.add(ocr)
+        val stored = repository.records.value.single()
+        assertEquals(503_859L, stored.gold)
+        assertNull(stored.elixir)
+        assertEquals(5_713L, stored.darkElixir)
+        assertEquals(AttackRecord.LOOT_OCR, stored.lootSource)
+        assertEquals("victory", stored.outcome)
+        assertEquals("/tmp/screen.png", stored.resultsScreenshot)
+        assertEquals("/tmp/screen.json", stored.resultsSidecar)
+        assertTrue(stored.confirmed)
+    }
+
+    @Test
     fun bonusIsStoredSeparatelyFromAwardedLoot() {
         val withBonus = record(1, gold = 100).copy(
             bonusGold = 310_000,

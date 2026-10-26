@@ -1,5 +1,7 @@
 package com.clahbot.ocrlab
 
+import com.clahbot.ocr.*
+
 import android.graphics.BitmapFactory
 import android.os.Build
 import android.os.Bundle

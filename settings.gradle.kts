@@ -16,4 +16,5 @@ dependencyResolutionManagement {
 
 rootProject.name = "AutoClash"
 include(":app")
+include(":ocr")
 include(":ocrlab")

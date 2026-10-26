@@ -68,6 +68,9 @@ import com.clahbot.input.InputEventSource
 import com.clahbot.input.PassiveRecorder
 import com.clahbot.input.ScreenGeometry
 import com.clahbot.input.ScreenRect
+import com.clahbot.results.AppResultsReader
+import com.clahbot.results.CaptureSession
+import com.clahbot.results.ResultsCaptureCoordinator
 import com.clahbot.ui.MainActivity
 import com.clahbot.ui.SettingsActivity
 import com.clahbot.util.PermissionHelper
@@ -145,7 +148,12 @@ class FloatingMenuService : Service() {
     private var notificationStarted: Boolean = false
     private var collapsed: Boolean = false
     private var page: Int = PAGE_CONTROLLER
-    private var session: AttackSession? = null
+    private var captureSession: CaptureSession? = null
+    private lateinit var resultsReader: AppResultsReader
+    private lateinit var resultsCapture: ResultsCaptureCoordinator
+
+    @Volatile
+    private var captureOverlayHidden = false
 
     private val timerRunnable = object : Runnable {
         override fun run() {
@@ -163,6 +171,23 @@ class FloatingMenuService : Service() {
         repository = MacroRepository.get(this)
         settingsStore = SettingsStore.get(this)
         attackRepository = AttackRepository.get(this)
+        resultsReader = AppResultsReader(this)
+        resultsCapture = ResultsCaptureCoordinator(
+            context = this,
+            scope = scope,
+            attackRepository = attackRepository,
+            settingsStore = settingsStore,
+            reader = resultsReader,
+            hideOverlay = { setCaptureOverlayHidden(true) },
+            showOverlay = { setCaptureOverlayHidden(false) },
+            onStatus = { message -> BotState.setStatus(message) },
+            onRecordSaved = {
+                scope.launch {
+                    attackRepository.refresh()
+                    renderStats()
+                }
+            }
+        )
         updateScreenSize()
         startForegroundCompat(getString(R.string.notification_idle))
 
@@ -229,6 +254,9 @@ class FloatingMenuService : Service() {
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
         BotState.setInterrupted(true)
+        captureSession = null
+        if (::resultsCapture.isInitialized) resultsCapture.cancel()
+        if (::resultsReader.isInitialized) resultsReader.closeAsync()
         stopPlayback()
         stopRecording(silent = true)
         stopPassiveRecorder()
@@ -1333,24 +1361,30 @@ class FloatingMenuService : Service() {
             BotState.setStatus("Warning: macro was recorded in ${adjusted.orientation}")
         }
 
-        endAttackSession(interrupted = false)
+        abortCaptureSession()
         BotState.setInterrupted(false)
         player?.stop()
         // Place the icon before the first injected gesture can run.
         placeControllerForPlayback(macro)
+        scope.launch { resultsReader.warmUp() }
+        val startedAt = System.currentTimeMillis()
+        val capture = CaptureSession(
+            id = startedAt,
+            startedAt = startedAt,
+            macroId = macro.id,
+            macroName = macro.name,
+            speed = speed,
+            repeat = repeatMode
+        )
+        captureSession = capture
+        resultsCapture.begin(capture)
         val newPlayer = MacroPlayer(screenWidth, screenHeight)
         player = newPlayer
         newPlayer.play(adjusted, scope) {
             endAttackSession(interrupted = false)
         }
-        if (newPlayer.isRunning()) {
-            session = AttackSession(
-                startedAt = System.currentTimeMillis(),
-                macroId = macro.id,
-                macroName = macro.name,
-                speed = speed,
-                repeat = repeatMode
-            )
+        if (!newPlayer.isRunning()) {
+            abortCaptureSession()
         }
         updateNotification(getString(R.string.notification_playing, macro.name))
         refreshUi()
@@ -1438,12 +1472,18 @@ class FloatingMenuService : Service() {
     }
 
     private fun endAttackSession(interrupted: Boolean) {
-        if (session == null) return
-        session = null
+        val capture = captureSession ?: return
+        captureSession = null
         // A finished playback is not evidence of an attack. Only a detected
         // results screen may create a record.
-        Log.i(TAG, "Playback ended (interrupted=$interrupted); no attack record written")
+        Log.i(TAG, "Playback ended (interrupted=$interrupted); watching for results")
         BotState.setInterrupted(false)
+        resultsCapture.finish(capture, System.currentTimeMillis(), interrupted)
+    }
+
+    private fun abortCaptureSession() {
+        captureSession = null
+        if (::resultsCapture.isInitialized) resultsCapture.cancel()
     }
 
     private fun accessibilityHint(): String =
@@ -1700,8 +1740,24 @@ class FloatingMenuService : Service() {
 
     // -------------------------------------------------------------------- ui
 
+    private fun setCaptureOverlayHidden(hidden: Boolean) {
+        captureOverlayHidden = hidden
+        val view = controllerView ?: return
+        if (hidden) {
+            view.visibility = View.GONE
+        } else {
+            view.visibility = View.VISIBLE
+            refreshUi()
+        }
+    }
+
     private fun refreshUi() {
         val view = controllerView ?: return
+        if (captureOverlayHidden) {
+            view.visibility = View.GONE
+            return
+        }
+        view.visibility = View.VISIBLE
         val state = BotState.state.value
         val count = BotState.recordedGestureCount.value
 
@@ -2066,14 +2122,6 @@ class FloatingMenuService : Service() {
             // Toast can fail if the app is going away.
         }
     }
-
-    private data class AttackSession(
-        val startedAt: Long,
-        val macroId: Long,
-        val macroName: String,
-        val speed: Float,
-        val repeat: String
-    )
 
     companion object {
         private const val PAGE_CONTROLLER = 0
