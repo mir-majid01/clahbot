@@ -9,6 +9,7 @@ import android.view.Display
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityWindowInfo
 import kotlin.coroutines.resume
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -143,8 +144,16 @@ class ClahAccessibilityService : AccessibilityService() {
         fun foregroundLabel(): String =
             currentForegroundPackage() ?: foregroundPackage ?: "another app"
 
-        suspend fun captureScreenshot(): Bitmap? =
-            instance?.captureDisplayScreenshot()
+        suspend fun captureScreenshot(): Bitmap? {
+            return try {
+                instance?.captureDisplayScreenshot()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (throwable: Throwable) {
+                Log.w(TAG, "Accessibility screenshot unavailable", throwable)
+                null
+            }
+        }
 
         private const val TAG = "AutoClashAccessibility"
         private const val SCREENSHOT_TIMEOUT_MS = 3_000L
