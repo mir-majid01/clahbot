@@ -1,4 +1,4 @@
-package com.clahbot.ocrlab
+package com.clahbot.ocr
 
 /**
  * Reader consensus for one row.
@@ -16,7 +16,7 @@ object RowConsensus {
     ): ConsensusResult {
         val support = LinkedHashMap<Long, LinkedHashSet<String>>()
         for (read in reads) {
-            if (!read.hasValue) continue
+            if (!read.eligibleForVote) continue
             for (value in read.candidates.distinct()) {
                 support.getOrPut(value) { LinkedHashSet() }.add(read.reader)
             }

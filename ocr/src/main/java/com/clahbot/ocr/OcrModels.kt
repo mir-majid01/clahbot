@@ -1,4 +1,4 @@
-package com.clahbot.ocrlab
+package com.clahbot.ocr
 
 import android.graphics.Rect
 
@@ -39,9 +39,28 @@ data class EngineRowRead(
     val candidates: List<Long>,
     val chosen: Long?,
     val crop: String? = null,
-    val error: String? = null
+    val error: String? = null,
+    val skipped: Boolean = false,
+    val excluded: Boolean = false,
+    val note: String? = null
 ) {
-    val hasValue: Boolean get() = error == null && candidates.isNotEmpty()
+    val eligibleForVote: Boolean
+        get() = !skipped && !excluded && error == null && candidates.isNotEmpty()
+}
+
+enum class ReaderStrategy { ALL, CHEAP_FIRST }
+
+object TimingKeys {
+    const val SEGMENT = "template_segment"
+    const val MLKIT_FULL = Readers.MLKIT_FULL
+    const val MLKIT_CROP = Readers.MLKIT_CROP
+    const val TESSERACT_CROP = Readers.TESSERACT_CROP
+    const val RAPIDOCR_CROP = Readers.RAPIDOCR_CROP
+    const val TEMPLATE_CROP = Readers.TEMPLATE_CROP
+    const val CONSENSUS = "consensus"
+    const val CROP_SAVE = "crop_save"
+    const val SCREEN_COMPUTE = "screen_compute"
+    const val SCREEN_READ = "screen_read"
 }
 
 data class RowReading(
@@ -53,7 +72,8 @@ data class RowReading(
     val combined: Long?,
     val sources: List<String>,
     val status: String,
-    val expectedFromMath: Long? = null
+    val expectedFromMath: Long? = null,
+    val timingsMs: Map<String, Long> = emptyMap()
 ) {
     fun withResult(expected: Long?, result: ConsensusResult): RowReading = copy(
         combined = result.value,

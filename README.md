@@ -31,8 +31,10 @@ Uninstalling the app deletes its local data.
 5. Select a saved macro, set speed and repeat, then tap **Play**.
 6. During playback the panel collapses to a small draggable logo placed in the
    top corner that the macro touches least.
-7. After playback, enter the loot you saw on the result screen. A playback is
-   only counted as an attack after you confirm it.
+7. After playback, AutoClash watches for the result screen and reads the loot
+   on-device through the multi-reader OCR core. A detected result screen creates
+   one confirmed attack record; a failed read stays `loot not captured` and can
+   be corrected from the history. A playback ending alone never creates a record.
 
 ## Recording modes
 
@@ -53,6 +55,9 @@ source fails. The indicator shows `STARTING`, `REC`, or `PAUSED`.
   size, floating icon size, reset position. Size changes apply when the
   controller is reopened.
 - **Permissions & diagnostics** — accessibility, overlay and notification state.
+- **Results capture (debug)** — optionally save each detected result screen as
+  a PNG plus a JSON/TXT sidecar containing the app's own read. Files stay in
+  the app's external `results_captures` folder and are never uploaded.
 - **Macro storage / Attack history** — counts, disk usage and deletion tools.
 - **Appearance** — dark, light or system theme.
 - **Updates** — installed version, check GitHub, download and install.
@@ -89,13 +94,15 @@ updates from this repository's Releases. See
 | `BotState` | One state machine shared by the dashboard and controller. |
 | `SettingsStore` | Shared preferences as a `StateFlow`. |
 | `GitHubUpdater` | Release check, checksum-verified download and installer launch. |
+| `:ocr` | Shared on-device result-screen reader: ML Kit full/crop, Tesseract, RapidOCR PP-OCRv4 and digit templates with strict-majority consensus. |
+| `ResultsCaptureCoordinator` | Watches for the result screen after playback, reads it, and creates one confirmed attack record only when the results anchors are actually detected. |
 
 ## Attack history
 
-Each playback creates an unconfirmed attack session with start/end time,
-measured duration, macro snapshot, speed and repeat. Only confirmed records
-count as attacks. Loot (gold, elixir, dark elixir and bonuses) is entered by the
-user on the result screen; the app never reads the screen or invents values.
+A detected result screen creates one confirmed attack record with start/end
+time, macro snapshot, speed, repeat and the read loot. Playback completion
+alone is never recorded. Loot (gold, elixir, dark elixir and bonuses) is read
+on-device; a field that was not read stays `loot not captured`, never zero.
 Deleting a macro never deletes its past attack records.
 
 ## Known limitations
@@ -107,7 +114,13 @@ Deleting a macro never deletes its past attack records.
 - Coordinates are normalized to the recording display; a very different aspect
   ratio can shift touch positions.
 - Speed changes apply at the next playback run.
-- Loot is manual. The game exposes no result text, so there is no OCR pipeline.
+- The v2.4.0 build is **arm64-only** because the bundled OCR native libraries
+  made the universal APK about 151 MB. The lab and app are verified on the
+  arm64 test phone; other ABIs are not packaged in this build.
+- Result-screen OCR needs the accessibility screenshot permission (Android 11+)
+  and the game to be in the foreground when playback ends. A result screen that
+  was already open before playback is ignored as stale; a missing or partial
+  read stays `loot not captured`.
 - Playback pauses when Clash of Clans leaves the foreground and the session is
   marked interrupted; resuming is manual.
 
@@ -120,8 +133,8 @@ Deleting a macro never deletes its past attack records.
   writes its SHA-256 and publishes both as GitHub release assets.
 
 ```bash
-git tag v8
-git push origin v8
+git tag v9
+git push origin v9
 ```
 
 Version numbers live in `app/build.gradle.kts`.

@@ -1,4 +1,4 @@
-package com.clahbot.ocrlab
+package com.clahbot.ocr
 
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment

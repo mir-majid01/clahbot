@@ -1,5 +1,7 @@
 package com.clahbot.ocrlab
 
+import com.clahbot.ocr.*
+
 sealed interface GateResult {
     data class Counted(val read: ResultsRead) : GateResult
     data class Duplicate(val read: ResultsRead) : GateResult

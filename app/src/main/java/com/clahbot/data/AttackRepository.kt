@@ -136,7 +136,7 @@ class AttackRepository(private val file: File) {
     )
 
     companion object {
-        const val SCHEMA_VERSION = 2
+        const val SCHEMA_VERSION = 3
         const val FILE_NAME = "attacks.json"
 
         @Volatile
@@ -164,10 +164,14 @@ internal fun sanitizeAttack(raw: AttackRecord): AttackRecord? {
             AttackRecord.RESULT_INTERRUPTED -> AttackRecord.RESULT_INTERRUPTED
             else -> AttackRecord.RESULT_UNKNOWN
         }
-        val source = if (raw.lootSource == AttackRecord.LOOT_MANUAL) {
-            AttackRecord.LOOT_MANUAL
-        } else {
-            AttackRecord.LOOT_NONE
+        val source = when (raw.lootSource) {
+            AttackRecord.LOOT_MANUAL -> AttackRecord.LOOT_MANUAL
+            AttackRecord.LOOT_OCR -> AttackRecord.LOOT_OCR
+            else -> AttackRecord.LOOT_NONE
+        }
+        val outcome = when (raw.outcome) {
+            "victory", "defeat" -> raw.outcome
+            else -> null
         }
         raw.copy(
             startedAt = started,
@@ -181,6 +185,9 @@ internal fun sanitizeAttack(raw: AttackRecord): AttackRecord? {
             bonusDarkElixir = raw.bonusDarkElixir?.coerceAtLeast(0L),
             result = result,
             lootSource = source,
+            outcome = outcome,
+            resultsScreenshot = raw.resultsScreenshot?.takeIf { it.isNotBlank() },
+            resultsSidecar = raw.resultsSidecar?.takeIf { it.isNotBlank() },
             macroName = raw.macroName.orEmpty().ifBlank { "Unknown macro" },
             speedMultiplier = if (raw.speedMultiplier <= 0f) 1f else raw.speedMultiplier
         )

@@ -1,4 +1,4 @@
-package com.clahbot.ocrlab
+package com.clahbot.ocr
 
 import android.graphics.Bitmap
 import android.graphics.Color
@@ -7,12 +7,18 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 
 /**
- * Digit-shape reader. It thresholds the row crop on neutral-channel
- * whiteness, segments the glyph line, normalises each glyph to 24x32 and
- * matches it against [DigitTemplateStore]. Any ambiguous glyph makes the
- * whole reading unusable rather than guessed.
+ * Digit-shape reader. Segmentation (threshold, connected components, normalise
+ * to 24x32) is separate from classification so the shared crop geometry can be
+ * used even when the template vote is skipped or excluded. Any ambiguous glyph
+ * makes the whole classification unusable rather than guessed.
  */
 class DigitTemplateEngine(private val store: DigitTemplateStore) {
+
+    data class Segmentation(
+        val binary: Bitmap,
+        val bounds: OcrBox?,
+        val masks: List<FloatArray>
+    )
 
     data class Read(
         val text: String,
@@ -33,7 +39,9 @@ class DigitTemplateEngine(private val store: DigitTemplateStore) {
         val centerY: Int get() = (top + bottom) / 2
     }
 
-    fun read(source: Bitmap): Read {
+    fun read(source: Bitmap): Read = classify(segment(source))
+
+    fun segment(source: Bitmap): Segmentation {
         val width = source.width
         val height = source.height
         val pixels = IntArray(width * height)
@@ -69,7 +77,7 @@ class DigitTemplateEngine(private val store: DigitTemplateStore) {
         val components = components(mask, width, height)
         val glyphs = selectLine(components)
         if (glyphs.isEmpty()) {
-            return Read("", null, binary, null)
+            return Segmentation(binary, null, emptyList())
         }
 
         val bounds = OcrBox(
@@ -78,14 +86,20 @@ class DigitTemplateEngine(private val store: DigitTemplateStore) {
             right = glyphs.maxOf { it.right }.coerceIn(1, width),
             bottom = glyphs.maxOf { it.bottom }.coerceIn(1, height)
         )
-
         if (glyphs.size > 12) {
-            return Read("", null, binary, bounds)
+            return Segmentation(binary, bounds, emptyList())
+        }
+        val masks = glyphs.map { normalize(minValues, width, it, threshold) }
+        return Segmentation(binary, bounds, masks)
+    }
+
+    fun classify(segmentation: Segmentation): Read {
+        if (segmentation.masks.isEmpty()) {
+            return Read("", null, segmentation.binary, segmentation.bounds)
         }
         val digits = StringBuilder()
         var ambiguous = false
-        for (component in glyphs) {
-            val glyph = normalize(minValues, width, component, threshold)
+        for (glyph in segmentation.masks) {
             val match = store.classify(glyph)
             if (match == null) {
                 ambiguous = true
@@ -96,7 +110,7 @@ class DigitTemplateEngine(private val store: DigitTemplateStore) {
         }
         val text = digits.toString()
         val value = if (ambiguous) null else text.toLongOrNull()
-        return Read(text, value, binary, bounds)
+        return Read(text, value, segmentation.binary, segmentation.bounds)
     }
 
     private fun components(mask: BooleanArray, width: Int, height: Int): List<Component> {

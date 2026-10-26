@@ -1,5 +1,7 @@
 package com.clahbot.ocrlab
 
+import com.clahbot.ocr.*
+
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
@@ -37,6 +39,26 @@ data class EngineValues(
     }
 }
 
+data class ReaderTiming(
+    var totalMs: Long = 0,
+    var screens: Int = 0,
+    var rowCalls: Int = 0,
+    var skippedRows: Int = 0,
+    var excludedRows: Int = 0
+) {
+    val perScreenMs: Double get() = if (screens == 0) 0.0 else totalMs.toDouble() / screens
+    val perRowMs: Double get() = if (rowCalls == 0) 0.0 else totalMs.toDouble() / rowCalls
+}
+
+data class ScreenTiming(
+    val pageOcrMs: Long,
+    val screenReadMs: Long,
+    val computeMs: Long,
+    val cropSaveMs: Long,
+    val consensusMs: Long,
+    val readers: Map<String, Long>
+)
+
 data class ScreenResult(
     val file: String,
     val expectedResult: String?,
@@ -50,7 +72,8 @@ data class ScreenResult(
     val balanceCheck: String,
     val screenshot: String?,
     val wrongCaptures: Int,
-    val notCaptured: Int
+    val notCaptured: Int,
+    val timing: ScreenTiming? = null
 )
 
 data class DataSplit(
@@ -77,6 +100,9 @@ data class AccuracyReport(
     val notCaptured: Int,
     val wrongCaptureList: List<String>,
     val runDirectory: String,
+    val strategy: String,
+    val timings: Map<String, ReaderTiming>,
+    val templateTrainingImages: List<String>,
     val dataSplit: DataSplit,
     val notes: List<String>
 ) {
@@ -87,6 +113,8 @@ data class AccuracyReport(
         builder.appendLine("Results detected: $detectedResults/$expectedResults (missed $missedResults, false positives $falsePositives)")
         builder.appendLine("Wrong captures: $wrongCaptures")
         builder.appendLine("Not captured: $notCaptured")
+        builder.appendLine("Reader strategy: $strategy")
+        builder.appendLine("Template training images: ${templateTrainingImages.joinToString(", ")}")
         if (wrongCaptureList.isNotEmpty()) {
             builder.appendLine("Wrong capture details:")
             for (item in wrongCaptureList) builder.appendLine("  - $item")
@@ -117,6 +145,8 @@ data class AccuracyReport(
             )
             builder.appendLine()
         }
+        appendTimingTable(builder)
+        builder.appendLine()
         builder.appendLine("Duplicates: counted $duplicatesCounted, ignored $duplicatesIgnored")
         builder.appendLine("Run directory: $runDirectory")
         builder.appendLine("Data split: tuning=${dataSplit.tuning.size}, scoring=${dataSplit.scoring.size}, cleanHoldout=${dataSplit.cleanHoldout}")
@@ -135,7 +165,12 @@ data class AccuracyReport(
                             "BE=${screen.combined?.bonusElixir ?: "-"} " +
                             "BD=${screen.combined?.bonusDarkElixir ?: "-"} " +
                             "balance=${screen.balanceCheck} " +
-                            "wrong=${screen.wrongCaptures} missing=${screen.notCaptured}"
+                            "wrong=${screen.wrongCaptures} missing=${screen.notCaptured}" +
+                            (screen.timing?.let {
+                                " read=${it.screenReadMs}ms compute=${it.computeMs}ms " +
+                                    "page=${it.pageOcrMs}ms consensus=${it.consensusMs}ms " +
+                                    "cropSave=${it.cropSaveMs}ms"
+                            } ?: "")
                     } else {
                         "ignored (${screen.ignoredReason ?: "no reason"})"
                     }
@@ -157,12 +192,45 @@ data class AccuracyReport(
                         "    ${read.reader}: '${read.text}' " +
                             "candidates=${read.candidates.joinToString(",").ifEmpty { "-" }} " +
                             "chosen=${read.chosen ?: "-"}" +
-                            if (read.error != null) " error=${read.error}" else ""
+                            (if (read.skipped) " skipped" else "") +
+                            (if (read.excluded) " excluded" else "") +
+                            (read.note?.let { " note=$it" } ?: "") +
+                            (read.error?.let { " error=$it" } ?: "")
                     )
                 }
             }
         }
         return builder.toString()
+    }
+
+    private fun appendTimingTable(builder: StringBuilder) {
+        builder.appendLine("Reader timings (result screens only):")
+        if (timings.isEmpty()) {
+            builder.appendLine("  (unavailable)")
+            return
+        }
+        builder.appendLine(
+            String.format(
+                Locale.US,
+                "  %-18s %10s %8s %12s %10s %7s %8s",
+                "Reader", "Total ms", "Screens", "Ms/screen", "Row calls", "Ms/row", "Skip/Excl"
+            )
+        )
+        for ((reader, timing) in timings) {
+            builder.appendLine(
+                String.format(
+                    Locale.US,
+                    "  %-18s %10d %8d %12.1f %10d %7.1f %8d",
+                    reader,
+                    timing.totalMs,
+                    timing.screens,
+                    timing.perScreenMs,
+                    timing.rowCalls,
+                    timing.perRowMs,
+                    timing.skippedRows + timing.excludedRows
+                )
+            )
+        }
     }
 
     private fun appendFieldTable(
@@ -172,7 +240,11 @@ data class AccuracyReport(
     ) {
         builder.appendLine("$title:")
         if (scores.isEmpty()) {
-            builder.appendLine("  (unavailable)")
+            if (title.contains(Readers.TEMPLATE_CROP) && templateTrainingImages.isNotEmpty()) {
+                builder.appendLine("  (not scored: template training images)")
+            } else {
+                builder.appendLine("  (unavailable)")
+            }
             return
         }
         builder.appendLine(
@@ -238,7 +310,11 @@ class AccuracyRunner(private val context: Context) {
         }
     }
 
-    suspend fun run(directory: File, ocr: OcrEngine): AccuracyReport {
+    suspend fun run(
+        directory: File,
+        ocr: OcrEngine,
+        strategy: ReaderStrategy = ReaderStrategy.CHEAP_FIRST
+    ): AccuracyReport {
         val truthFile = File(directory, "ground_truth.json")
         require(truthFile.isFile) { "ground_truth.json missing" }
         val truth = GroundTruth.load(truthFile)
@@ -261,6 +337,8 @@ class AccuracyRunner(private val context: Context) {
         val fields = linkedMapOf<String, FieldScore>()
         val engines = linkedMapOf<String, LinkedHashMap<String, FieldScore>>()
         for (engine in ENGINE_NAMES) engines[engine] = linkedMapOf()
+        val timings = linkedMapOf<String, ReaderTiming>()
+        for (key in TIMING_KEYS) timings[key] = ReaderTiming()
         val screens = mutableListOf<ScreenResult>()
         var classificationCorrect = 0
         var detectedResults = 0
@@ -276,9 +354,12 @@ class AccuracyRunner(private val context: Context) {
         val notes = mutableListOf<String>()
         notes += "Numeric parsing is digits-only with optional grouping; confusable letters expand to candidate digits and labels are separated from numbers."
         notes += "Loot rows must be in the right-aligned value column and have a recognised resource icon, so the Sour Elixir panel is excluded."
-        notes += "A value is accepted only with at least two independent readers, or one reader plus an exact balance-identity match; a lone reader is never accepted."
+        notes += "A value is accepted only when at least two readers agree and hold a strict majority of the readers with evidence, or one reader plus an exact balance-identity match; a lone reader is never accepted."
+        notes += "Digit templates were built from the four labelled result screens in the 11-image pack (08-11); template votes and field scores are excluded on those screens. They were not trained on the non-result frames."
         notes += "RapidOCR is PP-OCRv4 rec (PaddleOCR) on ONNX Runtime; digit templates are 24x32 neutral-channel glyphs extracted from the labelled pack (leave-one-row-out 199/199)."
         notes += "The exact crop fed to each reader is saved under the run directory."
+        notes += "Strategy $strategy: full/crop ML Kit and Tesseract run first; RapidOCR runs only when they cannot agree; templates run last and only when still needed."
+        notes += "Reader timings exclude crop PNG persistence; screen read time is wall time and crop save time is reported separately."
         notes += "Balance cross-check is applied only between a defeat and the next victory when all balances, bonuses and a search cost are available; a mismatch is needs-review, not a value substitution."
         notes += "Stars are not parsed by this spike; stored as unknown for now."
         notes += "The 11-image pack informed all fixes and the templates, so it is not a clean holdout. The separate 30+ set is the final scoring set."
@@ -302,6 +383,15 @@ class AccuracyRunner(private val context: Context) {
             null
         }
         if (templates == null) notes += "Digit-template fields are unavailable in this run."
+
+        val engineAvailable = mapOf(
+            Readers.MLKIT_FULL to true,
+            Readers.MLKIT_CROP to true,
+            Readers.TESSERACT_CROP to (tesseract != null),
+            Readers.RAPIDOCR_CROP to (rapidOcr != null),
+            Readers.TEMPLATE_CROP to (templates != null),
+            Readers.CONSENSUS to true
+        )
 
         try {
             for (file in images) {
@@ -328,8 +418,14 @@ class AccuracyRunner(private val context: Context) {
                 }
 
                 val expected = truth[file.name]
+                val templateVoteEligible = file.name !in TEMPLATE_TRAINING_IMAGES
+                val screenStart = System.nanoTime()
+                var pageOcrMs = 0L
                 val page = try {
-                    ocr.recognize(bitmap)
+                    val start = System.nanoTime()
+                    val recognized = ocr.recognize(bitmap)
+                    pageOcrMs = elapsed(start)
+                    recognized
                 } catch (throwable: Throwable) {
                     screens += ScreenResult(
                         file = file.name,
@@ -378,9 +474,12 @@ class AccuracyRunner(private val context: Context) {
                         scoreAll(fields, comparisons)
                         val emptyValues = EngineValues.empty()
                         for (engine in ENGINE_NAMES) {
-                            scoreAll(
+                            if (!engineAvailable.getValue(engine)) continue
+                            if (engine == Readers.TEMPLATE_CROP && !templateVoteEligible) continue
+                            scoreMissingEngine(
                                 engines.getValue(engine),
-                                engineComparisons(expected, engine, emptyValues)
+                                engine,
+                                expected
                             )
                         }
                         screens += ScreenResult(
@@ -410,20 +509,37 @@ class AccuracyRunner(private val context: Context) {
                     "crops/${file.nameWithoutExtension.replace(Regex("[^A-Za-z0-9._-]"), "_")}"
                 )
                 val cropSink = CropSink(screenDirectory)
+                val fullPageSaveStart = System.nanoTime()
                 val fullPageCrop = cropSink.save("full_mlkit", bitmap)
-                val cropReader = RowCropReader(ocr, tesseract, rapidOcr, templates, cropSink)
+                val fullPageSaveMs = elapsed(fullPageSaveStart)
+                val cropReader = RowCropReader(
+                    mlKit = ocr,
+                    tesseract = tesseract,
+                    rapidOcr = rapidOcr,
+                    templates = templates,
+                    cropSink = cropSink,
+                    strategy = strategy,
+                    runTemplateForTiming = strategy == ReaderStrategy.ALL
+                )
                 val readings = mutableListOf<RowReading>()
                 for ((index, row) in inspection.lootRows.withIndex()) {
-                    readings += cropReader.read(bitmap, row, index, fullPageCrop)
+                    readings += cropReader.read(
+                        bitmap, row, index, fullPageCrop, templateVoteEligible
+                    )
                 }
                 for ((index, row) in inspection.bonusRows.withIndex()) {
-                    readings += cropReader.read(bitmap, row, index, fullPageCrop)
+                    readings += cropReader.read(
+                        bitmap, row, index, fullPageCrop, templateVoteEligible
+                    )
                 }
                 for ((index, row) in inspection.balanceRows.withIndex()) {
-                    readings += cropReader.read(bitmap, row, index, fullPageCrop)
+                    readings += cropReader.read(
+                        bitmap, row, index, fullPageCrop, templateVoteEligible
+                    )
                 }
 
                 var finalRead = ResultsAssembler.assemble(inspection, readings)
+                var mathConsensusMs = 0L
                 val math = BalanceMath.expectedLoot(previousResult, finalRead, searchCostGold)
                 if (math != null && math.any) {
                     val updated = readings.map { row ->
@@ -432,7 +548,9 @@ class AccuracyRunner(private val context: Context) {
                             row.combined == null &&
                             expectedLoot != null
                         ) {
+                            val resolveStart = System.nanoTime()
                             val resolved = RowConsensus.resolve(row.reads, expectedLoot)
+                            mathConsensusMs += elapsed(resolveStart)
                             if (resolved.value != null) {
                                 row.withResult(expectedLoot, resolved)
                             } else {
@@ -455,6 +573,33 @@ class AccuracyRunner(private val context: Context) {
                         needsReview = true,
                         issues = finalRead.issues + "balance cross-check mismatch"
                     )
+                }
+
+                val rowReaderMs = linkedMapOf<String, Long>()
+                for (row in readings) {
+                    for ((key, value) in row.timingsMs) {
+                        rowReaderMs[key] = (rowReaderMs[key] ?: 0L) + value
+                    }
+                }
+                rowReaderMs[TimingKeys.MLKIT_FULL] = pageOcrMs
+                val cropSaveMs = (rowReaderMs[TimingKeys.CROP_SAVE] ?: 0L) +
+                    fullPageSaveMs
+                val consensusMs = (rowReaderMs[TimingKeys.CONSENSUS] ?: 0L) +
+                    mathConsensusMs
+                val computeMs = rowReaderMs
+                    .filterKeys { it != TimingKeys.CROP_SAVE }
+                    .values
+                    .sum() + mathConsensusMs
+                val screenTiming = ScreenTiming(
+                    pageOcrMs = pageOcrMs,
+                    screenReadMs = elapsed(screenStart),
+                    computeMs = computeMs,
+                    cropSaveMs = cropSaveMs,
+                    consensusMs = consensusMs,
+                    readers = rowReaderMs
+                )
+                if (expected != null) {
+                    aggregateTimings(timings, screenTiming, readings, pageOcrMs)
                 }
 
                 val engineValues = linkedMapOf<String, EngineValues>()
@@ -480,9 +625,15 @@ class AccuracyRunner(private val context: Context) {
                 if (expected != null) {
                     scoreAll(fields, comparisons)
                     for (engine in ENGINE_NAMES) {
-                        scoreAll(
-                            engines.getValue(engine),
-                            engineComparisons(expected, engine, engineValues.getValue(engine))
+                        if (!engineAvailable.getValue(engine)) continue
+                        scoreEngineReadings(
+                            target = engines.getValue(engine),
+                            engine = engine,
+                            expected = expected,
+                            inspection = inspection,
+                            finalRead = finalRead,
+                            rows = readings,
+                            templateVoteEligible = templateVoteEligible
                         )
                     }
                 }
@@ -527,7 +678,8 @@ class AccuracyRunner(private val context: Context) {
                     balanceCheck = balanceCheck,
                     screenshot = screenshot,
                     wrongCaptures = screenWrong,
-                    notCaptured = screenMissing
+                    notCaptured = screenMissing,
+                    timing = screenTiming
                 )
                 bitmap.recycle()
             }
@@ -560,6 +712,9 @@ class AccuracyRunner(private val context: Context) {
             notCaptured = orderedFields.values.sumOf { it.missing },
             wrongCaptureList = wrongCaptureList,
             runDirectory = runDirectory.absolutePath,
+            strategy = strategy.name,
+            timings = timings,
+            templateTrainingImages = TEMPLATE_TRAINING_IMAGES.toList(),
             dataSplit = DataSplit(
                 tuning = listOf(
                     "08_results_victory_2star_70.jpg",
@@ -571,7 +726,7 @@ class AccuracyRunner(private val context: Context) {
                 ),
                 finalScoring = "The 30+ screenshots you will supply, not used for tuning.",
                 cleanHoldout = false,
-                note = "The 11 pack informed every fix and the digit templates, so the scoring split is a regression check, not a clean holdout."
+                note = "The 11 pack informed every fix and the digit templates were built from its four result screens, so this is a regression check, not a clean holdout. Template scores are excluded on the four training screens."
             ),
             notes = notes
         )
@@ -658,37 +813,170 @@ class AccuracyRunner(private val context: Context) {
         return result
     }
 
-    private fun engineComparisons(
-        expected: GroundTruth,
+    private fun scoreMissingEngine(
+        target: MutableMap<String, FieldScore>,
         engine: String,
-        values: EngineValues
-    ): List<Comparison> {
-        val result = mutableListOf<Comparison>()
-        val readsResult = engine == Readers.MLKIT_FULL || engine == Readers.CONSENSUS
-        if (readsResult) {
-            result += Comparison("result", expected.result, values.result)
+        expected: GroundTruth
+    ) {
+        if (engine == Readers.MLKIT_FULL || engine == Readers.CONSENSUS) {
+            scoreValue(target, "result", expected.result, null)
         }
-        expected.gold?.let { result += Comparison("gold", it, values.gold) }
-        expected.elixir?.let { result += Comparison("elixir", it, values.elixir) }
-        expected.darkElixir?.let { result += Comparison("dark", it, values.dark) }
-        expected.bonusGold?.let { result += Comparison("bonus_gold", it, values.bonusGold) }
-        expected.bonusElixir?.let {
-            result += Comparison("bonus_elixir", it, values.bonusElixir)
-        }
-        expected.bonusDarkElixir?.let {
-            result += Comparison("bonus_dark", it, values.bonusDark)
-        }
-        expected.balanceGold?.let {
-            result += Comparison("balance_gold", it, values.balanceGold)
-        }
-        expected.balanceElixir?.let {
-            result += Comparison("balance_elixir", it, values.balanceElixir)
-        }
-        expected.balanceDarkElixir?.let {
-            result += Comparison("balance_dark", it, values.balanceDark)
-        }
-        return result
+        expected.gold?.let { scoreValue(target, "gold", it, null) }
+        expected.elixir?.let { scoreValue(target, "elixir", it, null) }
+        expected.darkElixir?.let { scoreValue(target, "dark", it, null) }
+        expected.bonusGold?.let { scoreValue(target, "bonus_gold", it, null) }
+        expected.bonusElixir?.let { scoreValue(target, "bonus_elixir", it, null) }
+        expected.bonusDarkElixir?.let { scoreValue(target, "bonus_dark", it, null) }
+        expected.balanceGold?.let { scoreValue(target, "balance_gold", it, null) }
+        expected.balanceElixir?.let { scoreValue(target, "balance_elixir", it, null) }
+        expected.balanceDarkElixir?.let { scoreValue(target, "balance_dark", it, null) }
     }
+
+    private fun scoreEngineReadings(
+        target: MutableMap<String, FieldScore>,
+        engine: String,
+        expected: GroundTruth,
+        inspection: Inspection,
+        finalRead: ResultsRead,
+        rows: List<RowReading>,
+        templateVoteEligible: Boolean
+    ) {
+        if (engine == Readers.TEMPLATE_CROP && !templateVoteEligible) return
+        if (engine == Readers.MLKIT_FULL) {
+            scoreValue(
+                target,
+                "result",
+                expected.result,
+                inspection.outcome.name.lowercase(Locale.US)
+            )
+        } else if (engine == Readers.CONSENSUS) {
+            scoreValue(
+                target,
+                "result",
+                expected.result,
+                finalRead.outcome.name.lowercase(Locale.US)
+            )
+        }
+        scoreRowField(target, engine, "gold", expected.gold, RowRole.LOOT, ResourceKind.GOLD, rows)
+        scoreRowField(target, engine, "elixir", expected.elixir, RowRole.LOOT, ResourceKind.ELIXIR, rows)
+        scoreRowField(target, engine, "dark", expected.darkElixir, RowRole.LOOT, ResourceKind.DARK, rows)
+        scoreRowField(target, engine, "bonus_gold", expected.bonusGold, RowRole.BONUS, ResourceKind.GOLD, rows)
+        scoreRowField(target, engine, "bonus_elixir", expected.bonusElixir, RowRole.BONUS, ResourceKind.ELIXIR, rows)
+        scoreRowField(target, engine, "bonus_dark", expected.bonusDarkElixir, RowRole.BONUS, ResourceKind.DARK, rows)
+        scoreRowField(target, engine, "balance_gold", expected.balanceGold, RowRole.BALANCE, ResourceKind.GOLD, rows)
+        scoreRowField(target, engine, "balance_elixir", expected.balanceElixir, RowRole.BALANCE, ResourceKind.ELIXIR, rows)
+        scoreRowField(target, engine, "balance_dark", expected.balanceDarkElixir, RowRole.BALANCE, ResourceKind.DARK, rows)
+    }
+
+    private fun scoreRowField(
+        target: MutableMap<String, FieldScore>,
+        engine: String,
+        field: String,
+        expectedValue: Long?,
+        role: RowRole,
+        resource: ResourceKind,
+        rows: List<RowReading>
+    ) {
+        if (expectedValue == null) return
+        val row = rows.firstOrNull { it.role == role && it.resource == resource }
+        if (row == null) {
+            scoreValue(target, field, expectedValue, null)
+            return
+        }
+        if (engine == Readers.CONSENSUS) {
+            scoreValue(target, field, expectedValue, row.combined)
+            return
+        }
+        val read = row.reads.firstOrNull { it.reader == engine }
+        if (read == null) {
+            scoreValue(target, field, expectedValue, null)
+            return
+        }
+        if (read.skipped || read.excluded) return
+        scoreValue(target, field, expectedValue, read.chosen)
+    }
+
+    private fun scoreValue(
+        target: MutableMap<String, FieldScore>,
+        name: String,
+        expected: Any?,
+        actual: Any?
+    ) {
+        val score = target.getOrPut(name) { FieldScore() }
+        score.expected++
+        if (actual != null) score.captured++
+        if (expected == actual) {
+            score.correct++
+        } else if (actual != null) {
+            score.wrong++
+        }
+    }
+
+    private fun aggregateTimings(
+        target: MutableMap<String, ReaderTiming>,
+        screen: ScreenTiming,
+        rows: List<RowReading>,
+        pageOcrMs: Long
+    ) {
+        target[TimingKeys.MLKIT_FULL]?.let { timing ->
+            timing.totalMs += pageOcrMs
+            timing.screens++
+            timing.rowCalls += rows.size
+        }
+        for (engine in CROP_ENGINES) {
+            val timing = target[engine] ?: continue
+            var ran = 0
+            var skipped = 0
+            var excluded = 0
+            for (row in rows) {
+                val read = row.reads.firstOrNull { it.reader == engine } ?: continue
+                if (read.skipped) {
+                    skipped++
+                    continue
+                }
+                timing.totalMs += row.timingsMs[engine] ?: 0L
+                ran++
+                if (read.excluded) excluded++
+            }
+            if (ran > 0) {
+                timing.screens++
+                timing.rowCalls += ran
+                timing.excludedRows += excluded
+            }
+            timing.skippedRows += skipped
+        }
+        for (key in listOf(TimingKeys.SEGMENT, TimingKeys.CONSENSUS)) {
+            val timing = target[key] ?: continue
+            var ran = 0
+            var total = 0L
+            for (row in rows) {
+                val millis = row.timingsMs[key] ?: continue
+                total += millis
+                ran++
+            }
+            if (ran > 0) {
+                timing.totalMs += total
+                timing.screens++
+                timing.rowCalls += ran
+            }
+        }
+        target[TimingKeys.CROP_SAVE]?.let { timing ->
+            timing.totalMs += screen.cropSaveMs
+            timing.screens++
+            timing.rowCalls += rows.size
+        }
+        target[TimingKeys.SCREEN_COMPUTE]?.let { timing ->
+            timing.totalMs += screen.computeMs
+            timing.screens++
+        }
+        target[TimingKeys.SCREEN_READ]?.let { timing ->
+            timing.totalMs += screen.screenReadMs
+            timing.screens++
+        }
+    }
+
+    private fun elapsed(startNanos: Long): Long =
+        (System.nanoTime() - startNanos) / 1_000_000L
 
     private fun scoreAll(target: MutableMap<String, FieldScore>, comparisons: List<Comparison>) {
         for (comparison in comparisons) {
@@ -775,6 +1063,30 @@ class AccuracyRunner(private val context: Context) {
             Readers.RAPIDOCR_CROP,
             Readers.TEMPLATE_CROP,
             Readers.CONSENSUS
+        )
+        private val CROP_ENGINES = listOf(
+            Readers.MLKIT_CROP,
+            Readers.TESSERACT_CROP,
+            Readers.RAPIDOCR_CROP,
+            Readers.TEMPLATE_CROP
+        )
+        private val TIMING_KEYS = listOf(
+            TimingKeys.MLKIT_FULL,
+            TimingKeys.MLKIT_CROP,
+            TimingKeys.TESSERACT_CROP,
+            TimingKeys.RAPIDOCR_CROP,
+            TimingKeys.TEMPLATE_CROP,
+            TimingKeys.SEGMENT,
+            TimingKeys.CONSENSUS,
+            TimingKeys.CROP_SAVE,
+            TimingKeys.SCREEN_COMPUTE,
+            TimingKeys.SCREEN_READ
+        )
+        private val TEMPLATE_TRAINING_IMAGES = setOf(
+            "08_results_victory_2star_70.jpg",
+            "09_results_defeat_35.jpg",
+            "10_results_victory_3star_100.jpg",
+            "11_results_victory_2star_71_reference.jpg"
         )
     }
 }

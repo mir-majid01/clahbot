@@ -1,4 +1,4 @@
-package com.clahbot.ocrlab
+package com.clahbot.ocr
 
 /**
  * Turns resolved row readings into a [ResultsRead]. Only consensus/balance

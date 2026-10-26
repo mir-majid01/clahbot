@@ -1,5 +1,7 @@
 package com.clahbot.ocrlab
 
+import com.clahbot.ocr.*
+
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -30,19 +32,25 @@ class OcrLabAccuracyTest {
             .orEmpty()
         assertTrue("expected the 11-image pack, found ${images.size}", images.size >= 11)
 
+        val strategy = when (InstrumentationRegistry.getArguments().getString("strategy")) {
+            "all" -> ReaderStrategy.ALL
+            else -> ReaderStrategy.CHEAP_FIRST
+        }
         val ocr = MlKitOcrEngine()
         try {
-            val report = AccuracyRunner(context).run(directory, ocr)
+            val report = AccuracyRunner(context).run(directory, ocr, strategy)
             val json = GsonBuilder().setPrettyPrinting().create().toJson(report)
-            val internal = File(context.filesDir, "accuracy_report.json")
+            val suffix = if (strategy == ReaderStrategy.ALL) "_all" else ""
+            val internal = File(context.filesDir, "accuracy_report$suffix.json")
             internal.writeText(json)
             val runReport = File(report.runDirectory, "accuracy_report.json")
             runReport.parentFile?.mkdirs()
             runReport.writeText(json)
             Log.i(
                 "OCR_LAB",
-                "Headless accuracy report ${runReport.absolutePath} images=${report.images} " +
-                    "detected=${report.detectedResults} wrong=${report.wrongCaptures}"
+                "Headless accuracy report ${runReport.absolutePath} strategy=${report.strategy} " +
+                    "images=${report.images} detected=${report.detectedResults} " +
+                    "wrong=${report.wrongCaptures} missing=${report.notCaptured}"
             )
             assertTrue("no screenshots processed", report.images >= 11)
             assertEquals(

@@ -1,4 +1,4 @@
-package com.clahbot.ocrlab
+package com.clahbot.ocr
 
 data class ExpectedLoot(
     val gold: Long?,
