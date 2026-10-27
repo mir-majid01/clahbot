@@ -95,7 +95,9 @@ updates from this repository's Releases. See
 | `SettingsStore` | Shared preferences as a `StateFlow`. |
 | `GitHubUpdater` | Release check, checksum-verified download and installer launch. |
 | `:ocr` | Shared on-device result-screen reader: ML Kit full/crop, Tesseract, RapidOCR PP-OCRv4 and digit templates with strict-majority consensus. |
-| `ResultsCaptureCoordinator` | Watches for the result screen from playback start through four minutes after it ends, reads it, and creates one confirmed attack record only when the results anchors are actually detected. |
+| `ResultsCaptureCoordinator` | Watches for the result screen from playback start (or a manual watch) through four minutes after playback ends, reads it, and creates one confirmed attack record only when the results anchors are actually detected. |
+| `ResultCaptureGate` | Holds a late macro tap (up to 10 s) while a detected result screen is captured and read, so Return Home cannot dismiss it first. |
+| `AppEventLog` | Rolling private diagnostic log (256 KB + one rotation) of playback, polls, reads and records; no screenshots or loot values. |
 
 ## Attack history
 
@@ -104,6 +106,13 @@ time, macro snapshot, speed, repeat and the read loot. Playback completion
 alone is never recorded. Loot (gold, elixir, dark elixir and bonuses) is read
 on-device; a field that was not read stays `loot not captured`, never zero.
 Deleting a macro never deletes its past attack records.
+
+The controller's Stats tab has **Watch results** for a hand-played attack. It
+runs the same full-resolution detector without a macro and records only when a
+result screen is detected. During a macro, a late tap (the Return Home tap) is
+held until a detected result screen has been captured and read, for at most
+10 seconds. The rolling diagnostic log is `files/autoclash_events.log`; pull it
+with `adb exec-out run-as com.clahbot cat files/autoclash_events.log`.
 
 ## Known limitations
 
@@ -125,6 +134,13 @@ Deleting a macro never deletes its past attack records.
   `loot not captured`.
 - Playback pauses when Clash of Clans leaves the foreground and the session is
   marked interrupted; resuming is manual.
+- The results race gate applies to taps in the last 15 seconds of a macro and
+  may add up to 2 seconds before such a tap. It can hold the tap for up to
+  8 seconds (about 10 seconds including the fresh-sample wait) while the
+  capture completes. A hand tap in manual-watch mode is not held, so leave the
+  result screen open until the app reports it.
+- The diagnostic log is capped at 256 KB with one rotated copy and contains no
+  screenshots, loot values or macro names.
 
 ## Build and release
 

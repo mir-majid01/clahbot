@@ -3,6 +3,7 @@ package com.clahbot.results
 import android.content.Context
 import android.graphics.Bitmap
 import android.util.Log
+import com.clahbot.data.AppEventLog
 import com.clahbot.data.AttackRepository
 import com.clahbot.data.SettingsStore
 import com.clahbot.data.models.AttackRecordPolicy
@@ -18,16 +19,21 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import java.io.File
+import java.util.Locale
 import kotlin.coroutines.coroutineContext
 
 /**
- * Watches for the result screen from playback start until four minutes after
- * playback ends. The watch has to run during playback because a recorded macro
- * normally taps Return Home while the result screen is open; waiting for the
- * playback to end would miss the screen entirely. The controller overlay is
- * hidden so screenshots contain only the game. A playback ending never writes
- * a record; only a detected result screen can. A result screen that was
- * already open before playback started is stale and is ignored.
+ * Watches for the result screen from playback start (or from a manual watch)
+ * until four minutes after playback ends. The watch has to run during playback
+ * because a recorded macro normally taps Return Home while the result screen is
+ * open; waiting for the playback to end would miss the screen entirely. The
+ * controller overlay is hidden so screenshots contain only the game. A
+ * playback ending never writes a record; only a detected result screen can. A
+ * result screen that was already open before the watch started is stale and is
+ * ignored.
+ *
+ * Every poll and every reader decision is written to the rolling app event log.
  */
 class ResultsCaptureCoordinator(
     private val context: Context,
@@ -35,14 +41,17 @@ class ResultsCaptureCoordinator(
     private val attackRepository: AttackRepository,
     private val settingsStore: SettingsStore,
     private val reader: AppResultsReader,
+    private val gate: ResultCaptureGate,
     private val hideOverlay: () -> Unit,
     private val showOverlay: () -> Unit,
     private val onStatus: (String) -> Unit,
-    private val onRecordSaved: () -> Unit
+    private val onRecordSaved: () -> Unit,
+    private val onWatchEnded: () -> Unit
 ) {
 
     private class SessionState(val session: CaptureSession) {
         val baseline = CompletableDeferred<Boolean>()
+        val manual = session.macroId == 0L
 
         @Volatile
         var playbackEndedAt: Long? = null
@@ -57,16 +66,24 @@ class ResultsCaptureCoordinator(
     private var baselineJob: Job? = null
     private var watchJob: Job? = null
 
+    fun isActive(): Boolean = current != null
+
     fun begin(session: CaptureSession) {
         cancel()
+        gate.beginSession()
         val state = SessionState(session)
         current = state
+        event("watch begin id=${session.id} manual=${state.manual} macroId=${session.macroId}")
         baselineJob = scope.launch(Dispatchers.Default) {
             val startedOnResults = runCatching {
                 val bitmap = ClahAccessibilityService.captureScreenshot()
                     ?: return@runCatching false
                 try {
-                    reader.isResultsScreen(bitmap)
+                    val check = reader.checkResultsScreen(bitmap)
+                    if (!check.isResults) {
+                        event("baseline check: ${check.reason ?: "no anchor"}")
+                    }
+                    check.isResults
                 } finally {
                     bitmap.recycle()
                 }
@@ -87,6 +104,7 @@ class ResultsCaptureCoordinator(
         if (state.session.id != session.id) return
         state.playbackEndedAt = playbackEndedAt
         state.interrupted = interrupted
+        event("playback end id=${session.id} interrupted=$interrupted")
         if (watchJob?.isActive != true) {
             watchJob = scope.launch(Dispatchers.Default) {
                 watch(state)
@@ -95,11 +113,14 @@ class ResultsCaptureCoordinator(
     }
 
     fun cancel() {
+        val hadSession = current != null
         watchJob?.cancel()
         watchJob = null
         baselineJob?.cancel()
         baselineJob = null
         current = null
+        gate.releaseHold()
+        if (hadSession) event("watch cancelled")
         scope.launch(Dispatchers.Main) {
             runCatching { showOverlay() }
         }
@@ -107,13 +128,15 @@ class ResultsCaptureCoordinator(
 
     private suspend fun watch(state: SessionState) {
         val startedOnResults = withTimeoutOrNull(5_000) { state.baseline.await() } ?: false
-        Log.i(TAG, "Baseline results screen=$startedOnResults")
+        event("baseline results screen=$startedOnResults")
         if (startedOnResults) {
             status("Already on a results screen; no new attack recorded.")
+            event("watch aborted: already on results")
             clear(state)
             return
         }
 
+        var poll = 0
         try {
             while (coroutineContext.isActive) {
                 val endedAt = state.playbackEndedAt
@@ -127,33 +150,44 @@ class ResultsCaptureCoordinator(
                 }
                 if (System.currentTimeMillis() >= deadline) break
                 if (!ClahAccessibilityService.isGameForeground()) {
+                    gate.notePoll(System.currentTimeMillis(), false, "game not foreground")
+                    event("poll skipped: game not foreground")
                     delay(RETRY_DELAY_MS)
                     continue
                 }
+
+                val pollStartedAt = System.currentTimeMillis()
                 val shotStart = System.nanoTime()
                 val detectionBitmap = ClahAccessibilityService.captureScreenshot()
                 val shotMs = (System.nanoTime() - shotStart) / 1_000_000L
                 if (detectionBitmap == null) {
-                    Log.i(TAG, "Poll screenshot failed after ${shotMs}ms")
+                    gate.notePoll(pollStartedAt, false, "screenshot failed")
+                    event(
+                        "poll #${++poll} t=${pollStartedAt - state.session.startedAt}ms " +
+                            "screenshot failed after ${shotMs}ms"
+                    )
                     delay(RETRY_DELAY_MS)
                     continue
                 }
+
                 val detectStart = System.nanoTime()
-                val detected = isResultsScreen(detectionBitmap)
+                val check = reader.checkResultsScreen(detectionBitmap)
                 val detectMs = (System.nanoTime() - detectStart) / 1_000_000L
-                val elapsed = System.currentTimeMillis() - state.session.startedAt
-                Log.i(
-                    TAG,
-                    "Poll at ${elapsed}ms: shot=${shotMs}ms detect=${detectMs}ms results=$detected"
+                gate.notePoll(pollStartedAt, check.isResults, check.reason)
+                event(
+                    "poll #${++poll} t=${pollStartedAt - state.session.startedAt}ms " +
+                        "shot=${shotMs}ms detect=${detectMs}ms results=${check.isResults} " +
+                        "reason=${check.reason ?: "-"}"
                 )
-                if (!detected) {
+                if (!check.isResults) {
                     detectionBitmap.recycle()
                     // No retry delay: the result screen can be dismissed within
                     // a second by the macro's Return Home gesture.
                     continue
                 }
 
-                Log.i(TAG, "Results screen detected; taking clean capture")
+                gate.requestHold()
+                event("results detected; hold requested; ${gate.snapshot()}")
                 var cleanBitmap: Bitmap? = null
                 try {
                     // Hide the bubble only for the clean capture. The results
@@ -168,10 +202,13 @@ class ResultsCaptureCoordinator(
                             reader.read(clean)
                         }
                         if (cleanResult != null) {
-                            saveAndRecord(state, clean, cleanResult)
+                            saveAndRecord(state, clean, cleanResult, "clean")
                             clear(state)
                             return
                         }
+                        event("clean frame read returned no result; trying detection frame")
+                    } else {
+                        event("clean capture failed; trying detection frame")
                     }
                     // The clean frame failed; the detection frame is still a
                     // valid read (the bubble may be in a corner).
@@ -179,58 +216,78 @@ class ResultsCaptureCoordinator(
                         reader.read(detectionBitmap)
                     }
                     if (fallback != null) {
-                        saveAndRecord(state, detectionBitmap, fallback)
+                        saveAndRecord(state, detectionBitmap, fallback, "detection")
                         clear(state)
                         return
                     }
+                    event("both frames failed to read")
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (throwable: Throwable) {
-                    Log.w(TAG, "Results OCR failed", throwable)
+                    warn("Results OCR failed", throwable)
                 } finally {
+                    gate.releaseHold()
+                    event("hold released; ${gate.snapshot()}")
                     cleanBitmap?.recycle()
                     detectionBitmap.recycle()
                     withContext(Dispatchers.Main) { runCatching { showOverlay() } }
                 }
                 delay(RETRY_DELAY_MS)
             }
-            if (state.playbackEndedAt != null) {
-                status("No results screen detected; no attack recorded.")
-            }
+            event("watch ended without a capture")
+            status("No results screen detected; no attack recorded.")
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (throwable: Throwable) {
-            Log.w(TAG, "Results capture failed", throwable)
+            warn("Results capture failed", throwable)
             status("Results capture failed; no attack recorded.")
         } finally {
+            gate.releaseHold()
             withContext(Dispatchers.Main) { runCatching { showOverlay() } }
             if (current === state) current = null
+            if (state.manual) {
+                event("manual watch ended")
+                withContext(Dispatchers.Main) { runCatching { onWatchEnded() } }
+            }
         }
     }
-
-    private suspend fun isResultsScreen(bitmap: Bitmap): Boolean =
-        reader.isResultsScreen(bitmap)
 
     private suspend fun saveAndRecord(
         state: SessionState,
         bitmap: Bitmap,
-        result: AppResultsReader.ReadResult
+        result: AppResultsReader.ReadResult,
+        source: String
     ) {
         val session = state.session
         val playbackEndedAt = state.playbackEndedAt ?: System.currentTimeMillis()
         val interrupted = state.interrupted
+        val read = result.read
+        event(
+            "read ($source) outcome=${read.outcome} " +
+                "gold=${presence(read.gold)} elixir=${presence(read.elixir)} " +
+                "dark=${presence(read.darkElixir)} " +
+                "bonus=${presence(read.bonusGold)}/${presence(read.bonusElixir)}/" +
+                "${presence(read.bonusDarkElixir)} " +
+                "confidence=${String.format(Locale.US, "%.2f", read.confidence)} " +
+                "needsReview=${read.needsReview} issues=${read.issues.take(3).joinToString("; ")}"
+        )
         val saved = if (settingsStore.settings.value.saveResultsScreenshots) {
             withContext(Dispatchers.IO) {
                 runCatching {
                     ResultsScreenshotStore(context).save(bitmap, session, result)
                 }.getOrElse { throwable ->
-                    Log.w(TAG, "Could not save result capture", throwable)
+                    warn("Could not save result capture", throwable)
                     SavedCapture(null, null, null)
                 }
             }
         } else {
             SavedCapture(null, null, null)
         }
+        event(
+            "saved source=$source png=${saved.png?.let { File(it).name } ?: "-"} " +
+                "json=${saved.json?.let { File(it).name } ?: "-"} " +
+                "txt=${saved.txt?.let { File(it).name } ?: "-"}"
+        )
 
         if (!ResultsCapturePolicy.mayAutoRecord(
                 detectedResults = true,
@@ -238,11 +295,12 @@ class ResultsCaptureCoordinator(
             ) ||
             !AttackRecordPolicy.mayCreateRecord(AttackTrigger.DETECTED_RESULTS_SCREEN)
         ) {
+            event("record blocked by policy")
             return
         }
         val record = ResultsToAttackRecord.build(
             session = session,
-            read = result.read,
+            read = read,
             playbackEndedAt = playbackEndedAt,
             interrupted = interrupted,
             screenshotPath = saved.png,
@@ -250,14 +308,13 @@ class ResultsCaptureCoordinator(
         )
         val added = attackRepository.add(record)
         if (added == null) {
-            Log.w(TAG, "Attack record was not added (duplicate or invalid)")
+            warn("Attack record was not added (duplicate or invalid)")
             status("Results screen read, but the attack record was not saved.")
             return
         }
-        Log.i(
-            TAG,
-            "Attack record saved id=${added.id} outcome=${added.outcome} " +
-                "lootCaptured=${added.hasLoot} screenshot=${added.resultsScreenshot ?: "-"}"
+        event(
+            "record saved id=${added.id} outcome=${added.outcome} " +
+                "lootCaptured=${added.hasLoot} screenshot=${added.resultsScreenshot?.let { File(it).name } ?: "-"}"
         )
         status(
             if (record.hasLoot) {
@@ -269,8 +326,21 @@ class ResultsCaptureCoordinator(
         withContext(Dispatchers.Main) { onRecordSaved() }
     }
 
+    private fun presence(value: Long?): String = if (value == null) "missing" else "ok"
+
     private suspend fun status(message: String) {
         withContext(Dispatchers.Main) { onStatus(message) }
+    }
+
+    private fun event(message: String) {
+        Log.i(TAG, message)
+        AppEventLog.log(message)
+    }
+
+    private fun warn(message: String, throwable: Throwable? = null) {
+        Log.w(TAG, message, throwable)
+        val detail = throwable?.message?.let { ": $it" } ?: ""
+        AppEventLog.log("WARN $message$detail")
     }
 
     private fun clear(state: SessionState) {

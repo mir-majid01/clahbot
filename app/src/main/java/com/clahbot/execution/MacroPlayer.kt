@@ -3,11 +3,13 @@ package com.clahbot.execution
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.graphics.Path
+import com.clahbot.data.AppEventLog
 import com.clahbot.data.BotState
 import com.clahbot.data.ControllerState
 import com.clahbot.data.models.GesturePoint
 import com.clahbot.data.models.Macro
 import com.clahbot.data.models.RecordedGesture
+import com.clahbot.results.ResultCaptureGate
 import com.clahbot.service.ClahAccessibilityService
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -27,7 +29,8 @@ import kotlin.coroutines.resume
  */
 class MacroPlayer(
     private val screenWidth: Int,
-    private val screenHeight: Int
+    private val screenHeight: Int,
+    private val resultGate: ResultCaptureGate? = null
 ) {
 
     private var job: Job? = null
@@ -99,6 +102,14 @@ class MacroPlayer(
                             return@launch
                         }
 
+                        if (shouldGateTap(macro, gesture)) {
+                            val engaged = resultGate?.awaitClearance() ?: false
+                            AppEventLog.log(
+                                "gate tap at ${gesture.timestampMs}ms engaged=$engaged " +
+                                    "(${resultGate?.snapshot() ?: "-"})"
+                            )
+                        }
+
                         if (!dispatch(service, gesture, macro.speedMultiplier) && !stopped) {
                             BotState.setStatus("Gesture cancelled by system")
                         }
@@ -128,6 +139,11 @@ class MacroPlayer(
         }
         job = newJob
     }
+
+    private fun shouldGateTap(macro: Macro, gesture: RecordedGesture): Boolean =
+        resultGate != null &&
+            gesture.gestureType == "tap" &&
+            gesture.timestampMs >= macro.durationMs - LATE_TAP_WINDOW_MS
 
     private fun pauseReason(): String {
         val front = ClahAccessibilityService.foregroundLabel()
@@ -239,6 +255,7 @@ class MacroPlayer(
         private const val INTER_LOOP_DELAY_MS = 800L
         private const val PAUSE_POLL_MS = 40L
         private const val DISPATCH_TIMEOUT_SLACK_MS = 1_500L
+        private const val LATE_TAP_WINDOW_MS = 15_000L
 
         @Volatile
         private var active: MacroPlayer? = null

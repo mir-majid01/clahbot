@@ -44,6 +44,7 @@ import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.clahbot.R
 import android.content.res.ColorStateList
+import com.clahbot.data.AppEventLog
 import com.clahbot.data.AttackRepository
 import com.clahbot.data.BotState
 import com.clahbot.data.models.AttackRecord
@@ -70,6 +71,7 @@ import com.clahbot.input.ScreenGeometry
 import com.clahbot.input.ScreenRect
 import com.clahbot.results.AppResultsReader
 import com.clahbot.results.CaptureSession
+import com.clahbot.results.ResultCaptureGate
 import com.clahbot.results.ResultsCaptureCoordinator
 import com.clahbot.ui.MainActivity
 import com.clahbot.ui.SettingsActivity
@@ -120,6 +122,8 @@ class FloatingMenuService : Service() {
     private var controllerBoundsSnapshot: ScreenRect? = null
 
     private var player: MacroPlayer? = null
+    private val resultGate = ResultCaptureGate()
+    private var manualWatch = false
 
     private var macros: List<Macro> = emptyList()
     private var selectedId: Long = -1L
@@ -171,6 +175,10 @@ class FloatingMenuService : Service() {
         repository = MacroRepository.get(this)
         settingsStore = SettingsStore.get(this)
         attackRepository = AttackRepository.get(this)
+        val versionName = runCatching {
+            packageManager.getPackageInfo(packageName, 0).versionName
+        }.getOrNull() ?: "?"
+        AppEventLog.init(this, versionName)
         resultsReader = AppResultsReader(this)
         resultsCapture = ResultsCaptureCoordinator(
             context = this,
@@ -178,14 +186,27 @@ class FloatingMenuService : Service() {
             attackRepository = attackRepository,
             settingsStore = settingsStore,
             reader = resultsReader,
+            gate = resultGate,
             hideOverlay = { setCaptureOverlayHidden(true) },
             showOverlay = { setCaptureOverlayHidden(false) },
             onStatus = { message -> BotState.setStatus(message) },
             onRecordSaved = {
                 scope.launch {
                     attackRepository.refresh()
+                    if (manualWatch) {
+                        manualWatch = false
+                        captureSession = null
+                    }
                     renderStats()
+                    refreshUi()
                 }
+            },
+            onWatchEnded = {
+                if (manualWatch) {
+                    manualWatch = false
+                    captureSession = null
+                }
+                refreshUi()
             }
         )
         updateScreenSize()
@@ -418,6 +439,10 @@ class FloatingMenuService : Service() {
         view.findViewById<Button>(R.id.btnPlay).setOnClickListener { playSelected() }
         view.findViewById<Button>(R.id.btnPageController).setOnClickListener { setPage(PAGE_CONTROLLER) }
         view.findViewById<Button>(R.id.btnPageStats).setOnClickListener { setPage(PAGE_STATS) }
+        view.findViewById<Button>(R.id.btnWatchResults).setOnClickListener {
+            haptic()
+            toggleManualWatch()
+        }
         view.findViewById<ImageButton>(R.id.btnRename).setOnClickListener { renameSelected() }
         view.findViewById<ImageButton>(R.id.btnDelete).setOnClickListener { deleteSelected() }
         view.findViewById<ImageButton>(R.id.btnSpeedDown).setOnClickListener { changeSpeed(-1) }
@@ -1364,6 +1389,10 @@ class FloatingMenuService : Service() {
         abortCaptureSession()
         BotState.setInterrupted(false)
         player?.stop()
+        AppEventLog.log(
+            "playback start macroId=${macro.id} gestures=${macro.gestures.size} " +
+                "durationMs=${macro.durationMs} repeat=$repeatMode speed=$speed"
+        )
         // Place the icon before the first injected gesture can run.
         placeControllerForPlayback(macro)
         scope.launch { resultsReader.warmUp() }
@@ -1378,7 +1407,7 @@ class FloatingMenuService : Service() {
         )
         captureSession = capture
         resultsCapture.begin(capture)
-        val newPlayer = MacroPlayer(screenWidth, screenHeight)
+        val newPlayer = MacroPlayer(screenWidth, screenHeight, resultGate)
         player = newPlayer
         newPlayer.play(adjusted, scope) {
             endAttackSession(interrupted = false)
@@ -1458,6 +1487,7 @@ class FloatingMenuService : Service() {
 
     private fun stopPlayback() {
         val interrupted = BotState.interrupted.value
+        AppEventLog.log("playback stop interrupted=$interrupted")
         player?.stop()
         player = null
         endAttackSession(interrupted)
@@ -1474,16 +1504,100 @@ class FloatingMenuService : Service() {
     private fun endAttackSession(interrupted: Boolean) {
         val capture = captureSession ?: return
         captureSession = null
+        manualWatch = false
         // A finished playback is not evidence of an attack. Only a detected
         // results screen may create a record.
         Log.i(TAG, "Playback ended (interrupted=$interrupted); watching for results")
+        AppEventLog.log("playback end interrupted=$interrupted; watching for results")
         BotState.setInterrupted(false)
         resultsCapture.finish(capture, System.currentTimeMillis(), interrupted)
     }
 
     private fun abortCaptureSession() {
+        val hadSession = captureSession != null || manualWatch
         captureSession = null
+        manualWatch = false
         if (::resultsCapture.isInitialized) resultsCapture.cancel()
+        if (hadSession) AppEventLog.log("capture session aborted")
+    }
+
+    // ---------------------------------------------------------- manual watch
+
+    private fun toggleManualWatch() {
+        if (manualWatch) {
+            stopManualWatch()
+        } else {
+            startManualWatch()
+        }
+    }
+
+    private fun startManualWatch() {
+        if (recording || BotState.state.value == ControllerState.REVIEW) {
+            toast("Finish the recording first")
+            return
+        }
+        if (player?.isRunning() == true) {
+            toast("Stop playback first")
+            return
+        }
+        if (ClahAccessibilityService.instance == null) {
+            toast(accessibilityHint())
+            return
+        }
+        updateScreenSize()
+        if (screenWidth <= 0 || screenHeight <= 0) {
+            toast("Display size unavailable")
+            return
+        }
+        abortCaptureSession()
+        BotState.setInterrupted(false)
+        scope.launch { resultsReader.warmUp() }
+        val startedAt = System.currentTimeMillis()
+        val capture = CaptureSession(
+            id = startedAt,
+            startedAt = startedAt,
+            macroId = 0L,
+            macroName = "Manual watch",
+            speed = 1f,
+            repeat = "once"
+        )
+        captureSession = capture
+        manualWatch = true
+        resultsCapture.begin(capture)
+        AppEventLog.log("manual watch start id=$startedAt")
+        BotState.setStatus("Watching for results — play your attack")
+        collapseForWatch()
+        refreshUi()
+    }
+
+    private fun stopManualWatch() {
+        if (!manualWatch) return
+        manualWatch = false
+        captureSession = null
+        resultsCapture.cancel()
+        AppEventLog.log("manual watch stop")
+        BotState.setStatus("Manual watch stopped")
+        refreshUi()
+    }
+
+    private fun collapseForWatch() {
+        val view = controllerView ?: return
+        val params = controllerParams ?: return
+        collapsed = true
+        view.findViewById<View>(R.id.panel).visibility = View.GONE
+        view.findViewById<View>(R.id.bubble).visibility = View.VISIBLE
+        if (screenWidth > 0 && screenHeight > 0) {
+            val landscape = screenWidth > screenHeight
+            params.x = dp(BUBBLE_MARGIN_DP)
+            params.y = if (landscape) dp(BUBBLE_TOP_LANDSCAPE_DP) else dp(BUBBLE_TOP_DP)
+            try {
+                windowManager.updateViewLayout(view, params)
+            } catch (_: Exception) {
+                // Window detached.
+            }
+        }
+        view.post { refreshControllerBoundsSnapshot() }
+        refreshUi()
     }
 
     private fun accessibilityHint(): String =
@@ -1509,7 +1623,8 @@ class FloatingMenuService : Service() {
         view.findViewById<TextView>(R.id.tvStatsTime).text =
             "Measured " + formatDuration(summary.totalDurationMs) +
                 " · avg " + formatDuration(summary.averageDurationMs) +
-                "\nRec: " + capturedGestures + " captured · " + rejectedGestures + " rejected"
+                "\nGesture recorder: " + capturedGestures + " captured · " +
+                rejectedGestures + " rejected"
         view.findViewById<TextView>(R.id.tvStatsRecent).text = if (records.isEmpty()) {
             "No attacks yet. Play a macro to start history."
         } else {
@@ -1760,6 +1875,10 @@ class FloatingMenuService : Service() {
         view.visibility = View.VISIBLE
         val state = BotState.state.value
         val count = BotState.recordedGestureCount.value
+        if (manualWatch && !resultsCapture.isActive()) {
+            manualWatch = false
+            captureSession = null
+        }
 
         val showRecording = state == ControllerState.RECORDING || state == ControllerState.RECORDING_PAUSED
         val showReview = state == ControllerState.REVIEW
@@ -1786,6 +1905,12 @@ class FloatingMenuService : Service() {
         view.findViewById<Button>(R.id.btnRecord).isEnabled = !startingPassive
         view.findViewById<ImageButton>(R.id.btnRename).isEnabled = selectedId > 0
         view.findViewById<ImageButton>(R.id.btnDelete).isEnabled = selectedId > 0
+        view.findViewById<Button>(R.id.btnWatchResults).apply {
+            val captureBusy = resultsCapture.isActive() && !manualWatch
+            text = if (manualWatch) "Stop watching" else "Watch results"
+            isEnabled = manualWatch ||
+                (!showRecording && !showReview && !showPlaying && !captureBusy)
+        }
 
         val recordMode = activeRecordingMode ?: settingsStore.settings.value.recordingMode
         val passiveMode = recordMode == RecordingMode.PASSIVE
@@ -1826,7 +1951,7 @@ class FloatingMenuService : Service() {
             ControllerState.RECORDING_PAUSED -> "PAUSED"
             ControllerState.PLAYING -> "PLAY"
             ControllerState.PLAYBACK_PAUSED -> "II"
-            else -> ""
+            else -> if (manualWatch) "WATCH" else ""
         }
 
         if (collapsed) {
@@ -1848,6 +1973,11 @@ class FloatingMenuService : Service() {
         val view = controllerView ?: return
         view.findViewById<TextView>(R.id.tvStatus).text = status
         view.findViewById<TextView>(R.id.tvPlayingStatus).text = status
+        if (manualWatch && !resultsCapture.isActive()) {
+            manualWatch = false
+            captureSession = null
+        }
+        refreshUi()
     }
 
     private fun updateRecordingNotification() {

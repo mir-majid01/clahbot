@@ -2,7 +2,6 @@ package com.clahbot.results
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.util.Log
 import com.clahbot.ocr.BitmapIconColorSampler
 import com.clahbot.ocr.DigitTemplateEngine
 import com.clahbot.ocr.DigitTemplateStore
@@ -40,6 +39,8 @@ class AppResultsReader(private val context: Context) {
         val read: ResultsRead,
         val timingsMs: Map<String, Long>
     )
+
+    data class ScreenCheck(val isResults: Boolean, val reason: String?)
 
     private val mlKit = MlKitOcrEngine()
     private val initMutex = Mutex()
@@ -82,15 +83,19 @@ class AppResultsReader(private val context: Context) {
      * Cheap anchor check used only for the pre-playback baseline. It never
      * reads loot and never creates a record.
      */
-    suspend fun isResultsScreen(bitmap: Bitmap): Boolean = readMutex.withLock {
+    suspend fun checkResultsScreen(bitmap: Bitmap): ScreenCheck = readMutex.withLock {
         val page = mlKit.recognize(bitmap)
         val parser = ResultsScreenParser(BitmapIconColorSampler(bitmap))
         val inspection = parser.inspect(page)
-        if (inspection == null) {
-            Log.i("AutoClashResults", "Detection miss: ${parser.ignoredReason(page)}")
+        if (inspection != null) {
+            ScreenCheck(true, null)
+        } else {
+            ScreenCheck(false, parser.ignoredReason(page))
         }
-        inspection != null
     }
+
+    suspend fun isResultsScreen(bitmap: Bitmap): Boolean =
+        checkResultsScreen(bitmap).isResults
 
     suspend fun read(bitmap: Bitmap): ReadResult? {
         warmUp()
