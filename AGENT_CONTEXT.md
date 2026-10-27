@@ -48,9 +48,14 @@ Ranked is untouched. Product Features 2-5 have not been started.
   before the test.
 - 2.4.3 (versionCode 12) adds the per-macro **wait between repeats** (0–600 s,
   legacy default 0.8 s), the controller/bubble countdown, foreground pause and
-  stop-cancel behavior. The code compiles and 115 app unit tests pass; CI run
-  `40464810499` for commit `585ea20` is green. The build is **not installed**
-  and the delay has not been tested on the phone.
+  stop-cancel behavior. CI run `40464810499` for commit `585ea20` is green and
+  the build is installed: APK SHA-256 `98ebcf0c…`, identical to the CI
+  artifact; `macros.json`/`attacks.json` hashes were unchanged by the install.
+- First on-device proof of the new field: the user edited macro `Neww` through
+  the Macro settings dialog and saved `repeatDelayMs = 3000`,
+  `repeatMode = infinite`, `schemaVersion = 3` in `macros.json`. The saved
+  field, dialog and persistence work. The on-device countdown, Stop and
+  foreground-pause behavior are still being tested by the user.
 - The 30+ real-capture set has not been collected or scored.
 - CI query note: GitHub’s `head_sha` filter needs the full 40-character SHA;
   a 7-character prefix returns an empty list even when the run exists. There
@@ -150,8 +155,9 @@ the phone after the test.
   legacy null → 800 ms, explicit 0, 5 000 ms, 900 000 → 600 000, negative → 0.
   The gate tests now use a monotonic test clock so they do not flake under
   load. **A/B**
-- CI is green (`40464810499`, commit `585ea20`). Not yet verified: install, the
-  on-device countdown, stop, and the foreground pause. **Pending**
+- Installed on the phone (SHA `98ebcf0c…`) and the save path is proven by the
+  user's own edit above. Not yet verified: the on-device countdown, Stop and
+  the foreground pause; the user is testing those. **Pending**
 
 ## Data-safety rule (user instruction, 2026-10-26)
 
@@ -436,7 +442,7 @@ Measured on the phone with the four result screens and no crop saving
 | 3. App reader integration + phantom fix | 2.4.2 `1c16d90` installed with `attacks.json`/macros data handled per the safety rule. Three real result screens were captured (two macro playbacks, one hand-played Manual watch), read, saved and recorded; values match the PNGs and Stats sums; the race gate held the Return Home tap until after the save. The persistent poll log and gate unit tests are green. | On-device artifact (A), records/sidecars (A), gate timing (C), unit/CI (A) | Stale-result rejection in the app; 30+ captures |
 | 4. “Save results screenshots” setting | Setting enabled on the phone; three PNG + JSON + TXT sidecars produced. One sidecar shows a real consensus where ML Kit full was wrong and three other readers agreed; another shows the same on the manual capture. Missing bonuses were written as null/`loot not captured`, never 0. | On-device PNG/sidecar verification (A) | 30+ capture collection and scoring |
 | 5. AGENT_CONTEXT.md | This file | Updated with the real-capture evidence, build identity, and the 2.4.3 repeat-delay work | Final evidence for 2.4.3 on-device |
-| 6. Repeat delay (2.4.3) | Nullable `repeatDelayMs` per macro with a legacy 800 ms fallback; edit dialog in both UIs; player countdown, foreground pause, stop-cancel; five unit cases and 115 total green | Unit/CI-level (A/B) | CI run; on-device countdown, stop and foreground pause |
+| 6. Repeat delay (2.4.3) | Nullable `repeatDelayMs` per macro with a legacy 800 ms fallback; edit dialog in both UIs; player countdown, foreground pause, stop-cancel; five unit cases and 115 total green; CI `40464810499` green; installed SHA `98ebcf0c…`; the user saved `repeatDelayMs=3000` and `repeatMode=infinite` through the dialog (schema 3) | Install + unit/CI + on-device save (A/B) | On-device countdown, stop and foreground pause |
 
 ## Verified numbers
 
@@ -574,8 +580,9 @@ cached; CI uses the repository wrapper (8.2).
 - Repeat delay: the countdown is hidden below 1 s (the wait still applies);
   it is per macro and not scaled by playback speed. Legacy macros have a null
   field and keep the 800 ms behavior until edited; editing and saving writes an
-  explicit value. The on-device test that changes the delay will modify
-  `macros.json`, so it needs the user’s approval first.
+  explicit value. The user’s macro `Neww` is currently `repeatDelayMs=3000`
+  and `repeatMode=infinite` from their own test edit; do not revert it to
+  0.8 s / `once` without their explicit approval.
 - The results screen may be visible for only a few seconds before the macro
   taps Return Home (about 4 s in the first real run). Detection uses a 1 s
   poll; if the clean capture lands after the tap, the retained detection frame
