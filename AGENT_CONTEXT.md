@@ -36,13 +36,13 @@ Ranked is untouched. Product Features 2-5 have not been started.
   `1c16d90…` (commit `d37cf3e`, CI `40454019394`) was installed on approval at
   10:52 local. Its installed APK hash matches the CI artifact; `macros.json`
   and `attacks.json` hashes were unchanged by the install.
-- **Two real result screens were captured by 2.4.2 and read correctly.**
-  Both were `New` macro playbacks (the manual watch started at 10:57:29 was
-  superseded by a playback at 10:58:53, so there is no `Manual watch` record).
+- **Three real result screens were captured by 2.4.2 and read correctly.**
+  Two were `New` macro playbacks and one was a hand-played `Manual watch`.
   Record 1: gold 2,749,011 / elixir 2,483,872 / dark 38,782. Record 2:
-  1,412,574 / 1,533,041 / 3,233. Both are confirmed, `lootSource=ocr`,
-  verified, with PNG + JSON + TXT sidecars. Stats sums match exactly:
-  4,161,585 / 4,016,913 / 42,015.
+  1,412,574 / 1,533,041 / 3,233. Manual record: 802,886 / 1,069,310 / 17,348.
+  All three are confirmed, `lootSource=ocr`, verified, with PNG + JSON + TXT
+  sidecars. Stats after the manual capture: **Attacks: 7**, totals 4,964,471 /
+  5,086,223 / 59,363, exactly the sum of the three.
 - The 14 old unconfirmed records are untouched; `attacks.json` is now 20
   records (6 confirmed / 14 unconfirmed). `macros.json` is byte-identical to
   before the test.
@@ -99,10 +99,28 @@ the phone after the test.
   playback-complete status overwrites it. The record and loot are in the Stats
   tab and attack history; there is no separate attack text on the game screen.
   This is a minor status-message UX issue, not a data loss. **A/C**
-- Manual-watch caveat: the watch started at 10:57:29 with baseline false, but
-  a macro playback began at 10:58:53 and replaced it. No `Manual watch` record
-  exists, so the hand-played Test 1 path is **still unverified**. Both successful
-  captures are Test 2 (macro playback), done twice. **A**
+- **Manual watch (Test 1) is now verified.** Watch start 11:42:14.679, baseline
+  false 11:42:15.490, result detected 11:42:57.778, read 11:42:59.710, saved
+  and record 11:43:01.554, manual watch ended 11:43:01.715. The bubble was
+  hidden for the clean capture and restored; the user saw exactly that. The
+  saved record is `macroName=Manual watch`, gold 802,886 / elixir 1,069,310 /
+  dark 17,348, balances 18,356,125 / 17,565,448 / 321,628, confirmed and
+  verified. **A/C**
+- Manual capture PNG/TXT: values match; the 100% bonus panel was covered by a
+  large game reward emblem, so bonus fields stayed null/`loot not captured`
+  and `needsReview=true`. Gold consensus: `mlkit_full` read 802386 (wrong),
+  `mlkit_crop` and `rapidocr_crop` read 802886, Tesseract/template were
+  skipped; consensus chose 802886. **A**
+- Stats after the manual capture: **Attacks: 7**, gold 4,964,471, elixir
+  5,086,223, dark 59,363 — exactly the previous totals plus the new record.
+  The three OCR records have distinct loot triples, so this is a new attack,
+  not a duplicate. **A**
+- The manual record's duration is the watch duration (45 s), not necessarily
+  the full hand-attack duration; the record starts when “Watch results” is
+  pressed. Loot and outcome are unaffected. **B**
+- `macros.json` changed because the user renamed macro `New` to `Neww` during
+  testing (18 gestures, once, 1.0x); the app did not modify it for this test.
+  Leave it as is per the data-safety rule. **A**
 
 ## Data-safety rule (user instruction, 2026-10-26)
 
@@ -384,8 +402,8 @@ Measured on the phone with the four result screens and no crop saving
 |---|---|---|---|
 | 1. Template provenance + exclusion | Exact source images recorded above. Template classification is excluded from votes/scores on 08-11 in code. The earlier 0/0 run included templates, so it is not counted. The current-rule four-screen timing run scored 0 wrong / 0 missing with template votes excluded. | Code + source evidence + current-rule device run on 4 training images | A non-training accuracy score (real captures) |
 | 2. Speed before/after | Four result screens, no crop saving: all readers 14.66 s compute (3.7 s/screen) versus cheap-first 3.12 s compute (0.61-1.01 s/screen) and 3.62 s wall. Per-reader tables are in "Verified numbers". RapidOCR and templates were skipped entirely by cheap-first. | Automated-device measurement with the lab instrumentation | Timing with the app's own warm-up and a real results screen |
-| 3. App reader integration + phantom fix | 2.4.2 `1c16d90` installed with data hashes unchanged. Two real macro playbacks were captured, read, saved and recorded; values match the PNGs and the Stats sums; the race gate held the Return Home tap until after the save. The persistent poll log and gate unit tests are green. Manual-watch mode is implemented but its hand-played path is unverified (a playback replaced the watch). | On-device artifact (A), records/sidecars (A), gate timing (C), unit/CI (A) | A hand-played `Manual watch` record; stale-result rejection in the app; 30+ captures |
-| 4. “Save results screenshots” setting | Setting enabled on the phone; two PNG + JSON + TXT sidecars produced. The first sidecar shows the full per-reader evidence and a real consensus (Tesseract wrong, three readers right). Missing bonuses were written as null/`loot not captured`, never 0. | On-device PNG/sidecar verification (A) | 30+ capture collection and scoring |
+| 3. App reader integration + phantom fix | 2.4.2 `1c16d90` installed with `attacks.json`/macros data handled per the safety rule. Three real result screens were captured (two macro playbacks, one hand-played Manual watch), read, saved and recorded; values match the PNGs and Stats sums; the race gate held the Return Home tap until after the save. The persistent poll log and gate unit tests are green. | On-device artifact (A), records/sidecars (A), gate timing (C), unit/CI (A) | Stale-result rejection in the app; 30+ captures |
+| 4. “Save results screenshots” setting | Setting enabled on the phone; three PNG + JSON + TXT sidecars produced. One sidecar shows a real consensus where ML Kit full was wrong and three other readers agreed; another shows the same on the manual capture. Missing bonuses were written as null/`loot not captured`, never 0. | On-device PNG/sidecar verification (A) | 30+ capture collection and scoring |
 | 5. AGENT_CONTEXT.md | This file | Updated with the real-capture evidence, build identity, and the remaining manual-watch gap | Final evidence for 2.4.2 manual watch and 2.4.3 |
 
 ## Verified numbers
@@ -466,19 +484,17 @@ cached; CI uses the repository wrapper (8.2).
 
 ## Next actions
 
-1. Test 2 (macro playback) is verified twice. Test 1 (hand-played manual
-   watch) is still open: start Stats → “Watch results”, do one hand attack,
-   leave the result screen open, then verify a `Manual watch` record.
+1. B and C are complete: macro and hand-played captures both work, with clean
+   PNG + JSON + TXT sidecars and exact Stats sums. Next is 2.4.3 (per-macro
+   delay between repeats, 0-600 s, countdown, foreground pause, stop cancels)
+   as a separate version.
 2. Do not modify `macros.json` or `attacks.json`; leave the 14 old unconfirmed
    records untouched. A “clear old unconfirmed sessions with automatic backup”
    option is a possible later UI change, only after the user approves it.
-3. Then implement 2.4.3 (per-macro delay between repeats, 0-600 s, countdown,
-   foreground pause, stop cancels) as a separate version, after the user
-   confirms C is complete.
-4. Turn on “Save results screenshots” and collect the 30+ real result screens.
+3. Turn on “Save results screenshots” and collect the 30+ real result screens.
    Score them as a fresh (non-training) set, keeping template votes for those
    real captures.
-5. Do not start product Features 2-5 without the user’s explicit approval.
+4. Do not start product Features 2-5 without the user’s explicit approval.
 
 ## Known limitations / risks
 
@@ -506,17 +522,21 @@ cached; CI uses the repository wrapper (8.2).
 - Manual watch creates one record named “Manual watch” when a result screen is
   detected. It runs for up to 15 minutes; the Results button stays available
   on the Stats tab. A human tap is not held, so the result screen must be left
-  open until the save completes.
+  open until the save completes. The record’s duration is the watch duration,
+  not the full hand-attack duration.
 - The event log is capped at 256 KB plus one rotated copy; it omits loot
   values, macro names and screenshots.
-- Both real result screens showed an empty grey bonus panel. The app correctly
-  stored the bonus fields as null/`loot not captured` and set `needsReview`;
-  the three main loot values were verified.
+- The macro captures showed an empty grey bonus panel; the manual capture had a
+  large game reward emblem over the bonus panel. The app correctly stored the
+  bonus fields as null/`loot not captured` and set `needsReview`; the three
+  main loot values were verified in all three captures.
 - “Attack saved: victory” is a transient status and is overwritten by
   “Playback complete”; the record and loot remain in Stats and attack history.
 - Some watcher screenshots failed briefly during the battle at 74-75 s (logged
   as `screenshot failed`); the watcher recovered and captured the result
   screen. This needs monitoring on longer battles.
+- The user renamed macro `New` to `Neww` during testing, so `macros.json`
+  changed (hash `57367428…`). This was the user’s edit; do not revert it.
 - The results screen may be visible for only a few seconds before the macro
   taps Return Home (about 4 s in the first real run). Detection uses a 1 s
   poll; if the clean capture lands after the tap, the retained detection frame
