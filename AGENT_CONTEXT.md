@@ -27,7 +27,11 @@ Ranked is untouched. Product Features 2-5 have not been started.
 - 2.4.2 (versionCode 11) changes detection to the full-resolution frame, drops
   the 1 s retry delay between polls, logs every poll's screenshot/detection
   time and the parser's anchor-miss reason, and shortens the clean-capture
-  delay to 600 ms. It is not built, installed or verified yet.
+  delay to 600 ms. Commit `77ea41e` passed CI (`40383387019`).
+- 2.4.2 also adds a race gate, a persistent rolling event log, a manual-watch
+  mode for hand-played attacks, and renames the Stats “Rec” label to
+  “Gesture recorder”. These additions are built and unit-tested locally; their
+  CI run is pending and the build is **not installed** on the phone.
 - The earlier lab run on the 11-image pack scored 0 wrong / 0 missing, but the
   digit templates voted in that run. That is **not** a valid score under the
   current rule, which excludes templates on their training images.
@@ -273,6 +277,23 @@ Measured on the phone with the four result screens and no crop saving
   is hidden for a clean full-resolution capture, then restored. If the clean
   frame no longer shows results (for example because the macro tapped Return
   Home during the delay), the detection frame is read instead.
+- Race gate (2.4.2): every tap in the last 15 s of a macro waits for a fresh
+  detection sample (up to 2 s, including an in-flight poll). If that sample
+  shows a result screen, the tap is held until the watcher has captured and
+  read it, for at most 8 s (about 10 s including the fresh-sample wait), then
+  the tap continues. This protects the Return Home tap that would otherwise
+  dismiss a screen that was visible for about a second. The gate adds little or
+  no delay when the watcher's latest sample is fresh (<500 ms old).
+- Manual watch (2.4.2): Stats → “Watch results” starts the same watcher without
+  a macro, for a hand-played attack. It creates a record named “Manual watch”
+  only when a result screen is detected; it never creates a record on start or
+  stop. It runs for up to 15 minutes and can be stopped from the same button.
+- Persistent event log (2.4.2): `files/autoclash_events.log` in the app's
+  private folder, capped at 256 KB with one rotated copy. It contains playback
+  start/end, manual-watch start/stop, every poll's shot/detect time and
+  anchor-miss reason, read field presence (not values), save paths, record id
+  and errors. It contains no screenshots, loot values or macro names. Pull it
+  with `adb exec-out run-as com.clahbot cat files/autoclash_events.log`.
 - A detected result screen creates exactly one confirmed attack record. Playback
   completion alone never writes a record. The existing `AttackRecordPolicy`
   gate is enforced in the coordinator.
@@ -298,9 +319,9 @@ Measured on the phone with the four result screens and no crop saving
 |---|---|---|---|
 | 1. Template provenance + exclusion | Exact source images recorded above. Template classification is excluded from votes/scores on 08-11 in code. The earlier 0/0 run included templates, so it is not counted. The current-rule four-screen timing run scored 0 wrong / 0 missing with template votes excluded. | Code + source evidence + current-rule device run on 4 training images | A non-training accuracy score (real captures) |
 | 2. Speed before/after | Four result screens, no crop saving: all readers 14.66 s compute (3.7 s/screen) versus cheap-first 3.12 s compute (0.61-1.01 s/screen) and 3.62 s wall. Per-reader tables are in "Verified numbers". RapidOCR and templates were skipped entirely by cheap-first. | Automated-device measurement with the lab instrumentation | Timing with the app's own warm-up and a real results screen |
-| 3. App reader integration + phantom fix | `:ocr` shared library; 2.4.0 (9) and 2.4.1 (10) installed over existing data with file hashes unchanged; 108 app unit tests and CI green. Two real attacks created **no** record and no screenshot, confirming playback completion alone never records, but both missed the capture. The first proved the watcher must run during playback; the second still missed, and the half-scale anchor is the leading suspect. 2.4.2 uses full-resolution detection plus poll logging and is not installed yet. | Install + unit/CI + two real attacks (negative capture) | Automatic capture and record on a real attack with 2.4.2; poll logs; stale-result rejection in the app |
+| 3. App reader integration + phantom fix | `:ocr` shared library; 2.4.0 (9) and 2.4.1 (10) installed over existing data with file hashes unchanged; unit tests and CI green. Two real attacks created **no** record and no screenshot, confirming playback completion alone never records, but both missed the capture. 2.4.2 adds full-resolution detection, no poll delay, a 15 s late-tap race gate (about 10 s total hold), a persistent poll log, and manual-watch mode. Gate unit tests pass; initial 2.4.2 commit `77ea41e` is CI-green. **Not installed.** | Install + unit/CI + two real attacks (negative capture) | Automatic capture and record on a real attack with 2.4.2; race-guard behavior; manual watch; poll logs; stale-result rejection |
 | 4. “Save results screenshots” setting | Setting in `SettingsStore`; Settings UI switch rendered and checked=true on the phone; PNG + JSON + TXT sidecar store; null-not-zero mapping; compile/unit tests. | Setting UI verified on-device; writer unit tested | Actual PNG/sidecar contents from a real attack; 30+ capture collection |
-| 5. AGENT_CONTEXT.md | This file | Updated with measured speed, both real-attack findings and the pending 2.4.2 verification | Final on-device evidence for 2.4.2 |
+| 5. AGENT_CONTEXT.md | This file | Updated with measured speed, both real-attack findings, the audit, the data-safety rule and the 2.4.2 reliability work | Final on-device evidence for 2.4.2 and 2.4.3 |
 
 ## Verified numbers
 
@@ -366,7 +387,13 @@ cached; CI uses the repository wrapper (8.2).
   capture) was green: unit tests, app/lab debug APKs, lab test APK and uploads.
 - 2026-10-26: local `:app:compileDebugKotlin :ocrlab:compileDebugKotlin` and
   `:app:testDebugUnitTest :ocr:testDebugUnitTest` passed with Gradle 8.9 and
-  JDK 17 after the watcher-start fix. CI for the 2.4.1 commit is pending.
+  JDK 17 after the watcher-start fix.
+- CI run `40383387019` for commit `77ea41e` (2.4.2 full-resolution detection
+  and poll logging) was green. The race-gate/log/manual-watch additions are
+  built and unit-tested locally (including 3 new `ResultCaptureGateTest`
+  cases); their CI run is pending. The earlier `head_sha` query that returned
+  zero runs was a GitHub indexing delay, not a workflow problem: the workflow
+  triggers on `push` to `main` with no path filter and is active.
 - Lab benchmark commands used on the phone:
   `adb shell am instrument -w -e strategy all -e subset results -e saveCrops false -e class com.clahbot.ocrlab.OcrLabAccuracyTest com.clahbot.ocrlab.test/androidx.test.runner.AndroidJUnitRunner`
   and the same with `strategy` omitted for cheap-first. Reports pulled to
@@ -374,19 +401,21 @@ cached; CI uses the repository wrapper (8.2).
 
 ## Next actions
 
-1. Build 2.4.2 (versionCode 11) in CI, then ask the user before installing it.
-   After approval, run one real attack and verify from the new per-poll logs:
-   results screen detected during playback, clean PNG plus JSON/TXT sidecar,
-   exactly one confirmed record, values match the screen, missing fields stay
-   null, and no record for a stale results screen or playback completion alone.
-2. Restore the original `macros.json` from `.ocr-work/macros.before.json` after
-   the verification, because selecting the macro and cycling repeat persists
-   playback settings into the file (existing app behavior). Confirm its
-   SHA-256 matches the pre-install value.
-3. Turn on “Save results screenshots” and collect the 30+ real result screens.
+1. Finish the 2.4.2 CI run, then ask the user before installing it.
+2. Test 1: one hand-played attack with Stats → “Watch results”. Leave the
+   result screen open until the app reports the capture. Report every poll,
+   the saved PNG/sidecar, the reader's field presence and the record.
+3. Test 2 (only if Test 1 works): play macro `New` once and report the same,
+   including whether the race gate held the Return Home tap.
+4. Do not modify `macros.json` or `attacks.json`; leave the 14 old unconfirmed
+   records untouched. A “clear old unconfirmed sessions with automatic backup”
+   option is a possible later UI change, only after the user approves it.
+5. Then implement 2.4.3 (per-macro delay between repeats, 0-600 s, countdown,
+   foreground pause, stop cancels) as a separate version.
+6. Turn on “Save results screenshots” and collect the 30+ real result screens.
    Score them as a fresh (non-training) set, keeping template votes for those
    real captures.
-4. Do not start product Features 2-5 without the user’s explicit approval.
+7. Do not start product Features 2-5 without the user’s explicit approval.
 
 ## Known limitations / risks
 
@@ -405,9 +434,17 @@ cached; CI uses the repository wrapper (8.2).
 - The results watcher polls continuously during playback and for up to 4
   minutes after it. In 2.4.2 detection OCR runs on the full-resolution frame,
   so the loop rate is bounded by the screenshot plus OCR (about 1 s on this
-  phone). This has not been battery- or heat-tested during a long attack. If
-  polling is too heavy, the debug setting can be used to collect captures
-  manually instead.
+  phone). This has not been battery- or heat-tested during a long attack.
+- The race gate applies to taps in the last 15 s of a macro and can add up to
+  2 s before such a tap when the latest detection sample is stale. If the
+  result screen is already visible, the tap is held for up to 8 s (about 10 s
+  including the fresh-sample wait) while the capture and read finish. A human
+  hand tap on a manual watch cannot be held.
+- Manual watch creates one record named “Manual watch” when a result screen is
+  detected. It runs for up to 15 minutes; the Results button stays available
+  on the Stats tab.
+- The event log is capped at 256 KB plus one rotated copy; it omits loot
+  values, macro names and screenshots.
 - The results screen may be visible for only a few seconds before the macro
   taps Return Home (about 4 s in the first real run). Detection uses a 1 s
   poll; if the clean capture lands after the tap, the retained detection frame
