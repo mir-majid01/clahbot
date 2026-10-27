@@ -30,8 +30,16 @@ Ranked is untouched. Product Features 2-5 have not been started.
   delay to 600 ms. Commit `77ea41e` passed CI (`40383387019`).
 - 2.4.2 also adds a race gate, a persistent rolling event log, a manual-watch
   mode for hand-played attacks, and renames the Stats “Rec” label to
-  “Gesture recorder”. These additions are built and unit-tested locally; their
-  CI run is pending and the build is **not installed** on the phone.
+  “Gesture recorder”. Commit `d37cf3e` passed CI (`40454019394`).
+- Build identification on 2026-10-27: the phone had the **earlier** 2.4.2
+  build `77ea41e` installed (`edbe26e…`, updated 00:45 local), not the
+  reliability build. The new reliability APK is `1c16d90…` and is **not
+  installed**. The earlier 2.4.2 test left no records, no screenshots and no
+  persistent log (that build predates the event log); the current live logcat
+  has no `AutoClashResults` lines.
+- CI query note: GitHub’s `head_sha` filter needs the full 40-character SHA;
+  a 7-character prefix returns an empty list even when the run exists. There
+  was no workflow trigger problem.
 - The earlier lab run on the 11-image pack scored 0 wrong / 0 missing, but the
   digit templates voted in that run. That is **not** a valid score under the
   current rule, which excludes templates on their training images.
