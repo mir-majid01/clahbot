@@ -9,17 +9,20 @@ import org.junit.Test
 
 class ResultCaptureGateTest {
 
+    private val clock: () -> Long = { System.nanoTime() / 1_000_000L }
+
     @Test
     fun aFreshNegativeSampleDoesNotHold() = runBlocking {
         val gate = ResultCaptureGate(
             freshEnoughMs = 500,
             freshSampleWaitMs = 200,
             holdTimeoutMs = 200,
-            stepMs = 5
+            stepMs = 5,
+            clock = clock
         )
         val poll = launch {
             delay(20)
-            gate.notePoll(System.currentTimeMillis(), false, "no anchor")
+            gate.notePoll(clock(), false, "no anchor")
         }
         val engaged = gate.awaitClearance()
         poll.join()
@@ -32,18 +35,19 @@ class ResultCaptureGateTest {
             freshEnoughMs = 500,
             freshSampleWaitMs = 200,
             holdTimeoutMs = 1_000,
-            stepMs = 5
+            stepMs = 5,
+            clock = clock
         )
-        val started = System.currentTimeMillis()
+        val started = clock()
         val capture = launch {
             delay(20)
             gate.requestHold()
-            gate.notePoll(System.currentTimeMillis(), true, null)
+            gate.notePoll(clock(), true, null)
             delay(120)
             gate.releaseHold()
         }
         val engaged = gate.awaitClearance()
-        val elapsed = System.currentTimeMillis() - started
+        val elapsed = clock() - started
         capture.join()
         assertTrue(engaged)
         assertTrue("waited for the hold, elapsed=$elapsed", elapsed >= 100)
@@ -55,16 +59,17 @@ class ResultCaptureGateTest {
             freshEnoughMs = 500,
             freshSampleWaitMs = 200,
             holdTimeoutMs = 150,
-            stepMs = 5
+            stepMs = 5,
+            clock = clock
         )
-        val started = System.currentTimeMillis()
+        val started = clock()
         val capture = launch {
             delay(20)
             gate.requestHold()
-            gate.notePoll(System.currentTimeMillis(), true, null)
+            gate.notePoll(clock(), true, null)
         }
         val engaged = gate.awaitClearance()
-        val elapsed = System.currentTimeMillis() - started
+        val elapsed = clock() - started
         capture.join()
         assertTrue(engaged)
         assertTrue("timed out after the hold, elapsed=$elapsed", elapsed >= 120)

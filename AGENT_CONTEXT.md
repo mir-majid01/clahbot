@@ -1,6 +1,6 @@
 # Agent Context — AutoClash Feature 1
 
-Last updated: 2026-10-26
+Last updated: 2026-10-27
 
 Scope: Feature 1 results-screen loot OCR and its integration into AutoClash.
 Ranked is untouched. Product Features 2-5 have not been started.
@@ -46,6 +46,10 @@ Ranked is untouched. Product Features 2-5 have not been started.
 - The 14 old unconfirmed records are untouched; `attacks.json` is now 20
   records (6 confirmed / 14 unconfirmed). `macros.json` is byte-identical to
   before the test.
+- 2.4.3 (versionCode 12) adds the per-macro **wait between repeats** (0–600 s,
+  legacy default 0.8 s), the controller/bubble countdown, foreground pause and
+  stop-cancel behavior. The code compiles and 115 app unit tests pass; CI has
+  not run and the build is **not installed**.
 - The 30+ real-capture set has not been collected or scored.
 - CI query note: GitHub’s `head_sha` filter needs the full 40-character SHA;
   a 7-character prefix returns an empty list even when the run exists. There
@@ -121,6 +125,32 @@ the phone after the test.
 - `macros.json` changed because the user renamed macro `New` to `Neww` during
   testing (18 gestures, once, 1.0x); the app did not modify it for this test.
   Leave it as is per the data-safety rule. **A**
+
+## 2.4.3 repeat delay (2026-10-27)
+
+- `Macro.repeatDelayMs: Long?` is stored in the macro JSON. `null` means the
+  macro predates the setting and keeps the old **800 ms** wait; an explicit
+  `0` means no extra wait. Values are clamped to 0–600 000 ms. The schema
+  version is now 3. **B**
+- Both edit entry points open a **Macro settings** dialog with the name and a
+  decimal “Wait between repeats (seconds)” field (0–600, default 0.8):
+  the dashboard pencil and the floating controller pencil. The dialog validates
+  the range and saves through `MacroRepository.save`, so it is persisted in the
+  macro file. There is no export/import feature yet; the field is part of the
+  JSON model and will be included when that exists. **B**
+- Playback waits after every iteration that has another repeat. Loop uses the
+  same wait. The remaining whole seconds are published to the controller
+  status (`Next loop/run in Ns`) and to the collapsed bubble (`Ns`). The
+  countdown is hidden for waits below 1 s, but the wait still applies. **B**
+- Stop clears the countdown immediately. Leaving Clash of Clans during the wait
+  pauses playback, shows the pause reason, updates the notification to paused,
+  and freezes the remaining wait; Resume continues it. **B**
+- Evidence: 115 app unit tests pass, including five new/reworked cases:
+  legacy null → 800 ms, explicit 0, 5 000 ms, 900 000 → 600 000, negative → 0.
+  The gate tests now use a monotonic test clock so they do not flake under
+  load. **A/B**
+- Not yet verified: CI for 2.4.3, install, the on-device countdown, stop, and
+  foreground pause. **Pending**
 
 ## Data-safety rule (user instruction, 2026-10-26)
 
@@ -404,7 +434,8 @@ Measured on the phone with the four result screens and no crop saving
 | 2. Speed before/after | Four result screens, no crop saving: all readers 14.66 s compute (3.7 s/screen) versus cheap-first 3.12 s compute (0.61-1.01 s/screen) and 3.62 s wall. Per-reader tables are in "Verified numbers". RapidOCR and templates were skipped entirely by cheap-first. | Automated-device measurement with the lab instrumentation | Timing with the app's own warm-up and a real results screen |
 | 3. App reader integration + phantom fix | 2.4.2 `1c16d90` installed with `attacks.json`/macros data handled per the safety rule. Three real result screens were captured (two macro playbacks, one hand-played Manual watch), read, saved and recorded; values match the PNGs and Stats sums; the race gate held the Return Home tap until after the save. The persistent poll log and gate unit tests are green. | On-device artifact (A), records/sidecars (A), gate timing (C), unit/CI (A) | Stale-result rejection in the app; 30+ captures |
 | 4. “Save results screenshots” setting | Setting enabled on the phone; three PNG + JSON + TXT sidecars produced. One sidecar shows a real consensus where ML Kit full was wrong and three other readers agreed; another shows the same on the manual capture. Missing bonuses were written as null/`loot not captured`, never 0. | On-device PNG/sidecar verification (A) | 30+ capture collection and scoring |
-| 5. AGENT_CONTEXT.md | This file | Updated with the real-capture evidence, build identity, and the remaining manual-watch gap | Final evidence for 2.4.2 manual watch and 2.4.3 |
+| 5. AGENT_CONTEXT.md | This file | Updated with the real-capture evidence, build identity, and the 2.4.3 repeat-delay work | Final evidence for 2.4.3 on-device |
+| 6. Repeat delay (2.4.3) | Nullable `repeatDelayMs` per macro with a legacy 800 ms fallback; edit dialog in both UIs; player countdown, foreground pause, stop-cancel; five unit cases and 115 total green | Unit/CI-level (A/B) | CI run; on-device countdown, stop and foreground pause |
 
 ## Verified numbers
 
@@ -484,17 +515,19 @@ cached; CI uses the repository wrapper (8.2).
 
 ## Next actions
 
-1. B and C are complete: macro and hand-played captures both work, with clean
-   PNG + JSON + TXT sidecars and exact Stats sums. Next is 2.4.3 (per-macro
-   delay between repeats, 0-600 s, countdown, foreground pause, stop cancels)
-   as a separate version.
-2. Do not modify `macros.json` or `attacks.json`; leave the 14 old unconfirmed
-   records untouched. A “clear old unconfirmed sessions with automatic backup”
-   option is a possible later UI change, only after the user approves it.
-3. Turn on “Save results screenshots” and collect the 30+ real result screens.
+1. 2.4.3 is implemented and unit-tested. Build it in CI, then ask the user
+   before installing it.
+2. On-device 2.4.3 test, only after approval: set a 5 s wait on a macro and
+   verify the countdown, Stop cancelling it, and the foreground pause. This
+   edits `macros.json`, so ask first or use a test copy.
+3. Do not modify `macros.json` or `attacks.json` for a test; leave the 14 old
+   unconfirmed records untouched. A “clear old unconfirmed sessions with
+   automatic backup” option is a possible later UI change, only after the user
+   approves it.
+4. Turn on “Save results screenshots” and collect the 30+ real result screens.
    Score them as a fresh (non-training) set, keeping template votes for those
    real captures.
-4. Do not start product Features 2-5 without the user’s explicit approval.
+5. Do not start product Features 2-5 without the user’s explicit approval.
 
 ## Known limitations / risks
 
@@ -537,6 +570,11 @@ cached; CI uses the repository wrapper (8.2).
   screen. This needs monitoring on longer battles.
 - The user renamed macro `New` to `Neww` during testing, so `macros.json`
   changed (hash `57367428…`). This was the user’s edit; do not revert it.
+- Repeat delay: the countdown is hidden below 1 s (the wait still applies);
+  it is per macro and not scaled by playback speed. Legacy macros have a null
+  field and keep the 800 ms behavior until edited; editing and saving writes an
+  explicit value. The on-device test that changes the delay will modify
+  `macros.json`, so it needs the user’s approval first.
 - The results screen may be visible for only a few seconds before the macro
   taps Return Home (about 4 s in the first real run). Detection uses a 1 s
   poll; if the clean capture lands after the tap, the retained detection frame

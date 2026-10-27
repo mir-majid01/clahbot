@@ -90,6 +90,7 @@ import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.roundToInt
+import kotlin.math.roundToLong
 
 /**
  * Owns the floating controller, the passive touch recorder and macro playback.
@@ -216,7 +217,14 @@ class FloatingMenuService : Service() {
         scope.launch { attackRepository.refresh() }
         scope.launch { attackRepository.records.collect { renderStats() } }
         scope.launch { repository.macros.collect { onMacrosChanged(it) } }
-        scope.launch { BotState.state.collect { refreshUi() } }
+        scope.launch {
+            BotState.state.collect { state ->
+                if (state == ControllerState.PLAYBACK_PAUSED) {
+                    updateNotification(getString(R.string.notification_paused))
+                }
+                refreshUi()
+            }
+        }
         scope.launch { BotState.status.collect { onStatusChanged(it) } }
         scope.launch {
             settingsStore.settings.collect { settings ->
@@ -443,7 +451,7 @@ class FloatingMenuService : Service() {
             haptic()
             toggleManualWatch()
         }
-        view.findViewById<ImageButton>(R.id.btnRename).setOnClickListener { renameSelected() }
+        view.findViewById<ImageButton>(R.id.btnRename).setOnClickListener { editSelected() }
         view.findViewById<ImageButton>(R.id.btnDelete).setOnClickListener { deleteSelected() }
         view.findViewById<ImageButton>(R.id.btnSpeedDown).setOnClickListener { changeSpeed(-1) }
         view.findViewById<ImageButton>(R.id.btnSpeedUp).setOnClickListener { changeSpeed(1) }
@@ -1479,8 +1487,14 @@ class FloatingMenuService : Service() {
         val active = player ?: return
         if (active.isPaused()) active.resume() else active.pause()
         updateNotification(
-            if (active.isPaused()) getString(R.string.notification_paused)
-            else getString(R.string.notification_idle)
+            if (active.isPaused()) {
+                getString(R.string.notification_paused)
+            } else {
+                getString(
+                    R.string.notification_playing,
+                    BotState.activeMacroName.value ?: "macro"
+                )
+            }
         )
         refreshUi()
     }
@@ -1810,22 +1824,103 @@ class FloatingMenuService : Service() {
         ) { name -> persist(name) }
     }
 
-    private fun renameSelected() {
+    private fun editSelected() {
         val macro = macros.firstOrNull { it.id == selectedId } ?: run {
             toast("Select a macro first")
             return
         }
-        showInputDialog("Rename macro", macro.name) { name ->
-            scope.launch {
-                if (repository.rename(macro.id, name) == null) {
-                    toast("Rename failed")
-                } else {
-                    BotState.setStatus("Renamed to \"$name\"")
-                    toast("Renamed")
+        showMacroSettingsDialog(macro)
+    }
+
+    private fun showMacroSettingsDialog(macro: Macro) {
+        val view = LayoutInflater.from(this).inflate(R.layout.dialog_macro_settings, null)
+        val dialog = Dialog(this).apply {
+            setContentView(view)
+            window?.setType(overlayType())
+            window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+            window?.setLayout(dp(300), WindowManager.LayoutParams.WRAP_CONTENT)
+            window?.setSoftInputMode(
+                WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE or
+                    WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE
+            )
+            setCanceledOnTouchOutside(false)
+        }
+        val nameInput = view.findViewById<EditText>(R.id.etSettingsName)
+        val nameCount = view.findViewById<TextView>(R.id.tvSettingsNameCount)
+        val delayInput = view.findViewById<EditText>(R.id.etSettingsDelay)
+        val error = view.findViewById<TextView>(R.id.tvSettingsError)
+        val save = view.findViewById<Button>(R.id.btnSettingsSave)
+
+        nameInput.setText(macro.name)
+        nameInput.setSelection(nameInput.text.length)
+        delayInput.setText(formatDelaySeconds(macro.effectiveRepeatDelayMs))
+
+        val showError = { message: String ->
+            error.text = message
+            error.visibility = View.VISIBLE
+        }
+        val refresh = {
+            nameCount.text = "${nameInput.text.length}/40"
+            save.isEnabled = nameInput.text.toString().isNotBlank()
+        }
+        nameInput.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
+            override fun afterTextChanged(s: Editable?) {
+                error.visibility = View.GONE
+                refresh()
+            }
+        })
+        delayInput.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
+            override fun afterTextChanged(s: Editable?) {
+                error.visibility = View.GONE
+            }
+        })
+
+        save.setOnClickListener {
+            val name = nameInput.text.toString().trim()
+            val seconds = delayInput.text.toString().trim().toDoubleOrNull()
+            when {
+                name.isEmpty() -> showError("Enter a macro name")
+                seconds == null || !seconds.isFinite() || seconds < 0.0 || seconds > 600.0 ->
+                    showError("Enter a wait between 0 and 600 seconds")
+                else -> {
+                    val delayMs = (seconds * 1000.0).roundToLong()
+                        .coerceIn(0L, Macro.MAX_REPEAT_DELAY_MS)
+                    dialog.dismiss()
+                    scope.launch {
+                        val saved = repository.save(
+                            macro.copy(name = name, repeatDelayMs = delayMs)
+                        )
+                        if (saved == null) {
+                            toast("Save failed")
+                        } else {
+                            BotState.setStatus("Settings saved for \"${saved.name}\"")
+                            toast("Saved")
+                        }
+                    }
                 }
             }
         }
+        view.findViewById<Button>(R.id.btnSettingsCancel).setOnClickListener {
+            dialog.dismiss()
+        }
+        refresh()
+        try {
+            dialog.show()
+            nameInput.requestFocus()
+        } catch (e: Exception) {
+            Log.e(TAG, "Macro settings dialog failed", e)
+            toast("Could not open dialog")
+        }
     }
+
+    private fun formatDelaySeconds(ms: Long): String =
+        String.format(Locale.US, "%.2f", ms / 1000.0)
+            .trimEnd('0')
+            .trimEnd('.')
 
     private fun deleteSelected() {
         val macro = macros.firstOrNull { it.id == selectedId } ?: run {
@@ -1945,13 +2040,16 @@ class FloatingMenuService : Service() {
         view.findViewById<TextView>(R.id.tvPlayingRepeat).text =
             MacroTimeline.repeatLabel(repeatMode)
 
+        val countdown = BotState.repeatCountdown.value
         val bubbleStatus = view.findViewById<TextView>(R.id.bubbleStatus)
-        bubbleStatus.text = when (state) {
-            ControllerState.RECORDING -> "REC"
-            ControllerState.RECORDING_PAUSED -> "PAUSED"
-            ControllerState.PLAYING -> "PLAY"
-            ControllerState.PLAYBACK_PAUSED -> "II"
-            else -> if (manualWatch) "WATCH" else ""
+        bubbleStatus.text = when {
+            manualWatch -> "WATCH"
+            state == ControllerState.RECORDING -> "REC"
+            state == ControllerState.RECORDING_PAUSED -> "PAUSED"
+            state == ControllerState.PLAYBACK_PAUSED -> "II"
+            state == ControllerState.PLAYING && countdown != null -> "${countdown}s"
+            state == ControllerState.PLAYING -> "PLAY"
+            else -> ""
         }
 
         if (collapsed) {

@@ -47,14 +47,25 @@ data class Macro(
     /** "once", "infinite", or a positive integer as a string. */
     val repeatMode: String = "once",
     val speedMultiplier: Float = 1.0f,
+    /**
+     * Wait between repetitions, in milliseconds. Null means the macro predates
+     * this setting and keeps the legacy 800 ms behavior; 0 means no extra wait.
+     */
+    val repeatDelayMs: Long? = null,
     val randomOffset: String = "off",
     val schemaVersion: Int = CURRENT_SCHEMA_VERSION
 ) {
     val loops: Boolean get() = repeatMode == REPEAT_INFINITE
 
+    val effectiveRepeatDelayMs: Long
+        get() = (repeatDelayMs ?: LEGACY_REPEAT_DELAY_MS)
+            .coerceIn(0L, MAX_REPEAT_DELAY_MS)
+
     companion object {
-        const val CURRENT_SCHEMA_VERSION = 2
+        const val CURRENT_SCHEMA_VERSION = 3
         const val REPEAT_ONCE = "once"
         const val REPEAT_INFINITE = "infinite"
+        const val LEGACY_REPEAT_DELAY_MS = 800L
+        const val MAX_REPEAT_DELAY_MS = 600_000L
     }
 }

@@ -229,6 +229,7 @@ internal fun sanitizeMacro(raw: Macro): Macro? {
             durationMs = MacroTimeline.totalDuration(gestures),
             repeatMode = repeatMode,
             speedMultiplier = speed,
+            repeatDelayMs = raw.repeatDelayMs?.coerceIn(0L, Macro.MAX_REPEAT_DELAY_MS),
             orientation = orientation,
             schemaVersion = Macro.CURRENT_SCHEMA_VERSION
         )
