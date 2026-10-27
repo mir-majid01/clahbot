@@ -31,21 +31,78 @@ Ranked is untouched. Product Features 2-5 have not been started.
 - 2.4.2 also adds a race gate, a persistent rolling event log, a manual-watch
   mode for hand-played attacks, and renames the Stats “Rec” label to
   “Gesture recorder”. Commit `d37cf3e` passed CI (`40454019394`).
-- Build identification on 2026-10-27: the phone had the **earlier** 2.4.2
-  build `77ea41e` installed (`edbe26e…`, updated 00:45 local), not the
-  reliability build. The new reliability APK is `1c16d90…` and is **not
-  installed**. The earlier 2.4.2 test left no records, no screenshots and no
-  persistent log (that build predates the event log); the current live logcat
-  has no `AutoClashResults` lines.
+- Build identification: the phone had the earlier 2.4.2 build `77ea41e`
+  (`edbe26e…`, updated 00:45 local) and no captures. The reliability build
+  `1c16d90…` (commit `d37cf3e`, CI `40454019394`) was installed on approval at
+  10:52 local. Its installed APK hash matches the CI artifact; `macros.json`
+  and `attacks.json` hashes were unchanged by the install.
+- **Two real result screens were captured by 2.4.2 and read correctly.**
+  Both were `New` macro playbacks (the manual watch started at 10:57:29 was
+  superseded by a playback at 10:58:53, so there is no `Manual watch` record).
+  Record 1: gold 2,749,011 / elixir 2,483,872 / dark 38,782. Record 2:
+  1,412,574 / 1,533,041 / 3,233. Both are confirmed, `lootSource=ocr`,
+  verified, with PNG + JSON + TXT sidecars. Stats sums match exactly:
+  4,161,585 / 4,016,913 / 42,015.
+- The 14 old unconfirmed records are untouched; `attacks.json` is now 20
+  records (6 confirmed / 14 unconfirmed). `macros.json` is byte-identical to
+  before the test.
+- The 30+ real-capture set has not been collected or scored.
 - CI query note: GitHub’s `head_sha` filter needs the full 40-character SHA;
   a 7-character prefix returns an empty list even when the run exists. There
   was no workflow trigger problem.
-- The earlier lab run on the 11-image pack scored 0 wrong / 0 missing, but the
-  digit templates voted in that run. That is **not** a valid score under the
-  current rule, which excludes templates on their training images.
-- Speed on the four result screens is now measured for both strategies; see
-  "Verified numbers". The cheap-first strategy is inside the target.
-- The 30+ real-capture set has not been collected or scored.
+
+## Real-capture verification (2026-10-27)
+
+This closes the real-capture gap for macro playback. Evidence was pulled from
+the phone after the test.
+
+- Installed build: 2.4.2 / versionCode 11, installed APK SHA-256
+  `1c16d90f4d7baedc931329f3cb9ff6bf166202331405c7d10731484b2ecd7bb4`,
+  identical to the CI artifact for commit `d37cf3e`. **A**
+- Data safety: `macros.json` SHA-256 `4a01452e…` before and after; the 14 old
+  unconfirmed records and the 4 old confirmed records are unchanged.
+  `attacks.json` now has 20 records: 6 confirmed / 14 unconfirmed. **A**
+- Saved files under
+  `Android/data/com.clahbot/files/results_captures/`:
+  - `1793079022622_victory_G2749011_E2483872_D38782.{png,json,txt}`
+  - `1793079380112_victory_G1412574_E1533041_D3233.{png,json,txt}`
+  Both PNGs are clean full-resolution result screens with no overlay. **A**
+- Record 1 (10:58 local): gold 2,749,011; elixir 2,483,872; dark 38,782;
+  balances 13,621,144 / 12,128,813 / 272,027. The balances match the
+  top-right counters in the PNG. **A**
+- Record 2 (11:04 local): gold 1,412,574; elixir 1,533,041; dark 3,233;
+  balances 15,584,025 / 14,201,976 / 280,565; matches its PNG. **A**
+- Stats arithmetic: 2,749,011 + 1,412,574 = 4,161,585 gold;
+  2,483,872 + 1,533,041 = 4,016,913 elixir; 38,782 + 3,233 = 42,015 dark.
+  The Stats tab showed exactly these totals with Attacks: 6 and the two rows
+  `10:58` and `11:04`. **A**
+- Consensus evidence from the first sidecar, gold row:
+  `mlkit_full` read `2.749 o11` (garbage), `mlkit_crop` read 2749011,
+  `tesseract_crop` read 27495 (wrong), `rapidocr_crop` read 2749011,
+  `template_crop` read 2749011; consensus chose 2749011 from three readers.
+  This is a real, non-training screen, so the template vote is legitimate
+  here. **A**
+- Bonus fields: both PNGs show an empty grey 100% bonus panel. The app wrote
+  `Bonus gold/elixir/dark: loot not captured` in the TXT and null in the JSON;
+  it did not substitute 0. `needsReview=true` and confidence 0.90 reflect the
+  missing bonus block; the three main loot values are present and verified. **A**
+- Race gate timing, first capture:
+  detection 11:00:19.939, hold requested; read 11:00:22.575; saved and record
+  11:00:24.441-457; hold released 11:00:24.483; the `Return Home` gate tap
+  (80.188 s) logged at 11:00:25.940, after the record was saved. The hold was
+  about 4.5 s. The watcher also logged `gate tap ... screenshot failed` at
+  74.357 s and 75.066 s while the battle was still running, then recovered. **C**
+- Poll cadence with full-resolution detection: screenshots 33-53 ms, ML Kit
+  detection 400-530 ms, about two polls per second. Every poll and anchor-miss
+  reason is in `files/autoclash_events.log` (555 lines, ~50 KB). **A/C**
+- The “Attack saved: victory (loot captured)” status is transient: the macro’s
+  playback-complete status overwrites it. The record and loot are in the Stats
+  tab and attack history; there is no separate attack text on the game screen.
+  This is a minor status-message UX issue, not a data loss. **A/C**
+- Manual-watch caveat: the watch started at 10:57:29 with baseline false, but
+  a macro playback began at 10:58:53 and replaced it. No `Manual watch` record
+  exists, so the hand-played Test 1 path is **still unverified**. Both successful
+  captures are Test 2 (macro playback), done twice. **A**
 
 ## Data-safety rule (user instruction, 2026-10-26)
 
@@ -327,9 +384,9 @@ Measured on the phone with the four result screens and no crop saving
 |---|---|---|---|
 | 1. Template provenance + exclusion | Exact source images recorded above. Template classification is excluded from votes/scores on 08-11 in code. The earlier 0/0 run included templates, so it is not counted. The current-rule four-screen timing run scored 0 wrong / 0 missing with template votes excluded. | Code + source evidence + current-rule device run on 4 training images | A non-training accuracy score (real captures) |
 | 2. Speed before/after | Four result screens, no crop saving: all readers 14.66 s compute (3.7 s/screen) versus cheap-first 3.12 s compute (0.61-1.01 s/screen) and 3.62 s wall. Per-reader tables are in "Verified numbers". RapidOCR and templates were skipped entirely by cheap-first. | Automated-device measurement with the lab instrumentation | Timing with the app's own warm-up and a real results screen |
-| 3. App reader integration + phantom fix | `:ocr` shared library; 2.4.0 (9) and 2.4.1 (10) installed over existing data with file hashes unchanged; unit tests and CI green. Two real attacks created **no** record and no screenshot, confirming playback completion alone never records, but both missed the capture. 2.4.2 adds full-resolution detection, no poll delay, a 15 s late-tap race gate (about 10 s total hold), a persistent poll log, and manual-watch mode. Gate unit tests pass; initial 2.4.2 commit `77ea41e` is CI-green. **Not installed.** | Install + unit/CI + two real attacks (negative capture) | Automatic capture and record on a real attack with 2.4.2; race-guard behavior; manual watch; poll logs; stale-result rejection |
-| 4. “Save results screenshots” setting | Setting in `SettingsStore`; Settings UI switch rendered and checked=true on the phone; PNG + JSON + TXT sidecar store; null-not-zero mapping; compile/unit tests. | Setting UI verified on-device; writer unit tested | Actual PNG/sidecar contents from a real attack; 30+ capture collection |
-| 5. AGENT_CONTEXT.md | This file | Updated with measured speed, both real-attack findings, the audit, the data-safety rule and the 2.4.2 reliability work | Final on-device evidence for 2.4.2 and 2.4.3 |
+| 3. App reader integration + phantom fix | 2.4.2 `1c16d90` installed with data hashes unchanged. Two real macro playbacks were captured, read, saved and recorded; values match the PNGs and the Stats sums; the race gate held the Return Home tap until after the save. The persistent poll log and gate unit tests are green. Manual-watch mode is implemented but its hand-played path is unverified (a playback replaced the watch). | On-device artifact (A), records/sidecars (A), gate timing (C), unit/CI (A) | A hand-played `Manual watch` record; stale-result rejection in the app; 30+ captures |
+| 4. “Save results screenshots” setting | Setting enabled on the phone; two PNG + JSON + TXT sidecars produced. The first sidecar shows the full per-reader evidence and a real consensus (Tesseract wrong, three readers right). Missing bonuses were written as null/`loot not captured`, never 0. | On-device PNG/sidecar verification (A) | 30+ capture collection and scoring |
+| 5. AGENT_CONTEXT.md | This file | Updated with the real-capture evidence, build identity, and the remaining manual-watch gap | Final evidence for 2.4.2 manual watch and 2.4.3 |
 
 ## Verified numbers
 
@@ -409,21 +466,19 @@ cached; CI uses the repository wrapper (8.2).
 
 ## Next actions
 
-1. Finish the 2.4.2 CI run, then ask the user before installing it.
-2. Test 1: one hand-played attack with Stats → “Watch results”. Leave the
-   result screen open until the app reports the capture. Report every poll,
-   the saved PNG/sidecar, the reader's field presence and the record.
-3. Test 2 (only if Test 1 works): play macro `New` once and report the same,
-   including whether the race gate held the Return Home tap.
-4. Do not modify `macros.json` or `attacks.json`; leave the 14 old unconfirmed
+1. Test 2 (macro playback) is verified twice. Test 1 (hand-played manual
+   watch) is still open: start Stats → “Watch results”, do one hand attack,
+   leave the result screen open, then verify a `Manual watch` record.
+2. Do not modify `macros.json` or `attacks.json`; leave the 14 old unconfirmed
    records untouched. A “clear old unconfirmed sessions with automatic backup”
    option is a possible later UI change, only after the user approves it.
-5. Then implement 2.4.3 (per-macro delay between repeats, 0-600 s, countdown,
-   foreground pause, stop cancels) as a separate version.
-6. Turn on “Save results screenshots” and collect the 30+ real result screens.
+3. Then implement 2.4.3 (per-macro delay between repeats, 0-600 s, countdown,
+   foreground pause, stop cancels) as a separate version, after the user
+   confirms C is complete.
+4. Turn on “Save results screenshots” and collect the 30+ real result screens.
    Score them as a fresh (non-training) set, keeping template votes for those
    real captures.
-7. Do not start product Features 2-5 without the user’s explicit approval.
+5. Do not start product Features 2-5 without the user’s explicit approval.
 
 ## Known limitations / risks
 
@@ -450,9 +505,18 @@ cached; CI uses the repository wrapper (8.2).
   hand tap on a manual watch cannot be held.
 - Manual watch creates one record named “Manual watch” when a result screen is
   detected. It runs for up to 15 minutes; the Results button stays available
-  on the Stats tab.
+  on the Stats tab. A human tap is not held, so the result screen must be left
+  open until the save completes.
 - The event log is capped at 256 KB plus one rotated copy; it omits loot
   values, macro names and screenshots.
+- Both real result screens showed an empty grey bonus panel. The app correctly
+  stored the bonus fields as null/`loot not captured` and set `needsReview`;
+  the three main loot values were verified.
+- “Attack saved: victory” is a transient status and is overwritten by
+  “Playback complete”; the record and loot remain in Stats and attack history.
+- Some watcher screenshots failed briefly during the battle at 74-75 s (logged
+  as `screenshot failed`); the watcher recovered and captured the result
+  screen. This needs monitoring on longer battles.
 - The results screen may be visible for only a few seconds before the macro
   taps Return Home (about 4 s in the first real run). Detection uses a 1 s
   poll; if the clean capture lands after the tap, the retained detection frame
