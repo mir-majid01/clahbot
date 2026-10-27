@@ -56,8 +56,12 @@ Ranked is untouched. Product Features 2-5 have not been started.
   `repeatMode = infinite`, `schemaVersion = 3` in `macros.json`. The saved
   field, dialog and persistence work. The on-device countdown, Stop and
   foreground-pause behavior are still being tested by the user.
-- The 30+ real-capture set has not been collected or scored. Step 1 of the
-  reliable-loot-capture work is complete and Step 2 has not started; see below.
+- The real-capture set is now **24 app captures** (72 files) plus the 34
+  external result screens in `newimages`. Step 1 is complete with the live
+  pull below; Step 2 has not started. The live pull found 42 records, 21
+  current 2.4.3 records, 2 loot-less records, 23 watches rejected because a
+  result screen was already open, and at least 31 external result screens with
+  no matching record. See “Live pull” below.
 - 2.4.3 is **paused**, not abandoned: branch `paused/repeat-delay-2.4.3` at
   `0befc3c` contains the feature. Reliable loot capture is the current top
   priority. The branch is an unchanged snapshot of `main` at that commit, so
@@ -169,16 +173,17 @@ the phone after the test.
 
 ## Step 1 — missed and loot-less attacks (2026-10-27)
 
-Read-only diagnosis; no APK was installed and the phone was not touched. The
-only code change is diagnostic logging (commit `ef02232`), no behavior or UI
-change. Evidence: the pulled rolling log `events_243.log` (1309 lines, starts
-2.4.2 at 10:56:12, restarts 2.4.3 at 12:49:24, ends 12:58:05), the byte
-snapshots `attacks.before_243.json` / `attacks.after_243.json` (21 records,
-7 confirmed / 14 unconfirmed), the three app captures and sidecars, and the
+Read-only diagnosis; no APK was installed and the phone screen was not
+interacted with. The only code change is diagnostic logging (commit `ef02232`),
+no behavior or UI change. Evidence: the pulled rolling logs `events_243.log`
+(earlier, 1309 lines, 2.4.2 from 10:56:12 and 2.4.3 from 12:49:24 to 12:58:05)
+and `events.now.log` (live, 208,104 bytes, 42 records / 24 captures), the byte
+snapshots `attacks.before_243.json` / `attacks.after_243.json` (21 records) and
+`attacks.now.json` (42 records), the 24 app captures and sidecars, and the
 34 screenshots in `newimages` (extracted read-only into
 `.ocr-work/newimages_extracted`; the original folder was not modified).
 Evidence levels: **A** artifact, **B** code, **C** saved-log evidence,
-**D** inference, **BLOCKED** evidence on the phone that cannot be pulled now.
+**D** inference, **BLOCKED** evidence that could not be retrieved.
 
 ### Branch and paused feature
 
@@ -194,7 +199,7 @@ Evidence levels: **A** artifact, **B** code, **C** saved-log evidence,
   reports “Cannot prompt because user interactivity has been disabled”.
   The six diagnosis commits on `main` are also local. **A**
 
-### What the saved log actually covers
+### Earlier saved-log pull (phone was offline)
 
 - 7 playback starts, 5 manual watches, 7 result detections and 7 records.
   Of these, the 2.4.3 period (from 12:49:24) has 3 macro watches + 2 manual
@@ -206,31 +211,71 @@ Evidence levels: **A** artifact, **B** code, **C** saved-log evidence,
   those 4 records are absent from the copies. That is a stale copy, not a
   loss. The four 2.4.3 records have IDs 1793085609423, 1793085728410,
   1793085816858 and 1793085941732. **A/C**
-- The 34 screenshots are later than the saved log: the log ends at 12:58
-  (device clock), while the screenshots' status bars show times such as
-  1:26, and the WhatsApp files were saved at 2:01–2:04 host time. The phone's
-  current 2.4.3 log, a current `attacks.json`, and the current
-  `results_captures` folder are **BLOCKED** because `adb devices` is empty.
-  Therefore the 34 screenshots cannot yet be mapped one-by-one to records. **A/BLOCKED**
+- The earlier saved log stopped at 12:58, so it could not classify the 34
+  external screenshots by itself. **A**
+
+### Live pull (phone reconnected, 2026-10-27 ~14:30 device)
+
+Read-only copies were pulled after the user reconnected the phone; no app data
+was changed and no APK was installed. Files:
+`.ocr-work/step1_live/attacks.now.json` (SHA-256 `537cf971…`),
+`macros.now.json` (`382493ac…`), `events.now.log` (208,104 bytes), and
+`captures/` (24 PNG + JSON + TXT, 108 MB). The installed build is 2.4.3
+(versionCode 12). **A**
+
+- `attacks.json` now has **42 records: 28 confirmed / 14 old unconfirmed**.
+  Of the 28 confirmed, **24 have OCR captures** (3 from 2.4.2, 21 from 2.4.3);
+  22 have at least one loot value. **Six confirmed records are loot-less**:
+  the 2 new 2.4.3 records at 12:55:07 and 12:56:53, plus 4 older records from
+  2026-10-24/25. The 14 old unconfirmed records are untouched. **A**
+- The current log has 21 2.4.3 records / 21 detections, 2 loot-less, 11
+  clean-frame failures with detection fallback, 0 both-frames failures, and
+  no 2.4.3 watch that ended without a capture. **A/C**
+- **23 watches were rejected with `baseline results screen=true`
+  (“Already on a results screen; no new attack recorded”).** This is the
+  dominant observed “not added” path. The coordinator intentionally treats a
+  result screen that is already open when Watch is pressed as stale; it does
+  not check whether that screen is already recorded. These are 23 watch
+  attempts, not necessarily 23 distinct attacks: several clusters are repeated
+  presses on the same open screen. **A/B/C**
+- The live log’s 2.4.3 manual-watch pattern: 41 manual starts, 23 stale
+  rejects, 17 manual records (plus 4 macro records), 1 open at the pull.
+  This is consistent with arming “Watch results” **after** the result screen
+  has appeared, especially after returning from a prior recorded result. **A/C**
+- The 34 external files contain **33 unique result screens** (2 files are the
+  same 2,905,186 / 2,737,932 / 19,445 result and match record
+  `1793087163242`; `2.04.11 (1)` with 2,404,830 / 2,430,401 / 6,717 matches
+  record `1793086778779`). **The other 31 files have no matching loot triple
+  among the 42 records** by visual transcription; Step 2 will OCR-confirm this.
+  So the folder is mostly, but not entirely, missed attacks: **at least 31
+  unique missed result screens**, 2 captured results, and 1 duplicate frame
+  pair. **A/C/D**
+- The 31 misses include non-standard layouts already visible in the folder:
+  a 2-row/no-bonus screen (8,000 / 12,000), a war “Claim Reward” layout, a
+  side-reward “Claim Reward” layout, a covered bonus card, and a blank bonus
+  card. Step 3 will score these against the current reader. **B/D**
 
 ### Counts by category
 
-Confirmed from the saved log (each detected result is one attack):
+Confirmed from the live 2.4.3 log (detected result = one record):
 
-| Category | Count | Evidence |
+| Category | Live 2.4.3 count | Evidence |
 |---|---|---|
-| a) results screen never detected | 0 confirmed | 4 detections on 4 completed 2.4.3 watches; 7/7 in the whole log **C** |
-| b) detected, capture failed/late | 0 lost attacks | 3 clean frames read as no-result and fell back to the detection frame; 1 fallback was complete, 2 became (c) **C** |
-| c) captured, read failed → "not captured" | **2** | 12:55:07 rows 1/3 conflict; 12:56:53 rows 0/3; both saved as records with null loot **A/C** |
-| d) rejected by duplicate/balance/other gate | **0** | no `record was not added`, `blocked by policy`, or balance rejection in the log; code has no balance gate **B/C** |
-| e) written then lost/overwritten | **0 observed** | stale copies explain the 4 missing records; atomic temp-file write; no clear path in the log **A/B** |
-| f) watcher not running | **4 watches in the saved log + the main code-level risk** | 2 macro watches cancelled by a restart (11:04:25, 11:04:43), 1 manual watch cancelled by a macro start (10:57:29), 1 manual watch stopped by the user (11:11:30), 1 watch open at pull; plus the one-shot watcher below **B/C** |
-| g) other | unknown | 4–5 of the 34 screenshots have non-standard layouts (war/Claim Reward, 2 loot rows, covered/blank bonus) **B/D** |
+| a) results screen never detected | 0 confirmed under an active watch | 21/21 detections produced records; no 2.4.3 watch ended without a capture **C** |
+| b) detected, capture failed/late | 0 lost attacks | 11 clean frames read as no-result and fell back to the detection frame; 2 fallbacks became (c) **C** |
+| c) captured, read failed → "not captured" | **2** | 12:55:07 rows 1/3 conflict; 12:56:53 rows 0/3; both saved with null loot **A/C** |
+| d) rejected by another gate | **23 stale-result watch attempts** | `baseline results screen=true`; the open screen is refused; not duplicate/balance; repeated presses, not distinct attacks **A/B/C** |
+| e) written then lost/overwritten | **0 observed** | 42 records, 24 captures present; atomic temp-file writes; no clear path **A/B** |
+| f) watcher not running | **≥8 of the 31 missed screens** | 31 unique missed screens minus at most 23 late attempts; manual watch is one-shot and there were unarmed attacks **D** |
+| g) other | 0 known | non-standard layouts will be scored under (a)/(c) in Step 3 **B/D** |
 
-The 34 screenshots after the log are **unclassified**, not counted as misses
-yet. If they are all missed attacks, the dominant code path is (f): a looping
-macro keeps playing after the first result, but the watcher has already ended.
-A direct count would need the phone's current log and `attacks.json` copy.
+The 23 stale-result rejects are **attempts**, not 23 distinct attacks, and
+some are repeated presses on the same already-open screen. The attack-level
+count is the **31 unique external result screens with no matching record**;
+the live log proves one mechanism (late arming / stale screen) for many of
+them but cannot map each screenshot to an attempt without a per-screen
+fingerprint. Step 2 will dedupe the 34 files by attack/time and Step 3 will
+separate reader failures from arming failures.
 
 ### Manual attacks
 
@@ -241,11 +286,14 @@ A direct count would need the phone's current log and `attacks.json` copy.
   and the user must arm it again for the next hand attack. It also aborts if a
   result screen is already open at arm time (`baseline results screen=true`),
   because that screen is treated as stale to avoid a duplicate record. **B/C**
-- The saved log proves manual watch works: watches at 10:57:29, 11:11:30,
-  11:42:14, 12:55:41 and 12:57:54; records at 11:43:01 (loot captured),
-  12:56:53 (loot missing). The 34 screenshots show the app's WATCH bubble on
-  some frames, so at least some of those results were hand-played with manual
-  watch armed. It does not prove every result was recorded. **C/D**
+- Live 2.4.3 evidence: 41 manual starts, **17 manual records**, **23 stale
+  rejects**, 4 macro records, and 1 watch open at the pull. The 23 rejects are
+  the app refusing an already-open result screen, not duplicate loot records.
+  This is the observed mechanism behind “I pressed Watch and the attack was
+  not added”. **A/C**
+- The 34 screenshots show the app's WATCH bubble on many frames, so those
+  results were hand-played with manual watch armed (or armed too late). The
+  bubble alone does not prove the screen was recorded. **C/D**
 
 ### Duplicate gate
 
@@ -254,43 +302,45 @@ A direct count would need the phone's current log and `attacks.json` copy.
   capture-session start time (`System.currentTimeMillis()` at watch start).
   There is no loot-value comparison and no balance check in the app. The
   “duplicate or invalid” warning is a single generic message. **B**
-- The log has 0 rejection events; the 7 record IDs are distinct. The three
-  2.4.2 OCR records have distinct loot triples. **A/C**
+- The live log has **0 duplicate rejections**. The 23 rejections are the
+  separate baseline/stale-result guard, not the duplicate gate. All 24 new
+  record IDs and the 24 capture files are distinct; the 21 current 2.4.3
+  records have distinct loot triples except where OCR was incomplete. **A/C**
 - The new logging now distinguishes `reason=duplicate` from `reason=invalid`
   and logs the record count after each write. **B**
 
 ### Root causes ranked (for Step 4, not fixed yet)
 
-1. **The watcher is one-shot while a macro loop keeps running.** After
-   `saveAndRecord` the watch logs the record and returns; `MacroPlayer`
-   continues its repeat loop with no watcher. `Neww` is `repeat=infinite`.
-   Every attack after the first captured result is invisible. **B/C**, high
-   confidence; this is the leading explanation for “many attacks not added at
-   all”.
-2. **Manual watch is arm-per-attack and one-shot.** Without pressing it, a
-   hand attack is never watched. **B/C**
+1. **Late manual arming + the stale-result guard.** The user presses “Watch
+   results” after the result screen is already open. The coordinator sees
+   `baseline results screen=true` and refuses the screen, even when it has
+   never been recorded. Live evidence: 23 rejects; 31 unique external result
+   screens with no matching record. This is the leading explanation for “many
+   attacks not added at all”. **A/B/C**, high confidence for the mechanism;
+   per-screenshot mapping still needs Step 2/3.
+2. **The watcher is one-shot; manual watch and macro loops need re-arming.**
+   After `saveAndRecord` the watch returns; a looping macro keeps playing with
+   no watcher, and a new manual attack needs another Watch press. `Neww` is
+   `repeat=infinite`. **B/C**
 3. **The clean capture is unreliable; the fallback is an older, possibly
-   mid-animation frame.** In 3 of 4 2.4.3 detections the clean frame read as
-   no-result; the detection frame was used. It was complete once and missing
-   rows twice. Those two are the loot-less records. The new log records the
-   clean frame's anchor check and reason. **C**
+   mid-animation frame.** Live 2.4.3: 11 clean-frame no-result fallbacks; 2
+   fallback reads were incomplete and became the 2 loot-less records. The new
+   log records the clean frame's anchor check and reason. **A/C**
 4. **Non-standard result layouts are not covered by the parser.** `inspect`
-   requires “You got”, Victory/Defeat and “Total damage”; the 34 screens
-   include war/Claim Reward layouts, a 2-row/no-bonus screen, and covered or
+   requires “You got”, Victory/Defeat and “Total damage”; the external set
+   includes war/Claim Reward layouts, a 2-row/no-bonus screen, and covered or
    blank bonus panels. These can fail detection or lose rows. **B/D**
 5. **Starting a new playback/manual watch cancels the old watch**, and an
-   already-open result screen is rejected as stale. The saved log has two
-   restarts that cancelled watches (11:04) and one manual watch replaced by a
-   macro (10:58). Whether either restart lost a real result is not in the log.
-   **B/C**
+   already-open result screen is rejected as stale. Historical evidence: two
+   restarts cancelled macro watches (11:04) and one manual watch was replaced
+   by a macro (10:58). **B/C**
 6. **If both the clean and detection frames are unreadable, no record is
    created.** The code logs `both frames failed to read` and keeps polling; if
-   the screen then disappears, the attack is lost. This is 0 in the saved log,
-   but it violates the “one results screen = one record” rule planned for
-   Step 5. **B**
-7. **Not causes:** duplicate/balance rejection (0, and the code has no balance
-   gate), file overwrite/data loss (no evidence), detection anchor failure in
-   a running watch (0/7).
+   the screen then disappears, the attack is lost. Live count: 0, but it
+   violates the one-screen-one-record rule planned for Step 5. **B**
+7. **Not causes:** duplicate rejection (0), balance rejection (no balance gate
+   in the app), file overwrite/data loss (no evidence), detection anchor
+   failure in a running watch (0 of 21 live detections).
 
 ### Missing logging that was added (commit `ef02232`)
 
@@ -307,11 +357,22 @@ an **ungated tap** dismissed a result screen (only gated taps are logged), and
 a true process heartbeat if XOS freezes the app. A result screen's own values
 are deliberately not logged (screenshots are kept instead).
 
+The live log also cannot link a stale reject to a particular external
+screenshot: at baseline it records only `results screen=true`, not a screen
+fingerprint. Missing logging for the next build: when the baseline is already
+on a result screen, read that screen and log a **non-value fingerprint/presence
+hash** (the same fingerprint already computed in `ResultsRead`, no loot values),
+and log the same hash with each saved record. That would let the 23 rejects be
+matched to the external screens. This is a logging-only change and has not
+been built or installed. **B/D**
+
 ### Data safety
 
-No original `macros.json` or `attacks.json` was touched; all analysis used the
-existing snapshots. The 14 old unconfirmed records are untouched. `Neww`
-remains 3 s / Loop. The phone was not touched and nothing was installed. **A**
+No original `macros.json` or `attacks.json` was touched. The live evidence is a
+read-only pull into `.ocr-work/step1_live/`; the phone screen was not touched
+and nothing was installed. The 14 old unconfirmed records are untouched.
+`Neww` remains 3 s / Loop. The 24 capture PNG/JSON/TXT files were copied, not
+moved or edited. **A**
 
 ## Data-safety rule (user instruction, 2026-10-26)
 
@@ -597,7 +658,7 @@ Measured on the phone with the four result screens and no crop saving
 | 4. “Save results screenshots” setting | Setting enabled on the phone; three PNG + JSON + TXT sidecars produced. One sidecar shows a real consensus where ML Kit full was wrong and three other readers agreed; another shows the same on the manual capture. Missing bonuses were written as null/`loot not captured`, never 0. | On-device PNG/sidecar verification (A) | 30+ capture collection and scoring |
 | 5. AGENT_CONTEXT.md | This file | Updated with the real-capture evidence, build identity, and the 2.4.3 repeat-delay work | Final evidence for 2.4.3 on-device |
 | 6. Repeat delay (2.4.3) | Nullable `repeatDelayMs` per macro with a legacy 800 ms fallback; edit dialog in both UIs; player countdown, foreground pause, stop-cancel; five unit cases and 115 total green; CI `40464810499` green; installed SHA `98ebcf0c…`; the user saved `repeatDelayMs=3000` and `repeatMode=infinite` through the dialog (schema 3) | Install + unit/CI + on-device save (A/B) | On-device countdown, stop and foreground pause |
-| 7. Step 1 missed/loot-less diagnosis | Saved 2.4.3 log has 4 detections / 4 records, 2 loot-less; 3 clean-frame failures, fallback used; duplicate gate is id-only; watcher ends after one record while a loop keeps running; 34 result screens in `newimages` are later than the saved log and cannot be mapped without the phone | Log + code + screenshot inventory (A/B/C) | Current 2.4.3 log, current `attacks.json` copy and `results_captures` are BLOCKED while the phone is offline; 34 screenshots unclassified |
+| 7. Step 1 missed/loot-less diagnosis | Live pull: 42 records (28 confirmed / 14 old unconfirmed), 24 app captures (3 from 2.4.2, 21 from 2.4.3), 2 current loot-less records, 23 stale-result watch rejects, 41 manual starts, 17 manual records; 34 external files = 33 unique result screens, 2 captured results (one duplicate pair) and **31 with no matching record**; duplicate gate is id-only, not the cause | Read-only pulls + code + screenshot inventory (A/B/C/D) | Per-screenshot mapping of the 23 rejects needs a baseline screen fingerprint (logging not yet built); Step 2 OCR confirmation of the 31 unmatched screens; 31 misses are not yet reader-vs-arming separated |
 
 ## Verified numbers
 
