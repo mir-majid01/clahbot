@@ -67,12 +67,16 @@ class MacroPlayer(
 
         val newJob = scope.launch {
             val self = coroutineContext[Job]
+            var iteration = 0
             try {
                 val repeats = MacroTimeline.repeatCount(macro.repeatMode)
-                var iteration = 0
 
                 while (isActive && !stopped && iteration < repeats) {
                     iteration++
+                    AppEventLog.log(
+                        "macro iteration=$iteration " +
+                            "repeats=${if (repeats == Int.MAX_VALUE) "infinite" else repeats}"
+                    )
                     BotState.setStatus(
                         if (repeats == Int.MAX_VALUE) "Loop $iteration" else "Run $iteration/$repeats"
                     )
@@ -127,6 +131,7 @@ class MacroPlayer(
             } catch (_: CancellationException) {
                 // Stopping is a normal exit path.
             } finally {
+                AppEventLog.log("macro loop exit iteration=$iteration stopped=$stopped")
                 BotState.setRepeatCountdown(null)
                 if (job === null || job === self) {
                     job = null

@@ -192,6 +192,11 @@ class FloatingMenuService : Service() {
             showOverlay = { setCaptureOverlayHidden(false) },
             onStatus = { message -> BotState.setStatus(message) },
             onRecordSaved = {
+                AppEventLog.log(
+                    "record callback playerRunning=${player?.isRunning() == true} " +
+                        "repeat=$repeatMode captureId=${captureSession?.id ?: "-"} " +
+                        "manual=$manualWatch"
+                )
                 scope.launch {
                     attackRepository.refresh()
                     if (manualWatch) {
@@ -206,6 +211,7 @@ class FloatingMenuService : Service() {
                 if (manualWatch) {
                     manualWatch = false
                     captureSession = null
+                    AppEventLog.log("manual watch cleared in UI")
                 }
                 refreshUi()
             }
@@ -1394,6 +1400,12 @@ class FloatingMenuService : Service() {
             BotState.setStatus("Warning: macro was recorded in ${adjusted.orientation}")
         }
 
+        val activeCaptureId = captureSession?.id
+        if (activeCaptureId != null || manualWatch) {
+            AppEventLog.log(
+                "playback replacing capture id=${activeCaptureId ?: "-"} manual=$manualWatch"
+            )
+        }
         abortCaptureSession()
         BotState.setInterrupted(false)
         player?.stop()
@@ -1586,10 +1598,11 @@ class FloatingMenuService : Service() {
 
     private fun stopManualWatch() {
         if (!manualWatch) return
+        val watchId = captureSession?.id
         manualWatch = false
         captureSession = null
         resultsCapture.cancel()
-        AppEventLog.log("manual watch stop")
+        AppEventLog.log("manual watch stop id=${watchId ?: "-"}")
         BotState.setStatus("Manual watch stopped")
         refreshUi()
     }

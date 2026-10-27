@@ -34,12 +34,20 @@ class AttackRepository(private val file: File) {
 
     suspend fun add(record: AttackRecord): AttackRecord? = withContext(Dispatchers.IO) {
         mutex.withLock {
-            val sanitized = sanitizeAttack(record) ?: return@withLock null
+            val sanitized = sanitizeAttack(record)
+            if (sanitized == null) {
+                AppEventLog.log("attack add rejected id=${record.id} reason=invalid")
+                return@withLock null
+            }
             val all = readLocked().toMutableList()
-            if (all.any { it.id == sanitized.id }) return@withLock null
+            if (all.any { it.id == sanitized.id }) {
+                AppEventLog.log("attack add rejected id=${sanitized.id} reason=duplicate")
+                return@withLock null
+            }
             all.add(sanitized)
             writeLocked(all)
             publish(all)
+            AppEventLog.log("attack add ok id=${sanitized.id} count=${all.size}")
             sanitized
         }
     }
