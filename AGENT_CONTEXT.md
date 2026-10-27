@@ -35,6 +35,163 @@ Ranked is untouched. Product Features 2-5 have not been started.
   "Verified numbers". The cheap-first strategy is inside the target.
 - The 30+ real-capture set has not been collected or scored.
 
+## Data-safety rule (user instruction, 2026-10-26)
+
+Never modify the user's `macros.json` or `attacks.json` for a test. Use a test
+copy, or ask the user first. In particular, do not delete or edit the 14 old
+unconfirmed playback records; they stay untouched unless the user explicitly
+approves a cleanup with a backup. `macros.json` is deliberately left as it is
+(currently repeat `once` for macro `New`); do not "restore" it as part of a
+test.
+
+## 2026-10-26 user-reported failure — read-only audit
+
+Report only: no code, phone state, app data or APK was changed for this audit.
+The phone went offline before the live check (`adb devices` is empty), so
+anything that needs today's logcat or the live `attacks.json` is marked
+**BLOCKED**. Evidence used: the installed APK pulled at 11:56 local
+(SHA-256 `1a2c04b4…d10803`), the CI artifact it matched, `attacks.json` byte
+snapshots pulled at 10:32 / 11:16 / 11:48 / 11:51, the two real-attack logcats,
+and the current source.
+
+Evidence levels: **A** = verified artifact/data byte-for-byte; **B** = verified
+in source; **C** = log evidence from a run; **D** = inference, not directly
+observed; **BLOCKED** = phone offline.
+
+### 1. Which APK is installed
+
+- **versionCode 10, versionName 2.4.1.** The APK pulled from the phone has
+  SHA-256 `1a2c04b43936044d219f5d3d5c017ed3bbeeca11302e4eeb962c293690d10803`
+  and is byte-identical to the CI artifact from run `40379833802`
+  (commit `495438a`). **A**
+- It **does contain the new results reader and the phantom-record guard**. The
+  DEX has `AutoClashResults`, `Baseline results screen=`,
+  `Results screen detected; taking clean capture`,
+  `Playback ended (interrupted=`, `loot not captured` and
+  `save_results_screenshots`. **A/B**
+- It **does not contain 2.4.2**: the 2.4.2-only strings `Poll at ` and
+  `Detection miss: ` are absent. The installed watcher still detects on a
+  half-scale frame. **A**
+- Caveat: the phone is now offline; this was the last verified state at 11:56
+  local. The user did not report reinstalling anything. **BLOCKED** for a fresh
+  read.
+
+### 2. Is capture running during and after playback?
+
+- In 2.4.1 the watcher starts in `begin()` (playback start) and `finish()` only
+  records the end time; it keeps polling for 4 minutes after playback. Detection
+  runs on a half-scale screenshot every ~1 s plus processing. **B**
+- Our own 2.4.1 run proves the start: `Baseline results screen=false` at
+  `00:21:54.475`, `Playback ended (interrupted=false); watching for results` at
+  `00:23:23.483`, and no `Results screen detected`. There were no screenshot
+  failure logs. **C**
+- 2.4.1 has **no per-poll log**, so the number of screenshots/checks taken
+  during that attack is not observable. The baseline screenshot definitely ran;
+  later ones are inferred from the loop, not counted. **B/D**
+- The user's latest session logcat is **BLOCKED**: the phone is disconnected and
+  the app does not write a persistent log file (only logcat and the
+  `results_captures` folder). We cannot confirm what ran during their test.
+  The last known setting was `save_results_screenshots=true` and the
+  accessibility service was enabled and bound. **A (at 11:48) + BLOCKED**
+
+### 3. Why “Rec: 0 captured · 0 rejected” and did the reader see an image?
+
+- “Rec” is the **gesture recorder** counter, not results OCR. It is built at
+  `FloatingMenuService.kt:1512` as
+  `"Rec: " + capturedGestures + " captured · " + rejectedGestures + " rejected"`,
+  incremented only while recording gestures (`:809`, `:1242`; rejected at
+  `:1265`), and reset when recording starts (`:597`). 0/0 means no passive
+  recording session was active in this service lifetime. **B**
+- The loot readers (`AppResultsReader.read` → `RowCropReader`) run only after
+  `isResultsScreen` returns true. In our 2.4.1 run it never did (no detection
+  log), so **no image reached the multi-reader loot pipeline** and it reached no
+  conclusion. The app concluded “no results screen” and wrote nothing. **B/C**
+- The Stats loot line “Gold / Elixir / Dark: not captured” is the aggregate of
+  the **4 old confirmed records**, all with `lootSource=none` and null values;
+  `lootText` prints “not captured” when `lootedCount == 0`. It is not the result
+  of a failed new read. **A/B**
+
+### 4. Why unconfirmed rose from 12 to 14 and is the phantom fix active?
+
+- `attacks.json` already held **18 records (4 confirmed / 14 unconfirmed)** at
+  10:32 local, before any 2.4.x attack. The last two unconfirmed entries are
+  `2026-10-25T20:09:57.303Z` (interrupted, 390,847 ms) and
+  `2026-10-25T20:17:33.026Z` (completed, 108,914 ms), both macro `New`,
+  repeat `infinite`. If the phone is on IST (UTC+5:30), those are the 01:39 and
+  01:47 entries. They predate the 2.4.0 install at 10:56 local, so they were
+  written by the **old build's playback-session path**. **A/D on timezone**
+- `attacks.json` SHA-256 was `a2245ec2…58d404` at 10:32, 11:48 and 11:51, and
+  was unchanged after both 2.4.x real attacks. The count stayed 14. **A**
+- In 2.4.1 the only `attackRepository.add` call is in
+  `ResultsCaptureCoordinator`; `endAttackSession` only logs and starts the
+  watcher. Playback completion cannot create a record. **B**
+- Conclusion: the 12→14 rise is **old data**, not a new phantom record. The
+  phantom guard is active in the installed build. **A/B**
+
+### 5. What the last hour's test did
+
+- The durable data points to the two old-build sessions at
+  `20:09Z` / `20:17Z` (01:39 / 01:47 IST): one interrupted after 6 m 31 s, one
+  completed in 1 m 49 s, both with no loot and no OCR. The four confirmed
+  attacks shown in Stats are older still and all have `lootSource=none`. **A**
+- If the hour of testing actually happened after the 11:48 install, it left no
+  new records and no new loot; the only trace would be the watcher's own
+  behavior, which 2.4.1 does not log. **BLOCKED** for the live logcat.
+- Our two real attacks after the install: attack 1 changed the village from
+  5,702,517/3,895,944/189,102 to 7,312,999/5,537,504/203,455; attack 2 to
+  8,700,806/7,002,199/212,267. Both produced **zero records and zero captures**.
+  The Stats “Attacks: 4 / not captured” therefore still describes the old data,
+  not these attacks. **A**
+- Bottom line: the last hour did not exercise automatic loot reading
+  successfully. Either it ran on the old build (most likely, given the
+  timestamps) or it ran on 2.4.1 and the watcher missed the result screen
+  (consistent with our two runs). The data alone cannot distinguish these
+  without the phone's logcat. **D/BLOCKED**
+
+### 6. Progress, unfinished work and known problems
+
+Done and verified:
+
+- Shared OCR core with strict-majority consensus, balance-math fallback, and
+  template votes excluded on their four training images.
+- Lab timing on four result screens: cheap-first 3.12 s compute / 3.62 s wall
+  total (0.61-1.01 s per screen); all-readers 14.66 s corrected compute.
+  4/4 results, 0 wrong, 0 missing.
+- App integration in 2.4.1: Accessibility screenshots, watcher from playback
+  start, one-record-per-detected-result, null-not-zero, PNG + JSON/TXT sidecar
+  writer, debug screenshot switch. CI green for 2.4.0 and 2.4.1; 2.4.1 APK
+  installed and byte-verified.
+- Phantom guard verified: two real attacks, no phantom records; the only
+  `add` path is the results coordinator.
+
+Unfinished:
+
+- **No real result screen has been captured by the app.** 2.4.1 missed both
+  real attacks; the multi-reader loot path has never run on an app-captured
+  real screen.
+- 2.4.2 (full-resolution detection, no inter-poll delay, per-poll logs) is
+  committed and pushed as `77ea41e`, but GitHub lists **no workflow run** for
+  that commit yet and it is **not installed**. **A/blocked by no run**
+- The 30+ real-capture set and a non-training accuracy score are still pending.
+- `macros.json` is still modified from testing: the `New` macro's repeat is
+  `once` instead of the original `infinite` (original backup
+  `.ocr-work/macros.before.json`, SHA-256 `e0f76df0…60ad6`). It was **not**
+  restored in this report-only pass.
+
+Known problems / risks:
+
+- The 2.4.1 detector uses a half-scale frame; `You got` is about 10 px tall and
+  is the leading suspect for the missed detection. This is not yet proven.
+- The result screen can be dismissed within a second or two by the macro's
+  Return Home tap (fixed at 80.2 s); 2.4.1 also waits 1 s between polls and has
+  no per-poll evidence.
+- The Stats “Rec: … captured/rejected” label is about gesture recording, not
+  loot capture; this wording caused a reasonable misreading.
+- The 14 old unconfirmed playback sessions remain in the history and inflate
+  the “unconfirmed” count; they are not new attacks.
+- The phone is offline, so no fresh logcat/data check is possible until it is
+  reconnected.
+
 ## Digit-template provenance
 
 The digit templates were built from the **four labelled result screens inside
