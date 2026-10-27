@@ -584,8 +584,8 @@ cached; CI uses the repository wrapper (8.2).
   it is per macro and not scaled by playback speed. Legacy macros have a null
   field and keep the 800 ms behavior until edited; editing and saving writes an
   explicit value. The user’s macro `Neww` is currently `repeatDelayMs=3000`
-  and `repeatMode=infinite` from their own test edit; do not revert it to
-  0.8 s / `once` without their explicit approval.
+  and `repeatMode=infinite` from their own test edit; on 2026-10-27 the user
+  chose to keep those values, so do not revert them.
 - The results screen may be visible for only a few seconds before the macro
   taps Return Home (about 4 s in the first real run). Detection uses a 1 s
   poll; if the clean capture lands after the tap, the retained detection frame
