@@ -189,6 +189,10 @@ Evidence levels: **A** artifact, **B** code, **C** saved-log evidence,
 - `main` continues with diagnosis. The diagnostic-logging commit is `ef02232`
   (compile and 115 app unit tests green locally; **not built into an APK and
   not installed**). **A**
+- The paused branch is **local only**. `git push origin
+  paused/repeat-delay-2.4.3` could not authenticate non-interactively: GCM
+  reports “Cannot prompt because user interactivity has been disabled”.
+  The six diagnosis commits on `main` are also local. **A**
 
 ### What the saved log actually covers
 
