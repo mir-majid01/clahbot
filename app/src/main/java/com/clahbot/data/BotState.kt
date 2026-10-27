@@ -53,6 +53,9 @@ object BotState {
     private val _recordedGestureCount = MutableStateFlow(0)
     val recordedGestureCount: StateFlow<Int> = _recordedGestureCount.asStateFlow()
 
+    private val _repeatCountdown = MutableStateFlow<Int?>(null)
+    val repeatCountdown: StateFlow<Int?> = _repeatCountdown.asStateFlow()
+
     fun setState(value: ControllerState) {
         _state.value = value
     }
@@ -81,6 +84,10 @@ object BotState {
 
     fun setRecordedCount(count: Int) {
         _recordedGestureCount.value = count
+    }
+
+    fun setRepeatCountdown(seconds: Int?) {
+        _repeatCountdown.value = seconds
     }
 
     fun clearRecording() {

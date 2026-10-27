@@ -131,6 +131,30 @@ class MacroRepositoryTest {
         assertEquals(0.1f, gesture.points.first().x, 0.0001f)
         assertEquals(0.9f, gesture.points.last().y, 0.0001f)
         assertEquals(Macro.CURRENT_SCHEMA_VERSION, loaded[0].schemaVersion)
+        assertNull(loaded[0].repeatDelayMs)
+        assertEquals(Macro.LEGACY_REPEAT_DELAY_MS, loaded[0].effectiveRepeatDelayMs)
+    }
+
+    @Test
+    fun repeatDelayIsStoredExplicitlyAndClamped() = runBlocking {
+        val zero = repository.save(sampleMacro(id = 1, repeatDelayMs = 0L))
+        assertEquals(0L, zero?.repeatDelayMs)
+        assertEquals(0L, zero?.effectiveRepeatDelayMs)
+
+        val fiveSeconds = repository.save(sampleMacro(id = 2, repeatDelayMs = 5_000L))
+        assertEquals(5_000L, fiveSeconds?.repeatDelayMs)
+        assertEquals(5_000L, fiveSeconds?.effectiveRepeatDelayMs)
+
+        val tooLong = repository.save(sampleMacro(id = 3, repeatDelayMs = 900_000L))
+        assertEquals(Macro.MAX_REPEAT_DELAY_MS, tooLong?.repeatDelayMs)
+        assertEquals(Macro.MAX_REPEAT_DELAY_MS, tooLong?.effectiveRepeatDelayMs)
+
+        val negative = repository.save(sampleMacro(id = 4, repeatDelayMs = -5L))
+        assertEquals(0L, negative?.repeatDelayMs)
+        assertEquals(0L, negative?.effectiveRepeatDelayMs)
+
+        val reloaded = repository.load().first { it.id == 2L }
+        assertEquals(5_000L, reloaded.repeatDelayMs)
     }
 
     @Test
@@ -167,7 +191,8 @@ class MacroRepositoryTest {
     private fun sampleMacro(
         id: Long = 1,
         name: String = "Test macro",
-        speed: Float = 1f
+        speed: Float = 1f,
+        repeatDelayMs: Long? = null
     ) = Macro(
         id = id,
         name = name,
@@ -176,6 +201,7 @@ class MacroRepositoryTest {
         deviceHeight = 2400,
         orientation = "portrait",
         speedMultiplier = speed,
+        repeatDelayMs = repeatDelayMs,
         gestures = listOf(
             RecordedGesture(
                 id = 1,

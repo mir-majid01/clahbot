@@ -59,6 +59,7 @@ class MacroPlayer(
 
         stopped = false
         paused = false
+        BotState.setRepeatCountdown(null)
         active = this
         BotState.setActiveMacro(macro.id, macro.name)
         BotState.setState(ControllerState.PLAYING)
@@ -79,15 +80,7 @@ class MacroPlayer(
                     var lastTimestamp = 0L
                     for (gesture in gestures) {
                         if (!isActive || stopped) break
-                        if (!ClahAccessibilityService.isGameForeground()) {
-                            if (!paused) {
-                                BotState.setInterrupted(true)
-                                paused = true
-                                BotState.setState(ControllerState.PLAYBACK_PAUSED)
-                                BotState.setStatus(pauseReason())
-                            }
-                        }
-                        awaitResume()
+                        ensureForeground()
 
                         val gap = MacroTimeline.gapMillis(
                             (gesture.timestampMs - lastTimestamp).coerceAtLeast(0L),
@@ -117,8 +110,11 @@ class MacroPlayer(
                     }
 
                     if (iteration < repeats && !stopped) {
-                        awaitResume()
-                        delay(INTER_LOOP_DELAY_MS)
+                        ensureForeground()
+                        waitBetweenRepeats(
+                            totalMs = macro.effectiveRepeatDelayMs,
+                            infinite = repeats == Int.MAX_VALUE
+                        )
                     }
                 }
 
@@ -131,6 +127,7 @@ class MacroPlayer(
             } catch (_: CancellationException) {
                 // Stopping is a normal exit path.
             } finally {
+                BotState.setRepeatCountdown(null)
                 if (job === null || job === self) {
                     job = null
                     if (active === this@MacroPlayer) active = null
@@ -144,6 +141,45 @@ class MacroPlayer(
         resultGate != null &&
             gesture.gestureType == "tap" &&
             gesture.timestampMs >= macro.durationMs - LATE_TAP_WINDOW_MS
+
+    private suspend fun ensureForeground() {
+        if (!ClahAccessibilityService.isGameForeground()) {
+            if (!paused) {
+                BotState.setInterrupted(true)
+                paused = true
+                BotState.setState(ControllerState.PLAYBACK_PAUSED)
+                BotState.setStatus(pauseReason())
+            }
+        }
+        awaitResume()
+    }
+
+    /**
+     * Waits between repetitions, publishing the remaining whole seconds for the
+     * controller. Foreground loss pauses the wait; stopping cancels it.
+     */
+    private suspend fun waitBetweenRepeats(totalMs: Long, infinite: Boolean) {
+        if (totalMs <= 0L) return
+        var remaining = totalMs
+        try {
+            while (remaining > 0L && !stopped) {
+                ensureForeground()
+                if (stopped) break
+                if (totalMs >= COUNTDOWN_MIN_MS) {
+                    val seconds = ((remaining + 999L) / 1000L).toInt()
+                    BotState.setRepeatCountdown(seconds)
+                    BotState.setStatus(
+                        "Next " + (if (infinite) "loop" else "run") + " in ${seconds}s"
+                    )
+                }
+                val step = minOf(COUNTDOWN_TICK_MS, remaining)
+                delay(step)
+                remaining -= step
+            }
+        } finally {
+            BotState.setRepeatCountdown(null)
+        }
+    }
 
     private fun pauseReason(): String {
         val front = ClahAccessibilityService.foregroundLabel()
@@ -246,14 +282,16 @@ class MacroPlayer(
     private fun stopInternal() {
         stopped = true
         paused = false
+        BotState.setRepeatCountdown(null)
         job?.cancel()
         job = null
         if (active === this) active = null
     }
 
     companion object {
-        private const val INTER_LOOP_DELAY_MS = 800L
         private const val PAUSE_POLL_MS = 40L
+        private const val COUNTDOWN_TICK_MS = 250L
+        private const val COUNTDOWN_MIN_MS = 1_000L
         private const val DISPATCH_TIMEOUT_SLACK_MS = 1_500L
         private const val LATE_TAP_WINDOW_MS = 15_000L
 

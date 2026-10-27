@@ -107,6 +107,7 @@ import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlin.math.roundToLong
 
 class MainActivity : ComponentActivity() {
 
@@ -327,8 +328,8 @@ fun DashboardScreen(
         RenameDialog(
             macro = macro,
             onDismiss = { editing = null },
-            onSave = { name ->
-                viewModel.update(macro.copy(name = name))
+            onSave = { name, delayMs ->
+                viewModel.update(macro.copy(name = name, repeatDelayMs = delayMs))
                 editing = null
             }
         )
@@ -1236,7 +1237,7 @@ private fun MacroCard(
             IconButton(onClick = onRename, modifier = Modifier.size(36.dp)) {
                 Icon(
                     Icons.Default.Edit,
-                    contentDescription = "Rename ${macro.name}",
+                    contentDescription = "Edit ${macro.name}",
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(16.dp)
                 )
@@ -1254,23 +1255,73 @@ private fun MacroCard(
 }
 
 @Composable
-private fun RenameDialog(macro: Macro, onDismiss: () -> Unit, onSave: (String) -> Unit) {
+private fun RenameDialog(
+    macro: Macro,
+    onDismiss: () -> Unit,
+    onSave: (String, Long) -> Unit
+) {
     var name by remember(macro.id) { mutableStateOf(macro.name) }
+    var delayText by remember(macro.id) {
+        mutableStateOf(formatDelaySeconds(macro.effectiveRepeatDelayMs))
+    }
+    var error by remember(macro.id) { mutableStateOf<String?>(null) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Rename macro") },
+        title = { Text("Macro settings") },
         text = {
-            OutlinedTextField(
-                value = name,
-                onValueChange = { name = it },
-                label = { Text("Name") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth()
-            )
+            Column {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = {
+                        name = it
+                        error = null
+                    },
+                    label = { Text("Name") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(10.dp))
+                OutlinedTextField(
+                    value = delayText,
+                    onValueChange = {
+                        delayText = it
+                        error = null
+                    },
+                    label = { Text("Wait between repeats (seconds)") },
+                    singleLine = true,
+                    isError = error != null,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Text(
+                    "0-600 s. Default 0.8 s; 0 means no extra wait.",
+                    color = TextMuted,
+                    fontSize = 10.sp,
+                    modifier = Modifier.padding(top = 2.dp)
+                )
+                error?.let {
+                    Text(it, color = RecordRed, fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
+                }
+            }
         },
         confirmButton = {
             TextButton(
-                onClick = { onSave(name.trim()) },
+                onClick = {
+                    val seconds = delayText.trim().toDoubleOrNull()
+                    val validRange = seconds != null &&
+                        seconds.isFinite() &&
+                        seconds >= 0.0 &&
+                        seconds <= 600.0
+                    when {
+                        name.isBlank() -> error = "Enter a macro name"
+                        !validRange -> error = "Enter a wait between 0 and 600 seconds"
+                        else -> {
+                            val delayMs = (seconds!! * 1000.0).roundToLong()
+                                .coerceIn(0L, Macro.MAX_REPEAT_DELAY_MS)
+                            onSave(name.trim(), delayMs)
+                        }
+                    }
+                },
                 enabled = name.isNotBlank()
             ) { Text("Save") }
         },
@@ -1279,6 +1330,11 @@ private fun RenameDialog(macro: Macro, onDismiss: () -> Unit, onSave: (String) -
         }
     )
 }
+
+private fun formatDelaySeconds(ms: Long): String =
+    String.format(Locale.US, "%.2f", ms / 1000.0)
+        .trimEnd('0')
+        .trimEnd('.')
 
 private fun openStore(context: android.content.Context) {
     try {
