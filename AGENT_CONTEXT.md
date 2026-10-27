@@ -156,8 +156,11 @@ the phone after the test.
   The gate tests now use a monotonic test clock so they do not flake under
   load. **A/B**
 - Installed on the phone (SHA `98ebcf0c…`) and the save path is proven by the
-  user's own edit above. Not yet verified: the on-device countdown, Stop and
-  the foreground pause; the user is testing those. **Pending**
+  user's own edit above. The user will finish the on-device countdown, Stop and
+  foreground-pause check themselves and report the result. **Pending**
+- Per the user's decision (2026-10-27), macro `Neww` stays at
+  `repeatDelayMs = 3000` and `repeatMode = infinite`; do not revert it to
+  0.8 s / `once`.
 
 ## Data-safety rule (user instruction, 2026-10-26)
 
@@ -522,11 +525,11 @@ cached; CI uses the repository wrapper (8.2).
 
 ## Next actions
 
-1. 2.4.3 is implemented and unit-tested. Build it in CI, then ask the user
-   before installing it.
-2. On-device 2.4.3 test, only after approval: set a 5 s wait on a macro and
-   verify the countdown, Stop cancelling it, and the foreground pause. This
-   edits `macros.json`, so ask first or use a test copy.
+1. Wait for the user's own on-device report on the 3 s wait: the Loop
+   countdown, Stop cancelling it, and the foreground pause. Record it in this
+   file with the evidence level they provide.
+2. Do not write `macros.json` again for this feature unless the user asks;
+   `Neww` stays at 3 s / Loop.
 3. Do not modify `macros.json` or `attacks.json` for a test; leave the 14 old
    unconfirmed records untouched. A “clear old unconfirmed sessions with
    automatic backup” option is a possible later UI change, only after the user
