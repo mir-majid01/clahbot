@@ -48,8 +48,9 @@ Ranked is untouched. Product Features 2-5 have not been started.
   before the test.
 - 2.4.3 (versionCode 12) adds the per-macro **wait between repeats** (0–600 s,
   legacy default 0.8 s), the controller/bubble countdown, foreground pause and
-  stop-cancel behavior. The code compiles and 115 app unit tests pass; CI has
-  not run and the build is **not installed**.
+  stop-cancel behavior. The code compiles and 115 app unit tests pass; CI run
+  `40464810499` for commit `585ea20` is green. The build is **not installed**
+  and the delay has not been tested on the phone.
 - The 30+ real-capture set has not been collected or scored.
 - CI query note: GitHub’s `head_sha` filter needs the full 40-character SHA;
   a 7-character prefix returns an empty list even when the run exists. There
@@ -149,8 +150,8 @@ the phone after the test.
   legacy null → 800 ms, explicit 0, 5 000 ms, 900 000 → 600 000, negative → 0.
   The gate tests now use a monotonic test clock so they do not flake under
   load. **A/B**
-- Not yet verified: CI for 2.4.3, install, the on-device countdown, stop, and
-  foreground pause. **Pending**
+- CI is green (`40464810499`, commit `585ea20`). Not yet verified: install, the
+  on-device countdown, stop, and the foreground pause. **Pending**
 
 ## Data-safety rule (user instruction, 2026-10-26)
 
