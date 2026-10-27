@@ -201,7 +201,7 @@ Evidence levels: **A** artifact, **B** code, **C** saved-log evidence,
   watches, 4 detections, 4 records, 1 watch still open at the end, and
   **2 records with loot not captured** (12:55:07 and 12:56:53). The 2.4.2
   period has 4 macro watches + 3 manual watches, 3 records, all with loot,
-  and 3 watches cancelled/stopped before any result. **A/C**
+  and **4 watches cancelled or stopped before any result**. **A/C**
 - The two `attacks.*_243.json` snapshots predate the 12:51–12:56 records, so
   those 4 records are absent from the copies. That is a stale copy, not a
   loss. The four 2.4.3 records have IDs 1793085609423, 1793085728410,
@@ -224,7 +224,7 @@ Confirmed from the saved log (each detected result is one attack):
 | c) captured, read failed → "not captured" | **2** | 12:55:07 rows 1/3 conflict; 12:56:53 rows 0/3; both saved as records with null loot **A/C** |
 | d) rejected by duplicate/balance/other gate | **0** | no `record was not added`, `blocked by policy`, or balance rejection in the log; code has no balance gate **B/C** |
 | e) written then lost/overwritten | **0 observed** | stale copies explain the 4 missing records; atomic temp-file write; no clear path in the log **A/B** |
-| f) watcher not running | **3 watches in the saved log, and the main code-level risk** | 2 macro watches cancelled by a restart (11:04:25, 11:04:43), 1 manual watch stopped by the user (11:11:30), 1 watch open at pull; plus the one-shot watcher below **B/C** |
+| f) watcher not running | **4 watches in the saved log + the main code-level risk** | 2 macro watches cancelled by a restart (11:04:25, 11:04:43), 1 manual watch cancelled by a macro start (10:57:29), 1 manual watch stopped by the user (11:11:30), 1 watch open at pull; plus the one-shot watcher below **B/C** |
 | g) other | unknown | 4–5 of the 34 screenshots have non-standard layouts (war/Claim Reward, 2 loot rows, covered/blank bonus) **B/D** |
 
 The 34 screenshots after the log are **unclassified**, not counted as misses
