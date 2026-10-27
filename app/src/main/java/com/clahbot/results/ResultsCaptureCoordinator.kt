@@ -69,11 +69,16 @@ class ResultsCaptureCoordinator(
     fun isActive(): Boolean = current != null
 
     fun begin(session: CaptureSession) {
+        val previousId = current?.session?.id
+        val replaced = current != null
         cancel()
         gate.beginSession()
         val state = SessionState(session)
         current = state
-        event("watch begin id=${session.id} manual=${state.manual} macroId=${session.macroId}")
+        event(
+            "watch begin id=${session.id} manual=${state.manual} macroId=${session.macroId} " +
+                "replaced=${replaced} previous=${previousId ?: "-"}"
+        )
         baselineJob = scope.launch(Dispatchers.Default) {
             val startedOnResults = runCatching {
                 val bitmap = ClahAccessibilityService.captureScreenshot()
@@ -113,6 +118,7 @@ class ResultsCaptureCoordinator(
     }
 
     fun cancel() {
+        val cancelledId = current?.session?.id
         val hadSession = current != null
         watchJob?.cancel()
         watchJob = null
@@ -120,7 +126,7 @@ class ResultsCaptureCoordinator(
         baselineJob = null
         current = null
         gate.releaseHold()
-        if (hadSession) event("watch cancelled")
+        if (hadSession) event("watch cancelled id=${cancelledId ?: "-"}")
         scope.launch(Dispatchers.Main) {
             runCatching { showOverlay() }
         }
@@ -137,6 +143,8 @@ class ResultsCaptureCoordinator(
         }
 
         var poll = 0
+        var shotFailures = 0
+        var endReason = "loop exited"
         try {
             while (coroutineContext.isActive) {
                 val endedAt = state.playbackEndedAt
@@ -148,10 +156,16 @@ class ResultsCaptureCoordinator(
                 } else {
                     state.session.startedAt + MAX_WATCH_MS
                 }
-                if (System.currentTimeMillis() >= deadline) break
+                if (System.currentTimeMillis() >= deadline) {
+                    endReason = if (endedAt != null) "capture window expired" else "max watch expired"
+                    break
+                }
                 if (!ClahAccessibilityService.isGameForeground()) {
                     gate.notePoll(System.currentTimeMillis(), false, "game not foreground")
-                    event("poll skipped: game not foreground")
+                    event(
+                        "poll skipped: game not foreground " +
+                            "foreground=${ClahAccessibilityService.foregroundLabel()}"
+                    )
                     delay(RETRY_DELAY_MS)
                     continue
                 }
@@ -161,14 +175,16 @@ class ResultsCaptureCoordinator(
                 val detectionBitmap = ClahAccessibilityService.captureScreenshot()
                 val shotMs = (System.nanoTime() - shotStart) / 1_000_000L
                 if (detectionBitmap == null) {
+                    shotFailures++
                     gate.notePoll(pollStartedAt, false, "screenshot failed")
                     event(
                         "poll #${++poll} t=${pollStartedAt - state.session.startedAt}ms " +
-                            "screenshot failed after ${shotMs}ms"
+                            "screenshot failed after ${shotMs}ms streak=$shotFailures"
                     )
                     delay(RETRY_DELAY_MS)
                     continue
                 }
+                shotFailures = 0
 
                 val detectStart = System.nanoTime()
                 val check = reader.checkResultsScreen(detectionBitmap)
@@ -187,26 +203,48 @@ class ResultsCaptureCoordinator(
                 }
 
                 gate.requestHold()
-                event("results detected; hold requested; ${gate.snapshot()}")
+                event(
+                    "results detected; hold requested; frame=${detectionBitmap.width}x" +
+                        "${detectionBitmap.height}; ${gate.snapshot()}"
+                )
                 var cleanBitmap: Bitmap? = null
+                var cleanCheck: AppResultsReader.ScreenCheck? = null
                 try {
                     // Hide the bubble only for the clean capture. The results
                     // screen can stay open for minutes, so keeping the overlay
                     // hidden for the whole watch would be wrong.
                     withContext(Dispatchers.Main) { hideOverlay() }
                     delay(CLEAN_CAPTURE_DELAY_MS)
+                    val cleanShotStart = System.nanoTime()
                     cleanBitmap = ClahAccessibilityService.captureScreenshot()
+                    val cleanShotMs = (System.nanoTime() - cleanShotStart) / 1_000_000L
                     val clean = cleanBitmap
+                    event(
+                        "clean capture shot=${cleanShotMs}ms " +
+                            "bitmap=${clean?.let { "${it.width}x${it.height}" } ?: "null"}"
+                    )
                     if (clean != null) {
+                        val cleanReadStart = System.nanoTime()
                         val cleanResult = withTimeoutOrNull(READ_TIMEOUT_MS) {
                             reader.read(clean)
                         }
+                        val cleanReadMs = (System.nanoTime() - cleanReadStart) / 1_000_000L
                         if (cleanResult != null) {
+                            event("clean read ok after ${cleanReadMs}ms")
                             saveAndRecord(state, clean, cleanResult, "clean")
+                            event("watch ending after record; polls=$poll")
                             clear(state)
                             return
                         }
-                        event("clean frame read returned no result; trying detection frame")
+                        cleanCheck = withTimeoutOrNull(5_000) {
+                            reader.checkResultsScreen(clean)
+                        }
+                        event(
+                            "clean frame read returned no result after ${cleanReadMs}ms; " +
+                                "check=${cleanCheck?.isResults} " +
+                                "reason=${cleanCheck?.reason ?: "timeout"}; " +
+                                "trying detection frame"
+                        )
                     } else {
                         event("clean capture failed; trying detection frame")
                     }
@@ -216,11 +254,16 @@ class ResultsCaptureCoordinator(
                         reader.read(detectionBitmap)
                     }
                     if (fallback != null) {
+                        event("detection fallback read ok")
                         saveAndRecord(state, detectionBitmap, fallback, "detection")
+                        event("watch ending after record; polls=$poll")
                         clear(state)
                         return
                     }
-                    event("both frames failed to read")
+                    event(
+                        "both frames failed to read; cleanCheck=${cleanCheck?.isResults} " +
+                            "cleanReason=${cleanCheck?.reason ?: "-"}"
+                    )
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (throwable: Throwable) {
@@ -234,7 +277,7 @@ class ResultsCaptureCoordinator(
                 }
                 delay(RETRY_DELAY_MS)
             }
-            event("watch ended without a capture")
+            event("watch ended without a capture reason=$endReason polls=$poll last=${gate.snapshot()}")
             status("No results screen detected; no attack recorded.")
         } catch (cancelled: CancellationException) {
             throw cancelled
@@ -244,7 +287,12 @@ class ResultsCaptureCoordinator(
         } finally {
             gate.releaseHold()
             withContext(Dispatchers.Main) { runCatching { showOverlay() } }
-            if (current === state) current = null
+            val wasCurrent = current === state
+            if (wasCurrent) current = null
+            event(
+                "watch finally id=${state.session.id} polls=$poll wasCurrent=$wasCurrent " +
+                    "current=${current?.session?.id ?: "-"}"
+            )
             if (state.manual) {
                 event("manual watch ended")
                 withContext(Dispatchers.Main) { runCatching { onWatchEnded() } }
