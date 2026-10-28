@@ -31,4 +31,22 @@ class ResultsCapturePolicyTest {
             )
         )
     }
+
+    @Test
+    fun aManualWatchMayCaptureAnAlreadyOpenScreen() {
+        assertTrue(
+            ResultsCapturePolicy.mayAutoRecord(
+                detectedResults = true,
+                startedOnResults = true,
+                manual = true
+            )
+        )
+    }
+
+    @Test
+    fun anAlreadyRecordedScreenIsNeverRecordedAgain() {
+        assertTrue(ResultsCapturePolicy.mayRecordOpenResult(manual = true, alreadyRecorded = false))
+        assertFalse(ResultsCapturePolicy.mayRecordOpenResult(manual = true, alreadyRecorded = true))
+        assertFalse(ResultsCapturePolicy.mayRecordOpenResult(manual = false, alreadyRecorded = false))
+    }
 }

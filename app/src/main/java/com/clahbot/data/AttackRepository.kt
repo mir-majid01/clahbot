@@ -65,6 +65,33 @@ class AttackRepository(private val file: File) {
         }
     }
 
+    /**
+     * True when this screen (or, for legacy records without a hash, this exact
+     * loot triple and outcome) was already recorded recently. Used only to
+     * prevent one results screen from becoming two records.
+     */
+    suspend fun hasRecentMatch(
+        screenHash: String?,
+        gold: Long?,
+        elixir: Long?,
+        darkElixir: Long?,
+        outcome: String?,
+        since: Long
+    ): Boolean = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            val hasLoot = gold != null || elixir != null || darkElixir != null
+            readLocked().any { record ->
+                if (record.startedAt < since) return@any false
+                if (screenHash != null && record.screenHash == screenHash) return@any true
+                hasLoot &&
+                    record.outcome == outcome &&
+                    record.gold == gold &&
+                    record.elixir == elixir &&
+                    record.darkElixir == darkElixir
+            }
+        }
+    }
+
     suspend fun delete(id: Long): Boolean = withContext(Dispatchers.IO) {
         mutex.withLock {
             val all = readLocked().toMutableList()

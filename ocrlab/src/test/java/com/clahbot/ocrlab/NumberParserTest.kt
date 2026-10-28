@@ -68,15 +68,36 @@ class NumberParserTest {
     }
 
     @Test
-    fun rejectsTooFewDigitsAndPureLabelText() {
-        assertEquals(emptySet<Long>(), values("70"))
+    fun labelGluedToTheFrontKeepsTheNumber() {
+        assertEquals(setOf(918_016L), values("Dank sist918 016"))
+        assertEquals(setOf(8_016L), values("Dank sist8 016"))
+        assertEquals(setOf(100L, 290_000L), values("100% Bonus: +290000"))
+    }
+
+    @Test
+    fun aPeriodActsAsAGroupingSeparator() {
+        assertEquals(setOf(532_743L), values("S32.743"))
+    }
+
+    @Test
+    fun acceptsZeroAndSmallLootValues() {
+        assertEquals(setOf(0L), values("0"))
+        assertEquals(setOf(0L), values("O"))
+        assertEquals(setOf(29L), values("29"))
+        assertEquals(setOf(70L), values("70"))
+        assertEquals(0L, NumberParser.parseLoot("0"))
+        assertEquals(70L, NumberParser.parseLoot("70"))
+        assertEquals(0L, NumberParser.parseBonus("+0"))
+    }
+
+    @Test
+    fun rejectsPureLabelTextAndNonNumericText() {
         assertEquals(emptySet<Long>(), values("8/14"))
         assertEquals(emptySet<Long>(), values("14h 12m"))
         assertEquals(emptySet<Long>(), values("Troops expended:"))
         assertEquals(emptySet<Long>(), values("You got:GYCB"))
         assertEquals(emptySet<Long>(), values("VicoRY"))
         assertEquals(emptySet<Long>(), values("Return Home"))
-        assertNull(NumberParser.parseLoot("70"))
         assertNull(NumberParser.parseBonus("+"))
     }
 
@@ -103,7 +124,7 @@ class NumberParserTest {
         assertTrue(NumberParser.isNumericLike("4959"))
         assertTrue(NumberParser.isNumericLike("S03 859"))
         assertTrue(NumberParser.isNumericLike("•370000", allowBonusPrefix = true))
-        assertFalse(NumberParser.isNumericLike("70"))
+        assertTrue(NumberParser.isNumericLike("70"))
         assertFalse(NumberParser.isNumericLike("Troops expended:"))
         assertFalse(NumberParser.isNumericLike("You got:GYCB"))
     }

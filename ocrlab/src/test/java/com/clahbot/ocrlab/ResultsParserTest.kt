@@ -28,9 +28,9 @@ class ResultsParserTest {
             line(resultText, 1000, 240, 1300, 310),
             line("You got:", 1050, 380, 1300, 430),
             line("S03 859", 1100, 440, 1300, 490),
-            line("603 605", 1100, 500, 1300, 550),
-            line(darkRow, 1100, 560, 1300, 610),
-            line("Troops expended:", 1000, 650, 1400, 700),
+            line("603 605", 1100, 525, 1300, 575),
+            line(darkRow, 1100, 610, 1300, 660),
+            line("Troops expended:", 1000, 700, 1400, 750),
             line("100% Bonus:", 1550, 430, 1800, 480),
             line("37000o", 1550, 490, 1750, 540),
             line("+370000", 1550, 550, 1750, 600),
@@ -54,9 +54,9 @@ class ResultsParserTest {
             line("Defeat", 1000, 240, 1300, 310),
             line("You got:", 1050, 380, 1300, 430),
             line("363 609", 1100, 440, 1300, 490),
-            line("241 528", 1100, 500, 1300, 550),
-            line("4 959", 1100, 560, 1300, 610),
-            line("Troops expended:", 1000, 650, 1400, 700),
+            line("241 528", 1100, 525, 1300, 575),
+            line("4 959", 1100, 610, 1300, 660),
+            line("Troops expended:", 1000, 700, 1400, 750),
             line("16 584 G26", 1700, 30, 1950, 80),
             line("17 O06 S62", 1700, 90, 1950, 140),
             line("263 839", 1700, 150, 1950, 200)
@@ -134,7 +134,20 @@ class ResultsParserTest {
     }
 
     @Test
-    fun assignsByIconColourNotRowOrder() {
+    fun aWarResultWithTotalDestructionIsStillAResultScreen() {
+        val page = victoryPage()
+        val war = OcrPage(
+            page.width,
+            page.height,
+            page.lines.map { line ->
+                if (line.text.contains("Total damage")) line.copy(text = "Total destruction:") else line
+            }
+        )
+        assertTrue(ResultsScreenParser(sampler()).inspect(war) != null)
+    }
+
+    @Test
+    fun lootRowsFollowTheFixedOrderEvenWhenIconColoursDisagree() {
         val swapped = IconColorSampler { box ->
             when (box.top) {
                 440, 490 -> ResourceKind.ELIXIR
@@ -144,13 +157,47 @@ class ResultsParserTest {
             }
         }
         val inspection = requireNotNull(ResultsScreenParser(swapped).inspect(victoryPage()))
-        assertEquals(ResourceKind.ELIXIR, inspection.lootRows[0].resource)
-        assertEquals(ResourceKind.GOLD, inspection.lootRows[1].resource)
+        assertEquals(
+            listOf(ResourceKind.GOLD, ResourceKind.ELIXIR, ResourceKind.DARK),
+            inspection.lootRows.map { it.resource }
+        )
 
         val read = ResultsAssembler.assemble(inspection, readings(inspection))
-        assertEquals(603_605L, read.gold)
-        assertEquals(503_859L, read.elixir)
+        assertEquals(503_859L, read.gold)
+        assertEquals(603_605L, read.elixir)
         assertEquals(3_007L, read.darkElixir)
+    }
+
+    @Test
+    fun slotSelectionIgnoresANarrowGarbageNumberInTheLootColumn() {
+        val page = victoryPage()
+        val noisy = OcrPage(
+            page.width,
+            page.height,
+            page.lines + line("85", 1397, 525, 1405, 539)
+        )
+        val inspection = requireNotNull(ResultsScreenParser(sampler()).inspect(noisy))
+        assertEquals(3, inspection.lootRows.size)
+        assertTrue(inspection.lootRows[0].rawText.contains("859"))
+        val read = ResultsAssembler.assemble(inspection, readings(inspection))
+        assertEquals(503_859L, read.gold)
+    }
+
+    @Test
+    fun zeroLootRowsAreSynthesizedFromTheAnchorsWhenOcrHasNoNumberLine() {
+        val page = victoryPage()
+        val noLoot = OcrPage(
+            page.width,
+            page.height,
+            page.lines.filterNot { it.text.contains("859") || it.text.contains("605") || it.text.contains("007") }
+        )
+        val inspection = requireNotNull(ResultsScreenParser(sampler()).inspect(noLoot))
+        assertEquals(3, inspection.lootRows.size)
+        assertEquals(
+            listOf(ResourceKind.GOLD, ResourceKind.ELIXIR, ResourceKind.DARK),
+            inspection.lootRows.map { it.resource }
+        )
+        assertTrue(inspection.lootRows.all { it.rawText.isEmpty() })
     }
 
     @Test
@@ -161,6 +208,27 @@ class ResultsParserTest {
         val read = ResultsAssembler.assemble(inspection, readings(inspection))
         assertEquals(4_959L, read.darkElixir)
         assertFalse(read.needsReview)
+    }
+
+    @Test
+    fun duplicateIconColoursFallBackToTheFixedLootRowOrder() {
+        val duplicateDark = IconColorSampler { box ->
+            when (box.top) {
+                440, 490 -> ResourceKind.GOLD
+                500, 550 -> ResourceKind.DARK
+                560, 610 -> ResourceKind.DARK
+                else -> null
+            }
+        }
+        val inspection = requireNotNull(ResultsScreenParser(duplicateDark).inspect(victoryPage()))
+        assertEquals(
+            listOf(ResourceKind.GOLD, ResourceKind.ELIXIR, ResourceKind.DARK),
+            inspection.lootRows.map { it.resource }
+        )
+        val read = ResultsAssembler.assemble(inspection, readings(inspection))
+        assertEquals(503_859L, read.gold)
+        assertEquals(603_605L, read.elixir)
+        assertEquals(3_007L, read.darkElixir)
     }
 
     @Test
@@ -197,18 +265,22 @@ class ResultsParserTest {
     }
 
     @Test
-    fun unknownIconColourDropsTheRowAndLeavesTheFieldUncaptured() {
+    fun geometryKeepsLootRowsWithoutAnIconSamplerAndDropsBonusRows() {
         val inspection = requireNotNull(
             ResultsScreenParser { null }.inspect(victoryPage())
         )
-        assertTrue(inspection.lootRows.isEmpty())
+        assertEquals(3, inspection.lootRows.size)
+        assertEquals(
+            listOf(ResourceKind.GOLD, ResourceKind.ELIXIR, ResourceKind.DARK),
+            inspection.lootRows.map { it.resource }
+        )
         assertTrue(inspection.bonusRows.isEmpty())
         assertTrue(inspection.issues.any { it.contains("icon colour unknown") })
 
         val read = ResultsAssembler.assemble(inspection, readings(inspection))
-        assertNull(read.gold)
-        assertNull(read.elixir)
-        assertNull(read.darkElixir)
+        assertEquals(503_859L, read.gold)
+        assertEquals(603_605L, read.elixir)
+        assertEquals(3_007L, read.darkElixir)
         assertTrue(read.needsReview)
     }
 

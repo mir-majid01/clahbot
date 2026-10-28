@@ -84,12 +84,14 @@ import androidx.lifecycle.ViewModelProvider
 import com.clahbot.R
 import com.clahbot.data.AttackRepository
 import com.clahbot.data.BotState
+import com.clahbot.data.CaptureSource
 import com.clahbot.data.models.AttackRecord
 import com.clahbot.data.models.AttackStats
 import com.clahbot.data.models.LootInput
 import com.clahbot.data.ControllerState
 import com.clahbot.data.MacroRepository
 import com.clahbot.data.SettingsStore
+import com.clahbot.results.ResultsRescan
 import com.clahbot.data.models.Macro
 import com.clahbot.execution.MacroTimeline
 import com.clahbot.service.FloatingMenuService
@@ -235,6 +237,8 @@ fun DashboardScreen(
     var historyFilter by remember { mutableStateOf(0) }
     var lootEditing by remember { mutableStateOf<AttackRecord?>(null) }
     var deletingAttack by remember { mutableStateOf<AttackRecord?>(null) }
+    var rescanning by remember { mutableStateOf(false) }
+    var rescanStatus by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(Unit) { attackRepository.refresh() }
 
@@ -454,6 +458,32 @@ fun DashboardScreen(
                 }
             }
             item {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Button(
+                        enabled = !rescanning,
+                        onClick = {
+                            rescanning = true
+                            rescanStatus = null
+                            scope.launch {
+                                val summary = ResultsRescan.run(context, attackRepository)
+                                attackRepository.refresh()
+                                rescanStatus = ResultsRescan.summaryText(summary)
+                                rescanning = false
+                            }
+                        }
+                    ) {
+                        Text(if (rescanning) "Re-scanning…" else "Re-scan unreadable")
+                    }
+                    rescanStatus?.let {
+                        Text(it, fontSize = 11.sp, color = TextMuted)
+                    }
+                }
+            }
+            item {
                 HistoryFilterRow(selected = historyFilter, onSelect = { historyFilter = it })
             }
             if (filteredAttacks.isEmpty()) {
@@ -498,6 +528,7 @@ fun DashboardScreen(
                             } else {
                                 AttackRecord.LOOT_NONE
                             },
+                            captureSource = AttackRecord.SOURCE_MANUAL,
                             verified = anyLoot,
                             confirmed = true
                         )
@@ -720,18 +751,17 @@ private fun AttackHistoryRow(
                         LootChip(R.drawable.ic_gold, record.gold)
                         LootChip(R.drawable.ic_elixir, record.elixir)
                         LootChip(R.drawable.ic_dark, record.darkElixir)
-                        when (record.lootSource) {
-                            AttackRecord.LOOT_OCR ->
-                                Text("read", fontSize = 9.sp, color = TextMuted)
-
-                            AttackRecord.LOOT_MANUAL ->
-                                Text("edited", fontSize = 9.sp, color = TextMuted)
-                        }
+                        Text(
+                            CaptureSource.label(record.captureSource, record.lootSource),
+                            fontSize = 9.sp,
+                            color = TextMuted
+                        )
                     }
                 } else {
                     Text(
                         if (record.confirmed) {
-                            "Loot not captured"
+                            "Loot not captured · " +
+                                CaptureSource.label(record.captureSource, record.lootSource)
                         } else {
                             "Loot not captured · tap ✓ to confirm"
                         },

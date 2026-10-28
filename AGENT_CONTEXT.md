@@ -807,3 +807,153 @@ cached; CI uses the repository wrapper (8.2).
   into `macros.json` for the selected macro (existing behavior, not new). The
   verification changed the `New` macro's repeat; the original file is restored
   from backup after testing.
+
+## 2026-10-27 — Reliable loot capture (priority change)
+
+This section supersedes the version numbers and watcher limits above. The
+per-macro repeat-delay UI work is paused.
+
+### Installed state
+
+- App **2.4.5** (versionCode 14), APK SHA-256
+  `1cf5f0ce056c8a2d61e836301f2966fc73d3689731b9cef81dea6682fe84911a`.
+  The installed APK pulled from the phone matches the local build byte-for-byte.
+- Install was an in-place `adb install -r`; `attacks.json` stayed
+  `305a4341…fb177` and `macros.json` stayed `e8115ee2…7e0b` before and after.
+- The paused delay branch is `paused/repeat-delay-2.4.3` at `0befc3c`, local
+  only; GitHub authentication is still unavailable. The capture work is on
+  `main`.
+
+### Step 1 — diagnosis (evidence: A for captures/log, B for code)
+
+- 24 app captures were on disk; 23 result-screen detections had been rejected
+  as stale; 2 records had no loot; 31 external screenshots did not match any
+  record. The duplicate gate used id only.
+- Manual attacks were not watched unless **Watch results** was armed. In 2.4.3
+  the arm was one-shot and a late arm could not start once the result screen
+  was already open. This was the main "attack missing" cause, not OCR.
+- Similar loot triples were not merged by the duplicate gate; only the record
+  id was compared.
+
+### Step 2 — test set (evidence: A)
+
+- `.ocr-work/step2/testpack_real/`: 58 images = 24 native app captures
+  (2720×1224 PNG) + 34 external images (25 full frames, 9 crops, upscaled 2×
+  JPEG from WhatsApp). Split by attack/time, never randomly.
+- Ground truth was visually checked; the three known row-order mistakes and the
+  two zero screens were corrected by record id, not by screenshot timestamp.
+- Review sheet: `.ocr-work/step2/review_sheet.html` (and `.csv`) lists all 58
+  images with human-confirmed vs reader-draft values. Native rows are
+  human-confirmed; external rows are marked “review · draft only” and their loot
+  was not human-labelled.
+- The 34 compressed external frames are a robustness set only. They are not a
+  detection target because WhatsApp resizing removed text; native captures are
+  the meaningful detection baseline. External full frames detected 11/25 at
+  best; crops 0/9. No app behavior was tuned to those images.
+
+### Step 3 — baseline on the pack (evidence: A)
+
+- Native: 24/24 result screens detected. 19/24 had all three loot values
+  correct. Three records had the elixir value filed under dark elixir
+  (2,058,013 / 2,932,863 / 1,722,937) and two 0%-loot screens had null loot.
+  Four field values were wrong; the app never wrote a wrong value into the live
+  history because the lab ran on a copy.
+
+### Step 4 — fixes and final pack score (evidence: A for report, B for code)
+
+Implemented: continuous watcher, late manual arm, 60-minute manual watch,
+screen-hash one-screen-one-record cycle, unreadable-screen record, re-scan,
+capture-source labels, retention cap, and the OCR/crop/consensus changes:
+
+- Fixed row order gold → elixir → dark from `You got` geometry.
+- Loot row pitch from the `You got` anchor (0.07 × screen height), not the
+  distance to `Troops expended` (war layouts pack rows at the top).
+- Crop readers use the full-page number's own box when it exists; the fallback
+  no-text slot is a single-digit band beside the icon.
+- Resource icon is removed from digit segmentation; the panel edge can no
+  longer define the glyph line.
+- A separated period is a grouping separator (`S32.743` → 532743).
+- Label text glued to the front of a number keeps the number (`sist918 016` →
+  918016).
+- Consensus: clean readers (no long word in their text) outvote name-overlaid
+  readers; one value read by ≥2 readers with all other readings one-digit
+  slips or short unrelated numbers is accepted; a short value that is only the
+  tail of a longer reading is rejected; a no-text row records 0 only when the
+  digit template and an OCR reader both see exactly `0`.
+
+Final native pack result: **24/24 detected, 23/24 with all three values
+correct, 0 wrong values, median 1.06 s per screen**. Remaining failures:
+
+1. `1793085905665` (0% victory, very dim): dark zero confirmed, gold and
+   elixir zeros not confirmed by template + OCR → `loot not captured`. Honest
+   failure; the other zero screen `1793086011551` is 0/0/0 confirmed.
+2. `1793090782271`: a burned-in name (`Dank sist`) covers the leading digits
+   of 918016. Readers see 8016 / 11816 / 918016; two readers never agree, so
+   the gold value stays `loot not captured` rather than guessing.
+
+The 98% target is therefore **not proven** on this 24-native pack (95.8%);
+0 wrong values is proven on the pack. External compressed frames are excluded
+from these percentages.
+
+### Step 5 — re-scan verification (evidence: A for report/screenshots)
+
+`ResultsRescan` re-reads only confirmed records with a screenshot that are
+missing loot or incomplete, accepts only all three main values, keeps the
+original screenshot, sets `captureSource=re-scanned`, and appends a note. The
+dashboard button was added in `MainActivity`.
+
+A copy-only instrumentation test (`app/src/androidTest/.../RescanCopyTest.kt`)
+ran against a copy of the live history with all 6 candidates:
+
+- 29 fixture records, 6 candidates, 6 scanned, **5 updated**, 1 left unchanged.
+- Verified against the screenshots:
+  - `1793126063275` → 0/0/0 (dim 0% victory).
+  - `1793091279042` → 1,722,937 / 1,770,913 / 19,201.
+  - `1793087831132` → 2,932,863 / 1,921,992 / 14,088.
+  - `1793087423662` → 2,058,013 / 2,661,730 / 29,930.
+  - `1793085941732` → 0/0/0.
+- `1793085816858` (the very dim zero screen above) was scanned but not
+  changed, because gold and elixir zeros could not be confirmed.
+- The live `attacks.json` hash was identical before and after
+  (`305a4341…fb177`); the live `macros.json` hash was also unchanged
+  (`e8115ee2…7e0b`). The updates exist only in the test copy; the user can
+  apply them with the dashboard button after their own backup.
+
+### Data safety and backups (evidence: A)
+
+- `.ocr-work/step4_backup/attacks.before_244.json` (same SHA `305a4341…`),
+  `macros.before_244.json` (`e8115ee2…`), installed 2.4.4 APK
+  `bccaedd4…c0cb`.
+- `.ocr-work/step5_backup/attacks.before_245.json`,
+  `macros.before_245.json`, `installed_245.apk`, `rescan_test_report.txt`,
+  and the three checked screenshots under `shots/`.
+- The 14 old unconfirmed playback records were not deleted or edited.
+  `macros.json` was not restored or modified.
+
+### Balance-delta proposal (not built)
+
+A balance-delta check would use the before/after gold, elixir and dark
+balances plus the bonus panel to predict loot. It should be displayed as a
+separate **unverified estimate**, never mixed into confirmed totals or written
+into `gold/elixir/darkElixir`, and should never turn a failed read into 0.
+It is proposed only; no code was added.
+
+### Evidence levels
+
+- A: device captures, lab JSON (`accuracy_report_slot7.json`), re-scan report,
+  APK/file SHA-256, screenshots inspected above.
+- B: source and unit/instrumentation tests in this repo.
+- C: rolling app log (`autoclash_events.log`).
+- D: the remaining-failure explanations above (dim overlay, name overlay) are
+  visual inference from the screenshots, not reader instrumentation output.
+
+### Next
+
+1. User device test: play attacks with the installed 2.4.5 and check that every
+   open result screen becomes exactly one record; then use **Re-scan
+   unreadable** on the real history after a backup.
+2. Collect 30+ new real captures as a clean holdout; the current 24 native
+   captures informed the fixes, so they are a regression set, not a clean
+   holdout.
+3. Push the paused delay branch once GitHub authentication works; keep the local
+   git bundle current.

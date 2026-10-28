@@ -54,7 +54,10 @@ class RowCropReader(
         timers.add(TimingKeys.SEGMENT, elapsed(segmentStart))
         val templateCrop = segmentation?.let { save("${tag}_template", it.binary, timers) }
 
-        val tight = tighten(source, segmentation?.bounds)
+        // Crop readers see the whole row slot. Tightening to the template
+        // segmentation can keep only the larger resource icon and cut the
+        // digits out, which made ML Kit's crop reader return nothing.
+        val tight = source
         val reads = mutableListOf<EngineRowRead>()
 
         val fullCandidates = candidates(row.role, row.rawText)
@@ -118,11 +121,15 @@ class RowCropReader(
             val runRapid = strategy == ReaderStrategy.ALL || result.value == null
             if (runRapid) {
                 val rapidStart = System.nanoTime()
+                val rapidSource = segmentation?.bounds
+                    ?.let { tighten(source, it) }
+                    ?: source
                 val rapid = try {
-                    rapidOcr.recognize(tight)
+                    rapidOcr.recognize(rapidSource)
                 } catch (_: Throwable) {
                     null
                 }
+                if (rapidSource !== source) rapidSource.recycle()
                 timers.add(TimingKeys.RAPIDOCR_CROP, elapsed(rapidStart))
                 if (rapid != null) {
                     val rapidCrop = save("${tag}_rapidocr", rapid.input, timers)
@@ -159,11 +166,12 @@ class RowCropReader(
             }
         }
 
+        val emptyHint = row.rawText.isEmpty()
         val runTemplate = templates != null && segmentation != null && (
             if (!templateVoteEligible) {
                 runTemplateForTiming
             } else {
-                strategy == ReaderStrategy.ALL || result.value == null
+                emptyHint || strategy == ReaderStrategy.ALL || result.value == null
             }
             )
         if (templates != null && segmentation != null && runTemplate) {
@@ -229,15 +237,35 @@ class RowCropReader(
             }
         }
 
+        // Without a full-page number line, only a confirmed single zero may
+        // be recorded. This catches real zero-loot results without ever
+        // turning a fragment of a larger number into a value.
+        val finalResult = if (emptyHint && templateVoteEligible) {
+            val templateRead = reads.firstOrNull { it.reader == Readers.TEMPLATE_CROP }
+            val ocrZero = reads.any {
+                it.reader != Readers.TEMPLATE_CROP && it.eligibleForVote &&
+                    it.candidates == listOf(0L)
+            }
+            val templateZero = templateRead?.text?.trim() == "0" &&
+                templateRead.candidates == listOf(0L)
+            if (result.value == 0L && ocrZero && templateZero) {
+                ConsensusResult(0L, result.sources + Readers.TEMPLATE_CROP, "zero_confirmed")
+            } else {
+                ConsensusResult(null, result.sources, "zero_unverified")
+            }
+        } else {
+            result
+        }
+
         val reading = RowReading(
             role = row.role,
             index = index,
             resource = row.resource,
             box = row.box,
             reads = reads,
-            combined = result.value,
-            sources = result.sources,
-            status = result.status,
+            combined = finalResult.value,
+            sources = finalResult.sources,
+            status = finalResult.status,
             timingsMs = timers.snapshot()
         )
 
@@ -287,9 +315,9 @@ class RowCropReader(
     }
 
     private fun cropSource(bitmap: Bitmap, box: OcrBox): Bitmap {
-        val leftPad = max(10, box.height * 3 / 2)
-        val rightPad = max(4, box.height / 4)
-        val verticalPad = max(3, box.height / 3)
+        val leftPad = max(8, minOf(box.height / 2, box.width / 3))
+        val rightPad = max(4, minOf(box.height / 4, box.width / 4))
+        val verticalPad = max(3, box.height / 8)
         val left = (box.left - leftPad).coerceIn(0, bitmap.width - 1)
         val top = (box.top - verticalPad).coerceIn(0, bitmap.height - 1)
         val right = (box.right + rightPad).coerceIn(left + 1, bitmap.width)
@@ -297,8 +325,7 @@ class RowCropReader(
         return Bitmap.createBitmap(bitmap, left, top, right - left, bottom - top)
     }
 
-    private fun tighten(source: Bitmap, bounds: OcrBox?): Bitmap {
-        if (bounds == null) return source
+    private fun tighten(source: Bitmap, bounds: OcrBox): Bitmap {
         val pad = max(3, bounds.height / 5)
         val left = (bounds.left - pad).coerceIn(0, source.width - 1)
         val top = (bounds.top - pad).coerceIn(0, source.height - 1)

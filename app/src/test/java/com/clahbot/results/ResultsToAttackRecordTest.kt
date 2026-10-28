@@ -128,4 +128,54 @@ class ResultsToAttackRecordTest {
         assertTrue(record.note.contains("Some loot fields were not captured"))
         assertTrue(record.note.contains("stopped before the macro ended"))
     }
+
+    @Test
+    fun eachLaterResultInTheSameWatchGetsItsOwnIdAndStart() {
+        val record = ResultsToAttackRecord.build(
+            session = session,
+            read = read(),
+            playbackEndedAt = 90_000L,
+            interrupted = false,
+            screenshotPath = null,
+            sidecarPath = null,
+            recordId = 2_000L,
+            recordStartedAt = 61_000L,
+            captureSource = AttackRecord.SOURCE_AUTO,
+            screenHash = "0123456789abcdef"
+        )
+
+        assertEquals(2_000L, record.id)
+        assertEquals(61_000L, record.startedAt)
+        assertEquals(29_000L, record.durationMs)
+        assertEquals(AttackRecord.SOURCE_AUTO, record.captureSource)
+        assertEquals("0123456789abcdef", record.screenHash)
+    }
+
+    @Test
+    fun anUnreadableScreenStillCreatesOneConfirmedRecordWithNullLoot() {
+        val record = ResultsToAttackRecord.buildUnreadable(
+            session = session,
+            playbackEndedAt = 61_000L,
+            interrupted = false,
+            screenshotPath = "/tmp/unreadable.png",
+            sidecarPath = "/tmp/unreadable.json",
+            recordId = 2_000L,
+            recordStartedAt = 1_000L,
+            screenHash = "0123456789abcdef"
+        )
+
+        assertEquals(2_000L, record.id)
+        assertEquals(1_000L, record.startedAt)
+        assertNull(record.gold)
+        assertNull(record.elixir)
+        assertNull(record.darkElixir)
+        assertFalse(record.hasLoot)
+        assertEquals(AttackRecord.LOOT_NONE, record.lootSource)
+        assertEquals(AttackRecord.SOURCE_AUTO, record.captureSource)
+        assertEquals("0123456789abcdef", record.screenHash)
+        assertFalse(record.verified)
+        assertFalse(record.complete)
+        assertTrue(record.confirmed)
+        assertTrue(record.note.contains("loot not captured"))
+    }
 }

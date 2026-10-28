@@ -15,6 +15,12 @@ data class CaptureSession(
  * evidence and must not create a record.
  */
 object ResultsCapturePolicy {
-    fun mayAutoRecord(detectedResults: Boolean, startedOnResults: Boolean): Boolean =
-        detectedResults && !startedOnResults
+    fun mayAutoRecord(
+        detectedResults: Boolean,
+        startedOnResults: Boolean,
+        manual: Boolean = false
+    ): Boolean = detectedResults && (!startedOnResults || manual)
+
+    fun mayRecordOpenResult(manual: Boolean, alreadyRecorded: Boolean): Boolean =
+        manual && !alreadyRecorded
 }
