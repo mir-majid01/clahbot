@@ -95,7 +95,7 @@ updates from this repository's Releases. See
 | `SettingsStore` | Shared preferences as a `StateFlow`. |
 | `GitHubUpdater` | Release check, checksum-verified download and installer launch. |
 | `:ocr` | Shared on-device result-screen reader: ML Kit full/crop, Tesseract, RapidOCR PP-OCRv4 and digit templates with strict-majority consensus. |
-| `ResultsCaptureCoordinator` | Watches for the result screen from playback start (or a manual watch) through four minutes after playback ends, reads it, and creates one confirmed attack record only when the results anchors are actually detected. |
+| `ResultsCaptureCoordinator` | Watches continuously from playback start (or a manual watch) and records every new result screen; a manual watch can capture an already-open screen if it was not recorded before. |
 | `ResultCaptureGate` | Holds a late macro tap (up to 10 s) while a detected result screen is captured and read, so Return Home cannot dismiss it first. |
 | `AppEventLog` | Rolling private diagnostic log (256 KB + one rotation) of playback, polls, reads and records; no screenshots or loot values. |
 
@@ -107,11 +107,28 @@ alone is never recorded. Loot (gold, elixir, dark elixir and bonuses) is read
 on-device; a field that was not read stays `loot not captured`, never zero.
 Deleting a macro never deletes its past attack records.
 
-The controller's Stats tab has **Watch results** for a hand-played attack. It
-runs the same full-resolution detector without a macro and records only when a
-result screen is detected. During a macro, a late tap (the Return Home tap) is
-held until a detected result screen has been captured and read, for at most
-10 seconds. The rolling diagnostic log is `files/autoclash_events.log`; pull it
+The controller's Stats tab has **Watch results** for a hand-played attack. One
+press now stays armed for up to 60 minutes and keeps watching after each
+capture, so every new result in that session can become one record. If the
+screen is already open when you press it, it is read and recorded only when no
+recent record has the same screen hash or loot; an already-recorded screen is
+skipped. A macro loop likewise keeps watching after its first record. Every
+screen is recorded at most once, even when the next poll sees a different OCR
+frame of the same screen.
+
+Each record shows how it was produced: **auto-read**, **re-scanned**, or
+**manually corrected**. If both the clean and detection frames are unreadable,
+the screen still creates exactly one confirmed record with `loot not captured`
+and the screenshot is kept. The dashboard has **Re-scan unreadable** to re-read
+saved screenshots with the current reader; a record is updated only when all
+three main loot values are produced, and the original screenshot is kept.
+
+Saved capture triples (PNG, JSON, TXT) are capped at 200 captures or 800 MB.
+When over a limit, the oldest triples are deleted first; the capture just
+written is always kept. Records are not deleted, so an old record may point to
+a screenshot that has been aged out.
+
+The rolling diagnostic log is `files/autoclash_events.log`; pull it
 with `adb exec-out run-as com.clahbot cat files/autoclash_events.log`.
 
 Each macro also stores a **wait between repeats** (0–600 seconds, default
@@ -131,15 +148,20 @@ the pause. Delays below one second still apply but do not show a countdown.
 - Coordinates are normalized to the recording display; a very different aspect
   ratio can shift touch positions.
 - Speed changes apply at the next playback run.
-- The v2.4.3 build is **arm64-only** because the bundled OCR native libraries
+- The v2.4.5 build is **arm64-only** because the bundled OCR native libraries
   made the universal APK about 151 MB. The lab and app are verified on the
   arm64 test phone; other ABIs are not packaged in this build.
 - Result-screen OCR needs the accessibility screenshot permission (Android 11+)
-  and the game to be in the foreground while the result screen is open. The
-  result screen is watched for from playback start, because a recorded macro
-  normally taps Return Home while it is open. A result screen that was already
-  open before playback is ignored as stale; a missing or partial read stays
-  `loot not captured`.
+  and the game to be in the foreground while the result screen is open. A macro
+  playback that starts while a result screen is already open still ignores that
+  screen as stale; a manual watch may capture it when it has not been recorded
+  recently. A missing or partial read stays `loot not captured`.
+- A manual watch runs for up to 60 minutes per arm; press **Watch results**
+  again after that or after pressing **Stop**. It does not start automatically
+  when you begin a hand attack.
+- The screen-hash duplicate guard is deliberately time-limited to 10 minutes.
+  If an identical screen is still open after that window and you re-arm the
+  watch, a duplicate record is possible; this is unlikely in normal play.
 - Playback pauses when Clash of Clans leaves the foreground and the session is
   marked interrupted; resuming is manual. This includes the wait between
   repeats.

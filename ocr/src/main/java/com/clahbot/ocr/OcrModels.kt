@@ -96,6 +96,7 @@ object Readers {
     const val RAPIDOCR_CROP = "rapidocr_crop"
     const val TEMPLATE_CROP = "template_crop"
     const val CONSENSUS = "consensus"
+    const val NEAR_MATCH = "near_match"
     const val BALANCE_MATH = "balance_math"
 
     val ALL_CROPS = listOf(MLKIT_CROP, TESSERACT_CROP, RAPIDOCR_CROP, TEMPLATE_CROP)

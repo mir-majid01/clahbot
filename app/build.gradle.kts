@@ -11,8 +11,8 @@ android {
         applicationId = "com.clahbot"
         minSdk = 26
         targetSdk = 34
-        versionCode = 12
-        versionName = "2.4.3"
+        versionCode = 14
+        versionName = "2.4.5"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         // The current build is for the arm64 test phone; the OCR stack's
@@ -99,4 +99,7 @@ dependencies {
     implementation("dev.rikka.shizuku:provider:13.1.5")
 
     testImplementation("junit:junit:4.13.2")
+    androidTestImplementation("androidx.test:runner:1.5.2")
+    androidTestImplementation("androidx.test:rules:1.5.0")
+    androidTestImplementation("androidx.test.ext:junit:1.1.5")
 }

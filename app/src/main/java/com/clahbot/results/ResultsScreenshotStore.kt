@@ -43,7 +43,7 @@ class ResultsScreenshotStore(private val context: Context) {
         val issues: List<String>,
         val source: String,
         val timingsMs: Map<String, Long>,
-        val read: ResultsRead,
+        val read: ResultsRead?,
         val evidence: List<RowReading>
     )
 
@@ -107,7 +107,84 @@ class ResultsScreenshotStore(private val context: Context) {
                 GsonBuilder().setPrettyPrinting().create().toJson(sidecar)
             ),
             txt = writeText(txt, textSummary(session, sidecar))
+        ).also { cleanup(directory, base) }
+    }
+
+    /**
+     * Saves the one screenshot for a detected screen whose loot could not be
+     * read. The sidecar is deliberately value-free so a later re-scan can
+     * update the same record without inventing loot.
+     */
+    fun saveUnreadable(
+        bitmap: Bitmap,
+        session: CaptureSession,
+        reason: String
+    ): SavedCapture {
+        val directory = context.getExternalFilesDir("results_captures")
+            ?: File(context.filesDir, "results_captures").apply { mkdirs() }
+        directory.mkdirs()
+        val capturedAt = System.currentTimeMillis()
+        val base = "${capturedAt}_unreadable_Gx_Ex_Dx"
+        val png = File(directory, "$base.png")
+        val json = File(directory, "$base.json")
+        val txt = File(directory, "$base.txt")
+        val sidecar = Sidecar(
+            capturedAt = capturedAt,
+            attackId = session.id,
+            macroName = session.macroName,
+            outcome = "unknown",
+            lootStatus = "loot not captured",
+            gold = null,
+            elixir = null,
+            darkElixir = null,
+            bonusGold = null,
+            bonusElixir = null,
+            bonusDarkElixir = null,
+            balanceGold = null,
+            balanceElixir = null,
+            balanceDarkElixir = null,
+            confidence = 0.0,
+            needsReview = true,
+            issues = listOf(reason),
+            source = "accessibility-screenshot",
+            timingsMs = emptyMap(),
+            read = null,
+            evidence = emptyList()
         )
+        return SavedCapture(
+            png = writePng(png, bitmap),
+            json = writeText(
+                json,
+                GsonBuilder().setPrettyPrinting().create().toJson(sidecar)
+            ),
+            txt = writeText(txt, textSummary(session, sidecar))
+        ).also { cleanup(directory, base) }
+    }
+
+    private fun cleanup(directory: File, keepBase: String) {
+        val files = directory.listFiles()?.filter { it.isFile }.orEmpty()
+        val entries = files.groupBy { it.nameWithoutExtension }.map { (base, group) ->
+            CaptureRetention.Entry(
+                base = base,
+                files = group.map { it.name },
+                bytes = group.sumOf { it.length() },
+                modified = group.maxOf { it.lastModified() }
+            )
+        }
+        val delete = CaptureRetention.selectForDeletion(
+            entries = entries,
+            maxCaptures = MAX_CAPTURES,
+            maxBytes = MAX_BYTES,
+            keepBase = keepBase
+        )
+        if (delete.isEmpty()) return
+        var removed = 0
+        for (entry in entries.filter { it.base in delete }) {
+            for (name in entry.files) {
+                if (File(directory, name).delete()) removed++
+            }
+        }
+        Log.i(TAG, "Capture retention removed $removed old files (${delete.size} captures)")
     }
 
     private fun textSummary(session: CaptureSession, sidecar: Sidecar): String = buildString {
@@ -160,5 +237,7 @@ class ResultsScreenshotStore(private val context: Context) {
 
     companion object {
         private const val TAG = "AutoClashResults"
+        private const val MAX_CAPTURES = 200
+        private const val MAX_BYTES = 800L * 1024L * 1024L
     }
 }

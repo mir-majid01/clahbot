@@ -22,6 +22,10 @@ data class AttackRecord(
     val bonusDarkElixir: Long? = null,
     /** "none" (never observed), "manual" (entered by the user) or "ocr". */
     val lootSource: String = LOOT_NONE,
+    /** How this record's screen was turned into a record. */
+    val captureSource: String? = null,
+    /** Cheap whole-screen hash used to avoid recording one screen twice. */
+    val screenHash: String? = null,
     /** "unknown", "completed", or "interrupted". */
     val result: String = RESULT_UNKNOWN,
     /** "victory" or "defeat" when the result screen was read automatically. */
@@ -46,6 +50,9 @@ data class AttackRecord(
         const val LOOT_NONE = "none"
         const val LOOT_MANUAL = "manual"
         const val LOOT_OCR = "ocr"
+        const val SOURCE_AUTO = "auto-read"
+        const val SOURCE_RESCAN = "re-scanned"
+        const val SOURCE_MANUAL = "manual-corrected"
         const val RESULT_UNKNOWN = "unknown"
         const val RESULT_COMPLETED = "completed"
         const val RESULT_INTERRUPTED = "interrupted"

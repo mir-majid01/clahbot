@@ -102,13 +102,18 @@ class ResultsScreenParser(
             FuzzyMatch.matchesResult(it.text, "victory") ||
                 FuzzyMatch.matchesResult(it.text, "defeat")
         }
-        val damage = page.lines.any { normalized(it.text).contains("totaldamage") }
+        val damage = page.lines.any { hasDamageAnchor(it.text) }
         return when {
             !youGot -> "no 'You got' anchor"
             !result -> "no Victory/Defeat anchor"
-            !damage -> "no 'Total damage' anchor"
+            !damage -> "no damage anchor"
             else -> "anchors out of order"
         }
+    }
+
+    private fun hasDamageAnchor(text: String): Boolean {
+        val value = normalized(text)
+        return value.contains("totaldamage") || value.contains("totaldestruction")
     }
 
     private fun findAnchors(page: OcrPage): Anchors? {
@@ -118,7 +123,7 @@ class ResultsScreenParser(
                 FuzzyMatch.matchesResult(it.text, "defeat")
         } ?: return null
         page.lines.firstOrNull {
-            normalized(it.text).contains("totaldamage")
+            hasDamageAnchor(it.text)
         } ?: return null
         val youGotBox = youGot.box
         val resultBox = result.box
@@ -138,39 +143,75 @@ class ResultsScreenParser(
         issues: MutableList<String>
     ): List<RowCandidate> {
         val youGotBox = youGot.box ?: return emptyList()
-        val troops = page.lines.firstOrNull { normalized(it.text).contains("troops") }
-        val top = youGotBox.bottom
-        val bottom = troops?.box?.top
-            ?.takeIf { it > top }
-            ?: (top + page.height / 4).coerceAtMost(page.height)
 
-        // The loot values are right-aligned under "You got". A wide left margin
-        // still contains a clipped leading digit but not the Sour Elixir panel.
+        // The result panel always uses three vertically ordered loot rows.
+        // Their pitch is fixed by the panel, while the distance down to
+        // "Troops expended" changes with the layout: war results pack the rows
+        // tightly near the anchor and leave a large empty band below. Dividing
+        // the anchor-to-troops span therefore drifts into the troop row. OCR
+        // text is used only as a hint for the full-page reader; the crop
+        // readers read the fixed slot.
+        val top = youGotBox.bottom
+        val pitch = (page.height * 0.070f).coerceAtLeast(40f)
+        val firstCenter = top + pitch * 0.45f
         val columnCenter = youGotBox.centerX
-        val rightTolerance = (page.width * 0.05).toInt()
         val columnLeft = (columnCenter - page.width * 0.16).toInt()
+        val columnRight = (columnCenter + page.width * 0.10).toInt()
+        val zeroLeft = (columnCenter + page.width * 0.002).toInt()
+        val zeroRight = (columnCenter + page.width * 0.016).toInt()
+        val rightTolerance = (page.width * 0.05).toInt()
         val rightMin = columnCenter - rightTolerance
         val rightMax = columnCenter + rightTolerance
+        val order = listOf(ResourceKind.GOLD, ResourceKind.ELIXIR, ResourceKind.DARK)
+        val rows = mutableListOf<RowCandidate>()
 
-        val rows = page.lines.mapNotNull { line ->
-            val box = line.box ?: return@mapNotNull null
-            if (box.centerY < top || box.centerY > bottom) return@mapNotNull null
-            if (box.right < rightMin || box.right > rightMax) return@mapNotNull null
-            if (box.left < columnLeft) return@mapNotNull null
-            if (line.text.contains("+")) return@mapNotNull null
-            if (isNonLootText(line.text)) return@mapNotNull null
-            if (NumberParser.lootCandidates(line.text).isEmpty()) return@mapNotNull null
-            val resource = colorSampler?.classify(box)
-            if (resource == null) {
-                issues += "loot row '${line.text}': icon colour unknown"
-                return@mapNotNull null
+        for (slot in 0..2) {
+            val center = firstCenter + pitch * slot
+            val slotTop = center - pitch * 0.5f
+            val slotBottom = center + pitch * 0.5f
+            val hint = page.lines.mapNotNull { line ->
+                val box = line.box ?: return@mapNotNull null
+                // Keep the hint near the slot centre and require a value-line
+                // height; small clan-name labels also contain digits.
+                if (box.centerY < center - pitch * 0.38f ||
+                    box.centerY > center + pitch * 0.38f
+                ) {
+                    return@mapNotNull null
+                }
+                if (box.height < pitch * 0.28f) return@mapNotNull null
+                if (box.right < rightMin || box.right > rightMax) return@mapNotNull null
+                if (box.left < columnLeft) return@mapNotNull null
+                if (line.text.contains("+")) return@mapNotNull null
+                if (isNonLootText(line.text)) return@mapNotNull null
+                if (NumberParser.lootCandidates(line.text).isEmpty()) return@mapNotNull null
+                line
+            }.maxByOrNull { line ->
+                val digits = NumberParser.lootCandidates(line.text)
+                    .maxOfOrNull { it.digits.length } ?: 0
+                digits * 10_000 + (line.box?.width ?: 0)
             }
-            RowCandidate(box, line.text, RowRole.LOOT, resource)
-        }.sortedBy { it.box.top }
-
-        val deduped = dedupe(rows).take(3)
-        if (deduped.size < 3) issues += "loot rows found ${deduped.size}/3"
-        return deduped
+            if (hint == null) {
+                issues += "loot row ${slot + 1}: no OCR line in slot"
+            }
+            val inset = (pitch * 0.12f).toInt().coerceAtLeast(2)
+            // When the full-page reader saw the number, its box is the most
+            // accurate crop: it excludes the icon and the panel edge. Slots
+            // without a text line fall back to the fixed value column, ending
+            // just before the resource icon.
+            val box = hint?.box ?: OcrBox(
+                left = zeroLeft,
+                top = (slotTop + inset).toInt(),
+                right = zeroRight,
+                bottom = (slotBottom - inset).toInt()
+            )
+            rows += RowCandidate(
+                box = box,
+                rawText = hint?.text ?: "",
+                role = RowRole.LOOT,
+                resource = order[slot]
+            )
+        }
+        return rows
     }
 
     private fun readBonusRows(

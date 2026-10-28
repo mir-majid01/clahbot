@@ -30,21 +30,23 @@ object NumberParser {
     )
 
     private val SEPARATORS = setOf(
-        ' ', '\u00A0', '\u202F', '\u2009', ',', '\'', '_'
+        ' ', '\u00A0', '\u202F', '\u2009', ',', '\'', '_', '.'
     )
     private val PREFIXES = setOf('+', '•', '·', '∙', '#', '^', '~')
 
     private const val MAX_DIGITS = 12
     private const val MAX_CANDIDATES = 64
+    private val FRACTION = Regex("""\d+\s*/\s*\d+""")
+    private val CLOCK = Regex("""\d+\s*h\s*\d+\s*m""", RegexOption.IGNORE_CASE)
 
     fun lootCandidates(raw: String): List<Candidate> =
-        candidates(raw, minDigits = 3, maxDigits = MAX_DIGITS)
+        candidates(raw, minDigits = 1, maxDigits = MAX_DIGITS)
 
     fun balanceCandidates(raw: String): List<Candidate> =
-        candidates(raw, minDigits = 3, maxDigits = MAX_DIGITS)
+        candidates(raw, minDigits = 1, maxDigits = MAX_DIGITS)
 
     fun bonusCandidates(raw: String): List<Candidate> =
-        candidates(raw, minDigits = 3, maxDigits = 8)
+        candidates(raw, minDigits = 1, maxDigits = 8)
 
     fun searchCostCandidates(raw: String): List<Candidate> =
         candidates(raw, minDigits = 3, maxDigits = 7)
@@ -58,24 +60,38 @@ object NumberParser {
     fun isNumericLike(raw: String, allowBonusPrefix: Boolean = false): Boolean =
         if (allowBonusPrefix) bonusCandidates(raw).isNotEmpty() else lootCandidates(raw).isNotEmpty()
 
+    /** True when the text carries a real word, which can partially cover a value. */
+    fun hasLabelOverlap(raw: String): Boolean {
+        var unknown = 0
+        for (char in raw) {
+            if (char.isLetter() && DIGIT_ALTERNATIVES[char] == null) {
+                if (++unknown >= 3) return true
+            }
+        }
+        return false
+    }
+
     private fun single(candidates: List<Candidate>): Long? =
         candidates.singleOrNull()?.value
 
     private data class Segment(
         val alternatives: List<String>,
         val length: Int,
-        val actualDigits: Int
+        val actualDigits: Int,
+        val end: Int = 0
     )
 
     private data class Token(
         val segment: Segment?,
         val hasUnknown: Boolean,
-        val prefixOnly: Boolean
+        val prefixOnly: Boolean,
+        val trailingDigits: Boolean = false
     )
 
     private fun candidates(raw: String, minDigits: Int, maxDigits: Int): List<Candidate> {
         val text = raw.replace('\u00A0', ' ').trim()
         if (text.isEmpty()) return emptyList()
+        if (FRACTION.containsMatchIn(text) || CLOCK.containsMatchIn(text)) return emptyList()
 
         val runs = mutableListOf<List<String>>()
         var run = listOf("")
@@ -116,12 +132,29 @@ object NumberParser {
                 continue
             }
             if (token.hasUnknown) {
-                flushRun()
-                clearPending()
-                val segment = token.segment ?: continue
-                if (segment.actualDigits > 0 &&
-                    segment.length in minDigits..maxDigits
+                val segment = token.segment
+                if (segment == null || segment.actualDigits == 0 ||
+                    segment.length !in minDigits..maxDigits
                 ) {
+                    flushRun()
+                    clearPending()
+                    continue
+                }
+                if (token.trailingDigits) {
+                    // Label text glued to the front of a number ("Dank sist918")
+                    // still ends in that number; keep the run open so the next
+                    // token ("016") can complete it.
+                    if (runLength == 0) {
+                        run = pendingPrefix ?: listOf("")
+                        runLength = pendingLength
+                        pendingPrefix = null
+                        pendingLength = 0
+                    }
+                    run = append(run, segment.alternatives)
+                    runLength += segment.length
+                } else {
+                    flushRun()
+                    clearPending()
                     runs += segment.alternatives
                 }
                 continue
@@ -146,6 +179,11 @@ object NumberParser {
             }
             run = append(run, segment.alternatives)
             runLength += segment.length
+        }
+        val finalPrefix = pendingPrefix
+        if (finalPrefix != null && runLength == 0 && minDigits <= 1 && pendingLength == 1) {
+            runs += finalPrefix
+            clearPending()
         }
         flushRun()
 
@@ -181,7 +219,7 @@ object NumberParser {
             if (!boundary) continue
             if (index > start) {
                 parseClean(text.substring(start, index))?.let { segment ->
-                    if (segment.actualDigits > 0) segments += segment
+                    if (segment.actualDigits > 0) segments += segment.copy(end = index)
                 }
             }
             start = index + 1
@@ -190,7 +228,12 @@ object NumberParser {
         val best = segments.maxWithOrNull(
             compareBy<Segment> { it.actualDigits }.thenBy { it.length }
         )
-        return Token(segment = best, hasUnknown = true, prefixOnly = false)
+        return Token(
+            segment = best,
+            hasUnknown = true,
+            prefixOnly = false,
+            trailingDigits = best != null && best.end == text.length
+        )
     }
 
     private fun parseClean(text: String): Segment? {

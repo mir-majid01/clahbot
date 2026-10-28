@@ -166,18 +166,38 @@ class DigitTemplateEngine(private val store: DigitTemplateStore) {
             it.width >= 2 && it.height >= 8 && it.width <= it.height * 1.35f
         }
         if (tall.isEmpty()) return emptyList()
-        val maxHeight = tall.maxOf { it.height }
+        // A panel edge or border can span the whole crop and be far taller
+        // than the digits. Use a lower quartile, not the maximum, so one huge
+        // component cannot exclude every digit.
+        val heights = tall.map { it.height }.sorted()
+        val reference = heights[(heights.size / 4).coerceIn(0, heights.size - 1)]
         val filtered = tall.filter {
-            it.height >= maxHeight * 0.7f && it.height <= maxHeight * 1.2f
+            it.height >= reference * 0.55f && it.height <= reference * 1.6f
         }
         if (filtered.isEmpty()) return emptyList()
         val medianCenter = filtered.map { it.centerY }.sorted()[filtered.size / 2]
         val line = filtered.filter {
-            kotlin.math.abs(it.centerY - medianCenter) <= maxHeight * 0.35f
+            kotlin.math.abs(it.centerY - medianCenter) <= reference * 0.5f
         }.sortedBy { it.left }
 
+        // The resource icon sits to the right of the number and is usually
+        // taller than the digits. Keeping it makes the template read the
+        // coin/drop as a digit, so drop a clearly oversized last component.
+        val digitsOnly = if (line.size > 1) {
+            val last = line.last()
+            val others = line.dropLast(1)
+            val medianOther = others.map { it.height }.sorted()[others.size / 2]
+            val tooTall = last.height > medianOther * 1.15f
+            val tooRound = last.width >= last.height * 0.95f &&
+                last.height >= medianOther * 0.85f
+            if (tooTall || tooRound) others else line
+        } else {
+            line
+        }
+        if (digitsOnly.isEmpty()) return emptyList()
+
         val merged = mutableListOf<Component>()
-        for (component in line) {
+        for (component in digitsOnly) {
             if (merged.isNotEmpty()) {
                 val previous = merged.last()
                 val overlap = min(previous.right, component.right) -
@@ -186,7 +206,7 @@ class DigitTemplateEngine(private val store: DigitTemplateStore) {
                     min(previous.top, component.top)
                 val sameLine = kotlin.math.abs(component.centerY - previous.centerY) <=
                     max(previous.height, component.height) * 0.5f
-                if (overlap >= 2 && sameLine && combinedHeight <= maxHeight * 1.2f) {
+                if (overlap >= 2 && sameLine && combinedHeight <= reference * 1.3f) {
                     merged[merged.size - 1] = Component(
                         left = min(previous.left, component.left),
                         top = min(previous.top, component.top),

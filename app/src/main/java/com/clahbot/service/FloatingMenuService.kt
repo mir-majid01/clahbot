@@ -199,10 +199,6 @@ class FloatingMenuService : Service() {
                 )
                 scope.launch {
                     attackRepository.refresh()
-                    if (manualWatch) {
-                        manualWatch = false
-                        captureSession = null
-                    }
                     renderStats()
                     refreshUi()
                 }
