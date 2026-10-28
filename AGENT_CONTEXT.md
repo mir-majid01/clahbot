@@ -1141,3 +1141,55 @@ captured again. There was also no stability check.
   read them without guessing. Manual edit is the safe way to correct those
   three historical rows.
 - The 12:50 dark row is absent on the capture, not a missing OCR value.
+
+## 2026-10-28 — share/import a single macro (2.4.9)
+
+The first of the postponed feature requests (shareable macros) is implemented.
+
+### What changed in 2.4.9 (versionCode 18)
+
+- Each macro card has a **Share** action. It writes a versioned envelope
+  (`format: "autoclash-macro"`, `formatVersion: 1`, app version, export time,
+  the single `Macro`) to `cache/exports/` and opens Android's share sheet via
+  the existing `FileProvider` (`${applicationId}.updates`). Only that macro is
+  included; no attacks, captures, settings or other macros.
+- The macro-library header has **Import**, using the system document picker.
+  `MacroShare.decode` accepts the envelope or a bare `Macro` JSON, rejects
+  unknown formats, future format versions, empty gesture lists, invalid JSON
+  and files over 20 MB. The content is re-sanitized by the same path as a
+  recorded macro. `MacroRepository.importShared` always assigns a new local id
+  and uses `Name (2)`, `Name (3)`… on a name clash; it never overwrites an
+  existing macro.
+- `MacroShareTest` covers round-trip, bare JSON, invalid/future/empty files,
+  and malformed `format` field types. `MacroImportTest` covers new id, name
+  clash, preserved gestures/speed/repeat/wait, and rejection of empty gestures.
+
+### Test results (evidence: A/B)
+
+- **158 app + 50 ocrlab unit tests passing.** The only non-feature edit is a
+  wider scheduling margin in `ResultCaptureGateTest` (its 20 ms coroutine start
+  could miss a 200 ms window on a loaded JVM; assertions are unchanged).
+- Device: **2.4.9 (versionCode 18)** installed over 2.4.8; APK SHA-256
+  `2d0f6f9b98133b6800be35e86780ab440dc46b68aa4d7699b199ba10fca25672`.
+- Share ran on device and produced `Neww-<id>.json` with the correct envelope,
+  app version 2.4.9 and all 18 gestures (copied to
+  `.ocr-work/step8_backup/exported_neww.json`).
+- The system picker also completed an import during the test. It created a
+  macro with a **fresh id and identical payload**, which confirms the device
+  path, but it ran against the live library. The library was restored
+  byte-for-byte from `.ocr-work/step8_backup/macros.before_249.json` and the
+  app relaunched; `macros.json` is again
+  `e8115ee2350715080926a107bc101e91a7cb1c30fda7108468eb7ae9b0f938bd`
+  (two original macros, original ids). Test artifacts were removed from the
+  phone cache and `/data/local/tmp`.
+- `attacks.json` stayed `66076a32…b73ed3` throughout. Pre/post-install and
+  pre/post-test copies are in `.ocr-work/step8_backup/`.
+
+Per the standing rule, no further import test will touch the live library
+without explicit approval; the codec and repository behavior are covered by
+unit tests, and the device run above already exercised the picker path.
+
+### Remaining postponed work
+
+Only the macro-sharing item was recalled. The other postponed features/UI
+changes still need the user's list.

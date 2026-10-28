@@ -58,6 +58,32 @@ class MacroRepository(private val file: File) {
         }
     }
 
+    /**
+     * Adds a shared macro under a fresh id and a non-clashing name. The source
+     * macro is validated exactly like a recorded one.
+     */
+    suspend fun importShared(macro: Macro): Macro? = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            val base = sanitizeMacro(macro.copy(id = 0)) ?: return@withLock null
+            val all = readLocked().toMutableList()
+            var id = System.currentTimeMillis()
+            while (id <= 0L || all.any { it.id == id }) id++
+            val names = all.map { it.name }.toSet()
+            val name = if (base.name !in names) {
+                base.name
+            } else {
+                var suffix = 2
+                while ("${base.name} ($suffix)" in names) suffix++
+                "${base.name} ($suffix)"
+            }
+            val imported = base.copy(id = id, name = name, createdAt = System.currentTimeMillis())
+            all.add(imported)
+            writeLocked(all)
+            publish(all)
+            imported
+        }
+    }
+
     suspend fun delete(id: Long): Boolean = withContext(Dispatchers.IO) {
         mutex.withLock {
             val all = readLocked().toMutableList()

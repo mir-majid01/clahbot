@@ -1,12 +1,15 @@
 package com.clahbot.ui
 
 import android.content.ActivityNotFoundException
+import android.content.ClipData
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.widget.Toast
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
@@ -41,6 +44,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -76,15 +80,18 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.FileProvider
 import androidx.core.graphics.drawable.toBitmap
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 
+import com.clahbot.BuildConfig
 import com.clahbot.R
 import com.clahbot.data.AttackRepository
 import com.clahbot.data.BotState
 import com.clahbot.data.CaptureSource
+import com.clahbot.data.MacroShare
 import com.clahbot.data.models.AttackRecord
 import com.clahbot.data.models.AttackStats
 import com.clahbot.data.models.LootInput
@@ -104,8 +111,10 @@ import com.clahbot.ui.theme.RecordRed
 import com.clahbot.ui.theme.SurfaceRaised
 import com.clahbot.ui.theme.TextMuted
 import com.clahbot.util.PermissionHelper
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -136,6 +145,7 @@ class MainActivity : ComponentActivity() {
                     viewModel = viewModel,
                     onStartController = { startController() },
                     onPlayMacro = { macro -> playMacro(macro) },
+                    onShareMacro = { macro -> shareMacro(macro) },
                     onOpenSettings = {
                         startActivity(Intent(this, SettingsActivity::class.java))
                     },
@@ -181,6 +191,35 @@ class MainActivity : ComponentActivity() {
         FloatingMenuService.play(this, macro.id)
     }
 
+    private fun shareMacro(macro: Macro) {
+        val file = runCatching {
+            MacroShare.writeExport(this, macro, BuildConfig.VERSION_NAME)
+        }.getOrNull()
+        if (file == null) {
+            PermissionHelper.showToast(this, "Could not prepare the macro file")
+            return
+        }
+        val uri = runCatching {
+            FileProvider.getUriForFile(this, "$packageName.updates", file)
+        }.getOrNull()
+        if (uri == null) {
+            PermissionHelper.showToast(this, "Could not share the macro file")
+            return
+        }
+        val send = Intent(Intent.ACTION_SEND).apply {
+            type = "application/json"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            putExtra(Intent.EXTRA_SUBJECT, "AutoClash macro: ${macro.name}")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            clipData = ClipData.newRawUri("AutoClash macro", uri)
+        }
+        try {
+            startActivity(Intent.createChooser(send, "Share ${macro.name}"))
+        } catch (_: ActivityNotFoundException) {
+            PermissionHelper.showToast(this, "No app can share the macro file")
+        }
+    }
+
     private fun requestNotificationsIfNeeded() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             !PermissionHelper.canPostNotifications(this)
@@ -219,6 +258,7 @@ fun DashboardScreen(
     viewModel: MainViewModel,
     onStartController: () -> Unit,
     onPlayMacro: (Macro) -> Unit,
+    onShareMacro: (Macro) -> Unit,
     onOpenSettings: () -> Unit,
     onRequestNotificationPermission: () -> Unit
 ) {
@@ -239,6 +279,37 @@ fun DashboardScreen(
     var deletingAttack by remember { mutableStateOf<AttackRecord?>(null) }
     var rescanning by remember { mutableStateOf(false) }
     var rescanStatus by remember { mutableStateOf<String?>(null) }
+    var importing by remember { mutableStateOf(false) }
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                importing = true
+                val bytes = withContext(Dispatchers.IO) {
+                    runCatching {
+                        context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                    }.getOrNull()
+                }
+                val shared = if (bytes != null && bytes.size <= MacroShare.MAX_IMPORT_BYTES) {
+                    MacroShare.decode(String(bytes, Charsets.UTF_8))
+                } else {
+                    null
+                }
+                val imported = shared?.let { viewModel.importShared(it) }
+                importing = false
+                Toast.makeText(
+                    context,
+                    if (imported != null) {
+                        "Imported macro: ${imported.name}"
+                    } else {
+                        "Not an AutoClash macro file"
+                    },
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+    }
 
     LaunchedEffect(Unit) { attackRepository.refresh() }
 
@@ -406,6 +477,16 @@ fun DashboardScreen(
                         color = MaterialTheme.colorScheme.onBackground,
                         modifier = Modifier.weight(1f)
                     )
+                    TextButton(
+                        onClick = {
+                            importLauncher.launch(
+                                arrayOf("application/json", "text/plain", "application/octet-stream")
+                            )
+                        },
+                        enabled = !importing
+                    ) {
+                        Text(if (importing) "Importing…" else "Import", fontSize = 11.sp)
+                    }
                     Text(
                         "${macros.size} saved",
                         fontSize = 11.sp,
@@ -426,6 +507,7 @@ fun DashboardScreen(
                         busy = controllerState.isBusy,
                         onSelect = { viewModel.select(macro.id) },
                         onPlay = { onPlayMacro(macro) },
+                        onShare = { onShareMacro(macro) },
                         onRename = { editing = macro },
                         onDelete = { deleting = macro }
                     )
@@ -1251,6 +1333,7 @@ private fun MacroCard(
     busy: Boolean,
     onSelect: () -> Unit,
     onPlay: () -> Unit,
+    onShare: () -> Unit,
     onRename: () -> Unit,
     onDelete: () -> Unit
 ) {
@@ -1308,6 +1391,14 @@ private fun MacroCard(
                     contentDescription = "Play ${macro.name}",
                     tint = if (busy) TextMuted else ReadyGreen,
                     modifier = Modifier.size(20.dp)
+                )
+            }
+            IconButton(onClick = onShare, modifier = Modifier.size(36.dp)) {
+                Icon(
+                    Icons.Default.Share,
+                    contentDescription = "Share ${macro.name}",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(16.dp)
                 )
             }
             IconButton(onClick = onRename, modifier = Modifier.size(36.dp)) {

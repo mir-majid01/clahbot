@@ -33,7 +33,9 @@ class ResultCaptureGateTest {
     fun aPositiveSampleWaitsUntilTheCaptureReleasesIt() = runBlocking {
         val gate = ResultCaptureGate(
             freshEnoughMs = 500,
-            freshSampleWaitMs = 200,
+            // Generous sample window: under a loaded test JVM a 20 ms launch
+            // can otherwise miss a tight 200 ms deadline and flake.
+            freshSampleWaitMs = 2_000,
             holdTimeoutMs = 1_000,
             stepMs = 5,
             clock = clock
@@ -57,7 +59,7 @@ class ResultCaptureGateTest {
     fun aHoldThatIsNeverReleasedTimesOut() = runBlocking {
         val gate = ResultCaptureGate(
             freshEnoughMs = 500,
-            freshSampleWaitMs = 200,
+            freshSampleWaitMs = 2_000,
             holdTimeoutMs = 150,
             stepMs = 5,
             clock = clock

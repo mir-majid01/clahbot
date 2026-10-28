@@ -36,6 +36,8 @@ class MainViewModel(private val repository: MacroRepository) : ViewModel() {
         viewModelScope.launch { repository.save(macro) }
     }
 
+    suspend fun importShared(macro: Macro): Macro? = repository.importShared(macro)
+
     fun clearAll() {
         viewModelScope.launch { repository.clearAll() }
     }
