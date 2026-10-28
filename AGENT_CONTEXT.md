@@ -957,3 +957,89 @@ It is proposed only; no code was added.
    holdout.
 3. Push the paused delay branch once GitHub authentication works; keep the local
    git bundle current.
+
+## 2026-10-28 — live manual-watch audit and 2.4.7
+
+### Installed state
+
+- App **2.4.7** (versionCode 16), installed in place after backing up
+  `attacks.json` (SHA `a0adcd10…d920`) and `macros.json`
+  (`e8115ee2…7e0b`). Both hashes were identical after the install.
+- The accessibility service was restarted after the install and is bound.
+
+### What the user's live test exposed (evidence: A)
+
+The phone produced 30 new records after the 2.4.5 backup. The values were read,
+but the manual watch left a result screen open for minutes and the old cycle
+logic recorded the same screen repeatedly. Confirmed bad data:
+
+- **Leading digit lost:** record `1793170012288` stored gold **163,088**;
+  the screenshot shows **1,163,088**. ML Kit read the leading `1` as `L`
+  (`L163 088`) and the parser split it away. This is a wrong value.
+- **One screen, four records:** the defeat screen with dark **11,610** became
+  `1793170137302` (correct 781,326 / 576,882 / 11,610),
+  `1793170152146` (gold missing), `1793170162776` (gold and elixir missing),
+  and `1793170171526` (wrong 731,325 / 576 / 11,610). The first is the correct
+  record; the other three are duplicates/fragments.
+- **Transient zero:** record `1793171895776` stored 0 / 0 / 0 for a screen whose
+  later frame shows **2,541,267 / 1,668,782 / 35,016**. The same screen also
+  produced `1793171917880` (25,412,267/…/35,016),
+  `1793171934849` (2,542/…/35,016) and `1793171944429` (25,442/…/35,016).
+  None of the four has the correct three values.
+- Other duplicate pairs: `1793171428799` (47,148 / 1,250,944 / 5,583) with
+  `1793171440273` (47 / missing / 5,583), and `1793171789110`
+  (2,018,611 / 2,203,678 / 27,723) with `1793171806234`
+  (2,018 / 2,203,675 / 27,723).
+- The two standalone 0/0/0 records (`1793169346415`, `1793172938273`) are
+  genuine zero-loot victories; their screenshots show 0 / 0 / 0.
+
+Root cause: a single missed detection set `screenClear = true`, so the next
+frame of the same animated screen was captured as a new result. The loot
+counters/overlays also change the numbers before they settle.
+
+### Fixes in 2.4.7 (evidence: B code/tests, A for the lab pack)
+
+- `CaptureCycleTracker` now needs **3 consecutive non-result polls** and a
+  frame at least 16 bits different from the recorded hash before the screen is
+  considered clear. Same-screen animation frames observed at most 12 bits of
+  distance; different battle scenes are much farther apart.
+- `ResultsCaptureCoordinator` re-reads a zero/zero-ish result up to 3 times,
+  one second apart. If any frame shows a non-zero gold/elixir/dark, that frame
+  is used instead of the false zero.
+- `ResultsParser` merges horizontally adjacent numeric OCR lines in the same
+  slot before choosing the row, so a split `1` + `163 088` stays `1 163 088`.
+- `NumberParser` maps uppercase `L` to `1` (`L163 088` → 1,163,088).
+- The real `1,163,088` screenshot was added to the lab pack as a regression
+  case and now scores all three fields correctly.
+- Full lab pack after the fixes: **24/24 native detected, 23/24 complete and
+  correct, 0 wrong values, ~1.0 s per screen**. (The one remaining native
+  failure is the very dim 0%-loot screen.)
+
+### Live history status — not modified by us
+
+- Backups: `.ocr-work/step6_backup/attacks.before_246.json` (59 records),
+  `attacks.before_247.json` (current), `macros.before_247.json`, and the
+  re-scan report `rescan_report_44.txt`.
+- The re-scan copy test still updates the 5 old incomplete records correctly;
+  it does **not** touch complete-but-wrong records. Those need the record's
+  edit action or deletion.
+- Recommended cleanup (after a fresh backup, using the app's own record
+  actions):
+  - Edit `1793170012288` gold to **1,163,088**.
+  - Keep `1793170137302`; delete `1793170152146`, `1793170162776`,
+    `1793170171526`.
+  - For the 35,016 screen, keep one record and set it to
+    **2,541,267 / 1,668,782 / 35,016**; delete the other three.
+  - Keep `1793171428799`; delete `1793171440273`.
+  - Keep `1793171789110`; delete `1793171806234`.
+- The app has a trash icon on each history row and a manual loot edit; no
+  direct file edit is needed.
+
+### Honesty note
+
+The 2026-10-27 claim “OCR works perfectly” was true for the values on the
+final screens the lab scored, but the live test showed that **capture timing**
+can write a wrong value before the screen settles. 2.4.7 addresses the two
+observed causes (duplicate frames and transient zeros); a fresh multi-attack
+device test is still needed before calling the live path proven. This is a new
+clean-holdout test, not a reuse of the 24 tuning captures.

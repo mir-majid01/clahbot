@@ -148,7 +148,7 @@ the pause. Delays below one second still apply but do not show a countdown.
 - Coordinates are normalized to the recording display; a very different aspect
   ratio can shift touch positions.
 - Speed changes apply at the next playback run.
-- The v2.4.5 build is **arm64-only** because the bundled OCR native libraries
+- The v2.4.7 build is **arm64-only** because the bundled OCR native libraries
   made the universal APK about 151 MB. The lab and app are verified on the
   arm64 test phone; other ABIs are not packaged in this build.
 - Result-screen OCR needs the accessibility screenshot permission (Android 11+)
