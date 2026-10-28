@@ -198,6 +198,9 @@ class AttackHistoryTest {
         val summary = AttackStats.summarize(listOf(withBonus))
         assertEquals(100L, summary.gold)
         assertEquals(0L, summary.elixir)
+        assertEquals(310_000L, summary.bonusGold)
+        assertEquals(310_000L, summary.bonusElixir)
+        assertEquals(2_100L, summary.bonusDarkElixir)
         assertTrue(withBonus.hasBonus)
     }
 

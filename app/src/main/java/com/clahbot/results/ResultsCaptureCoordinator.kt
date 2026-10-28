@@ -9,6 +9,7 @@ import com.clahbot.data.SettingsStore
 import com.clahbot.data.models.AttackRecord
 import com.clahbot.data.models.AttackRecordPolicy
 import com.clahbot.data.models.AttackTrigger
+import com.clahbot.ocr.ReaderStrategy
 import com.clahbot.ocr.ResultsRead
 import com.clahbot.service.ClahAccessibilityService
 import kotlinx.coroutines.CancellationException
@@ -66,6 +67,15 @@ class ResultsCaptureCoordinator(
 
         @Volatile
         var lastRecordStartedAt: Long? = null
+
+        @Volatile
+        var lastRecord: AttackRecord? = null
+
+        @Volatile
+        var lastRefineAt: Long = 0L
+
+        @Volatile
+        var refineAttempts: Int = 0
 
         @Volatile
         var records: Int = 0
@@ -230,6 +240,11 @@ class ResultsCaptureCoordinator(
                         "hash=${screenHash ?: "-"} action=$action records=${state.records}"
                 )
                 if (action != PollAction.CAPTURE) {
+                    if (action == PollAction.WAIT_FOR_CLEAR ||
+                        action == PollAction.ALREADY_RECORDED
+                    ) {
+                        refineEpisodeIfNeeded(state)
+                    }
                     gate.notePoll(pollStartedAt, false, action.name.lowercase(Locale.US))
                     detectionBitmap.recycle()
                     continue
@@ -306,28 +321,41 @@ class ResultsCaptureCoordinator(
                         }
                     }
 
-                    // A loot counter can briefly show 0 while the result
-                    // animation is still running. Re-read a zero result for a
-                    // few seconds; if any non-zero value appears, use that
-                    // frame instead of writing a false zero.
-                    if (readResult != null && isZeroish(readResult.read)) {
-                        for (attempt in 1..ZERO_SETTLE_ATTEMPTS) {
-                            delay(ZERO_SETTLE_DELAY_MS)
-                            val shot = ClahAccessibilityService.captureScreenshot() ?: continue
-                            val next = withTimeoutOrNull(READ_TIMEOUT_MS) { reader.read(shot) }
-                            if (next == null) {
-                                shot.recycle()
-                                continue
-                            }
-                            if (hasNonZero(next.read)) {
-                                settleBitmap = shot
-                                readResult = next
-                                readSource = "settle"
-                                event("zero read settled non-zero after $attempt attempt(s)")
-                                break
-                            }
+                    // Never save the first frame of a loot count-up. Wait for
+                    // two consecutive complete reads with the same outcome and
+                    // all three main values; partial/animated frames are ignored.
+                    val gate = StableReadGate()
+                    var stableRead: AppResultsReader.ReadResult? = null
+                    if (readResult != null && gate.offer(readResult.read) != null) {
+                        stableRead = readResult
+                    }
+                    var stableAttempts = 0
+                    while (stableRead == null && stableAttempts < STABLE_READ_ATTEMPTS) {
+                        stableAttempts++
+                        delay(STABLE_READ_DELAY_MS)
+                        val shot = ClahAccessibilityService.captureScreenshot()
+                        if (shot == null) continue
+                        val next = withTimeoutOrNull(READ_TIMEOUT_MS) { reader.read(shot) }
+                        if (next == null) {
                             shot.recycle()
+                            continue
                         }
+                        if (gate.offer(next.read) != null) {
+                            stableRead = next
+                            settleBitmap = shot
+                            readSource = "stable"
+                            event("read stabilized after $stableAttempts extra frame(s)")
+                            break
+                        }
+                        shot.recycle()
+                    }
+                    if (stableRead != null) {
+                        readResult = stableRead
+                    } else {
+                        if (readResult != null) {
+                            event("loot did not stabilize; saving without values")
+                        }
+                        readResult = null
                     }
 
                     if (readResult != null) {
@@ -433,10 +461,46 @@ class ResultsCaptureCoordinator(
                 "watch finally id=${state.session.id} polls=$poll records=${state.records} " +
                     "wasCurrent=$wasCurrent current=${current?.session?.id ?: "-"}"
             )
-            if (state.manual) {
-                event("manual watch ended")
-                withContext(Dispatchers.Main) { runCatching { onWatchEnded() } }
-            }
+            event(if (state.manual) "manual watch ended" else "watch ended")
+            withContext(Dispatchers.Main) { runCatching { onWatchEnded() } }
+        }
+    }
+
+    /**
+     * While the same result screen is still open, fill only the fields the
+     * saved record is missing. A second record is never created here.
+     */
+    private suspend fun refineEpisodeIfNeeded(state: SessionState) {
+        val record = state.lastRecord ?: return
+        if (record.complete && record.bonusState != AttackRecord.BONUS_NOT_CAPTURED) return
+        val now = System.currentTimeMillis()
+        if (state.refineAttempts >= REFINE_ATTEMPTS) return
+        if (now - state.lastRefineAt < REFINE_INTERVAL_MS) return
+        state.lastRefineAt = now
+        state.refineAttempts++
+        var bitmap: Bitmap? = null
+        try {
+            withContext(Dispatchers.Main) { hideOverlay() }
+            val shot = ClahAccessibilityService.captureScreenshot() ?: return
+            bitmap = shot
+            val result = withTimeoutOrNull(READ_TIMEOUT_MS) {
+                reader.read(shot, ReaderStrategy.ALL)
+            } ?: return
+            val filled = EpisodeFillPolicy.fill(record, result.read)
+            if (!filled.changed) return
+            val saved = attackRepository.update(filled.record) ?: return
+            state.lastRecord = saved
+            event(
+                "episode refine id=${saved.id} complete=${saved.complete} " +
+                    "review=${saved.reviewReason ?: "-"}"
+            )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (throwable: Throwable) {
+            warn("Episode refine failed", throwable)
+        } finally {
+            bitmap?.recycle()
+            withContext(Dispatchers.Main) { runCatching { showOverlay() } }
         }
     }
 
@@ -514,6 +578,9 @@ class ResultsCaptureCoordinator(
             status("Results screen read, but the attack record was not saved.")
             return false
         }
+        state.lastRecord = added
+        state.refineAttempts = 0
+        state.lastRefineAt = 0L
         event(
             "record saved id=${added.id} outcome=${added.outcome} " +
                 "lootCaptured=${added.hasLoot} screenshot=${added.resultsScreenshot?.let { File(it).name } ?: "-"}"
@@ -606,15 +673,6 @@ class ResultsCaptureCoordinator(
         if (current === state) current = null
     }
 
-    private fun isZeroish(read: ResultsRead): Boolean =
-        !hasNonZero(read) &&
-            (read.gold == 0L || read.elixir == 0L || read.darkElixir == 0L)
-
-    private fun hasNonZero(read: ResultsRead): Boolean =
-        (read.gold != null && read.gold != 0L) ||
-            (read.elixir != null && read.elixir != 0L) ||
-            (read.darkElixir != null && read.darkElixir != 0L)
-
     companion object {
         private const val TAG = "AutoClashResults"
         private const val CAPTURE_WINDOW_MS = 240_000L
@@ -624,7 +682,9 @@ class ResultsCaptureCoordinator(
         private const val RETRY_DELAY_MS = 1_000L
         private const val READ_TIMEOUT_MS = 25_000L
         private const val CLEAN_CAPTURE_DELAY_MS = 600L
-        private const val ZERO_SETTLE_ATTEMPTS = 3
-        private const val ZERO_SETTLE_DELAY_MS = 1_000L
+        private const val STABLE_READ_ATTEMPTS = 3
+        private const val STABLE_READ_DELAY_MS = 800L
+        private const val REFINE_ATTEMPTS = 3
+        private const val REFINE_INTERVAL_MS = 1_500L
     }
 }

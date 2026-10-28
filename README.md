@@ -107,14 +107,25 @@ alone is never recorded. Loot (gold, elixir, dark elixir and bonuses) is read
 on-device; a field that was not read stays `loot not captured`, never zero.
 Deleting a macro never deletes its past attack records.
 
-The controller's Stats tab has **Watch results** for a hand-played attack. One
-press now stays armed for up to 60 minutes and keeps watching after each
-capture, so every new result in that session can become one record. If the
-screen is already open when you press it, it is read and recorded only when no
-recent record has the same screen hash or loot; an already-recorded screen is
-skipped. A macro loop likewise keeps watching after its first record. Every
-screen is recorded at most once, even when the next poll sees a different OCR
-frame of the same screen.
+While the floating controller is running, an **Auto watch** session starts by
+itself; no press is needed. It keeps watching for result screens and records
+each one once. The Stats **Watch results** button remains available for an
+explicit hand-played watch ("Manual watch"), and macro playback uses the macro
+name; these labels now show the real source. A watch stays armed for up to 60
+minutes and keeps watching after each capture, so every new result in that
+session can become one record. If the screen is already open when a watch
+starts, it is read and recorded only when no recent record has the same screen
+hash or loot. Every screen is recorded at most once, even when the next poll
+sees a different OCR frame of the same screen.
+
+Loot values are accepted only after two consecutive complete reads agree; a
+mid-animation frame is never saved. Later reads of the same open screen may
+only fill missing fields of that record. Implausible values and balances that
+contradict the capture are marked **Needs review** instead of being treated as
+normal captures. The Edit attack loot dialog prefills all six fields (including
+the bonus) and saving it keeps the bonus unless you clear it. A bonus panel
+that is present but unreadable is shown differently from a screen with no
+bonus panel.
 
 Each record shows how it was produced: **auto-read**, **re-scanned**, or
 **manually corrected**. If both the clean and detection frames are unreadable,
@@ -148,7 +159,7 @@ the pause. Delays below one second still apply but do not show a countdown.
 - Coordinates are normalized to the recording display; a very different aspect
   ratio can shift touch positions.
 - Speed changes apply at the next playback run.
-- The v2.4.7 build is **arm64-only** because the bundled OCR native libraries
+- The v2.4.8 build is **arm64-only** because the bundled OCR native libraries
   made the universal APK about 151 MB. The lab and app are verified on the
   arm64 test phone; other ABIs are not packaged in this build.
 - Result-screen OCR needs the accessibility screenshot permission (Android 11+)

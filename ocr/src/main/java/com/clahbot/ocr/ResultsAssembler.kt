@@ -41,7 +41,7 @@ object ResultsAssembler {
                     it.contains("found 0/3") || it.contains("found 1/3") ||
                     it.contains("found 2/3")
             } ||
-            (inspection.outcome == ResultsOutcome.VICTORY &&
+            (inspection.bonusPanel &&
                 (bonus.gold == null || bonus.elixir == null || bonus.dark == null))
 
         return ResultsRead(
@@ -58,7 +58,8 @@ object ResultsAssembler {
             balanceDarkElixir = balance.dark,
             confidence = confidence,
             needsReview = needsReview,
-            issues = issues
+            issues = issues,
+            bonusPanel = inspection.bonusPanel
         )
     }
 

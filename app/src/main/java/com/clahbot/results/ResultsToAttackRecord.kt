@@ -17,16 +17,47 @@ object ResultsToAttackRecord {
         recordId: Long = session.id,
         recordStartedAt: Long = session.startedAt,
         captureSource: String = AttackRecord.SOURCE_AUTO,
-        screenHash: String? = null
+        screenHash: String? = null,
+        reviewReasons: List<String> = emptyList()
     ): AttackRecord {
+        val sanity = LootSanity.sanitize(read)
+        val clean = sanity.read
         val anyLoot = listOf(
-            read.gold,
-            read.elixir,
-            read.darkElixir,
-            read.bonusGold,
-            read.bonusElixir,
-            read.bonusDarkElixir
+            clean.gold,
+            clean.elixir,
+            clean.darkElixir,
+            clean.bonusGold,
+            clean.bonusElixir,
+            clean.bonusDarkElixir
         ).any { it != null }
+        val bonusAny = clean.bonusGold != null ||
+            clean.bonusElixir != null ||
+            clean.bonusDarkElixir != null
+        val bonusState = when {
+            clean.bonusPanel && bonusAny -> AttackRecord.BONUS_CAPTURED
+            clean.bonusPanel -> AttackRecord.BONUS_NOT_CAPTURED
+            else -> AttackRecord.BONUS_NONE
+        }
+        val reasons = (reviewReasons + sanity.reasons).toMutableList()
+        if (bonusState == AttackRecord.BONUS_NOT_CAPTURED) {
+            reasons += "Bonus panel present but not captured"
+        }
+        if (!clean.lootComplete) {
+            reasons += "Some main loot fields were not captured"
+        }
+        val lootIssues = read.issues.filterNot {
+            it.contains("balance row", ignoreCase = true) ||
+                it.startsWith("balance", ignoreCase = true)
+        }
+        if (read.needsReview && lootIssues.isNotEmpty()) {
+            reasons += lootIssues.distinct().take(3)
+        }
+        val reviewReason = reasons
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
+            .joinToString("; ")
+            .takeIf { it.isNotBlank() }
         val ended = playbackEndedAt.coerceAtLeast(recordStartedAt)
         val note = buildString {
             if (anyLoot) {
@@ -35,7 +66,7 @@ object ResultsToAttackRecord {
                 append("Results screen captured; loot not captured.")
             }
             if (interrupted) append(" Playback was stopped before the macro ended.")
-            if (anyLoot && !read.lootComplete) append(" Some loot fields were not captured.")
+            if (reviewReason != null) append(" Needs review: $reviewReason.")
         }
         return AttackRecord(
             id = recordId,
@@ -46,21 +77,23 @@ object ResultsToAttackRecord {
             macroName = session.macroName,
             speedMultiplier = session.speed,
             repeatMode = session.repeat,
-            gold = read.gold,
-            elixir = read.elixir,
-            darkElixir = read.darkElixir,
-            bonusGold = read.bonusGold,
-            bonusElixir = read.bonusElixir,
-            bonusDarkElixir = read.bonusDarkElixir,
+            gold = clean.gold,
+            elixir = clean.elixir,
+            darkElixir = clean.darkElixir,
+            bonusGold = clean.bonusGold,
+            bonusElixir = clean.bonusElixir,
+            bonusDarkElixir = clean.bonusDarkElixir,
             lootSource = if (anyLoot) AttackRecord.LOOT_OCR else AttackRecord.LOOT_NONE,
             captureSource = captureSource,
             screenHash = screenHash,
             result = AttackRecord.RESULT_COMPLETED,
-            outcome = read.outcome.name.lowercase(Locale.US),
+            outcome = clean.outcome.name.lowercase(Locale.US),
             resultsScreenshot = screenshotPath,
             resultsSidecar = sidecarPath,
-            verified = anyLoot,
-            complete = read.lootComplete,
+            verified = anyLoot && reviewReason == null,
+            complete = clean.lootComplete,
+            reviewReason = reviewReason,
+            bonusState = bonusState,
             confirmed = true,
             note = note
         )
@@ -99,6 +132,8 @@ object ResultsToAttackRecord {
             resultsSidecar = sidecarPath,
             verified = false,
             complete = false,
+            reviewReason = "Results screen captured; loot not captured",
+            bonusState = null,
             confirmed = true,
             note = note
         )

@@ -82,6 +82,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -125,6 +126,8 @@ class FloatingMenuService : Service() {
     private var player: MacroPlayer? = null
     private val resultGate = ResultCaptureGate()
     private var manualWatch = false
+    private var autoWatch = false
+    private var autoWatchEnabled = true
 
     private var macros: List<Macro> = emptyList()
     private var selectedId: Long = -1L
@@ -209,6 +212,19 @@ class FloatingMenuService : Service() {
                     captureSession = null
                     AppEventLog.log("manual watch cleared in UI")
                 }
+                if (autoWatch) {
+                    autoWatch = false
+                    captureSession = null
+                    AppEventLog.log("auto watch cleared in UI")
+                }
+                if (autoWatchEnabled && !manualWatch && !recording &&
+                    player?.isRunning() != true
+                ) {
+                    scope.launch {
+                        delay(AUTO_RESTART_DELAY_MS)
+                        startAutoWatch()
+                    }
+                }
                 refreshUi()
             }
         )
@@ -286,6 +302,9 @@ class FloatingMenuService : Service() {
         handler.removeCallbacksAndMessages(null)
         BotState.setInterrupted(true)
         captureSession = null
+        autoWatch = false
+        manualWatch = false
+        autoWatchEnabled = false
         if (::resultsCapture.isInitialized) resultsCapture.cancel()
         if (::resultsReader.isInitialized) resultsReader.closeAsync()
         stopPlayback()
@@ -344,6 +363,7 @@ class FloatingMenuService : Service() {
             BotState.setStatus("Overlay permission missing")
             return
         }
+        startAutoWatch()
         if (controllerView != null) {
             page = PAGE_CONTROLLER
             macros = repository.macros.value
@@ -609,6 +629,9 @@ class FloatingMenuService : Service() {
         if (BotState.state.value.isPlayback) stopPlayback()
         if (controllerView == null) ensureController()
         if (controllerView == null) return
+        // The always-on watcher must not poll or hide the overlay while the
+        // user is recording a macro.
+        abortCaptureSession()
 
         if (settingsStore.settings.value.recordingMode == RecordingMode.PASSIVE) {
             val access = InputAccessManager.status(this)
@@ -1339,6 +1362,12 @@ class FloatingMenuService : Service() {
         }
         updateNotification(getString(R.string.notification_idle))
         refreshUi()
+        if (autoWatchEnabled) {
+            scope.launch {
+                delay(1_000)
+                startAutoWatch()
+            }
+        }
     }
 
     private fun discardRecording(quiet: Boolean = false) {
@@ -1536,17 +1565,57 @@ class FloatingMenuService : Service() {
     }
 
     private fun abortCaptureSession() {
-        val hadSession = captureSession != null || manualWatch
+        val hadSession = captureSession != null || manualWatch || autoWatch
         captureSession = null
         manualWatch = false
+        autoWatch = false
         if (::resultsCapture.isInitialized) resultsCapture.cancel()
         if (hadSession) AppEventLog.log("capture session aborted")
+    }
+
+    private fun startAutoWatch() {
+        if (!autoWatchEnabled || autoWatch || manualWatch || recording) return
+        if (player?.isRunning() == true) return
+        if (::resultsCapture.isInitialized && resultsCapture.isActive()) return
+        if (ClahAccessibilityService.instance == null) return
+        updateScreenSize()
+        if (screenWidth <= 0 || screenHeight <= 0) return
+        scope.launch { resultsReader.warmUp() }
+        val startedAt = System.currentTimeMillis()
+        val capture = CaptureSession(
+            id = startedAt,
+            startedAt = startedAt,
+            macroId = 0L,
+            macroName = "Auto watch",
+            speed = 1f,
+            repeat = "once"
+        )
+        captureSession = capture
+        autoWatch = true
+        resultsCapture.begin(capture)
+        AppEventLog.log("auto watch start id=$startedAt")
+        BotState.setStatus("Auto watch: waiting for a results screen")
+        refreshUi()
+    }
+
+    private fun stopAutoWatch() {
+        if (!autoWatch) return
+        val watchId = captureSession?.id
+        autoWatch = false
+        autoWatchEnabled = false
+        captureSession = null
+        resultsCapture.cancel()
+        AppEventLog.log("auto watch stop id=${watchId ?: "-"}")
+        BotState.setStatus("Auto watch stopped")
+        refreshUi()
     }
 
     // ---------------------------------------------------------- manual watch
 
     private fun toggleManualWatch() {
-        if (manualWatch) {
+        if (autoWatch) {
+            stopAutoWatch()
+        } else if (manualWatch) {
             stopManualWatch()
         } else {
             startManualWatch()
@@ -1596,6 +1665,7 @@ class FloatingMenuService : Service() {
         if (!manualWatch) return
         val watchId = captureSession?.id
         manualWatch = false
+        autoWatchEnabled = false
         captureSession = null
         resultsCapture.cancel()
         AppEventLog.log("manual watch stop id=${watchId ?: "-"}")
@@ -1679,6 +1749,14 @@ class FloatingMenuService : Service() {
                 )
             }
             builder.append(" " + row.second + ": " + row.third)
+        }
+        val bonusTotal = summary.bonusGold + summary.bonusElixir + summary.bonusDarkElixir
+        if (bonusTotal > 0) {
+            builder.append(
+                "\nBonus (separate): G " + summary.bonusGold +
+                    " · E " + summary.bonusElixir +
+                    " · DE " + summary.bonusDarkElixir
+            )
         }
         return builder
     }
@@ -1983,6 +2061,10 @@ class FloatingMenuService : Service() {
             manualWatch = false
             captureSession = null
         }
+        if (autoWatch && !resultsCapture.isActive()) {
+            autoWatch = false
+            captureSession = null
+        }
 
         val showRecording = state == ControllerState.RECORDING || state == ControllerState.RECORDING_PAUSED
         val showReview = state == ControllerState.REVIEW
@@ -2010,9 +2092,13 @@ class FloatingMenuService : Service() {
         view.findViewById<ImageButton>(R.id.btnRename).isEnabled = selectedId > 0
         view.findViewById<ImageButton>(R.id.btnDelete).isEnabled = selectedId > 0
         view.findViewById<Button>(R.id.btnWatchResults).apply {
-            val captureBusy = resultsCapture.isActive() && !manualWatch
-            text = if (manualWatch) "Stop watching" else "Watch results"
-            isEnabled = manualWatch ||
+            val captureBusy = resultsCapture.isActive() && !manualWatch && !autoWatch
+            text = when {
+                manualWatch -> "Stop watching"
+                autoWatch -> "Stop auto watch"
+                else -> "Watch results"
+            }
+            isEnabled = manualWatch || autoWatch ||
                 (!showRecording && !showReview && !showPlaying && !captureBusy)
         }
 
@@ -2082,6 +2168,10 @@ class FloatingMenuService : Service() {
         view.findViewById<TextView>(R.id.tvPlayingStatus).text = status
         if (manualWatch && !resultsCapture.isActive()) {
             manualWatch = false
+            captureSession = null
+        }
+        if (autoWatch && !resultsCapture.isActive()) {
+            autoWatch = false
             captureSession = null
         }
         refreshUi()
@@ -2364,6 +2454,7 @@ class FloatingMenuService : Service() {
         private const val PAGE_CONTROLLER = 0
         private const val PAGE_STATS = 1
         private const val TAG = "AutoClashController"
+        private const val AUTO_RESTART_DELAY_MS = 5_000L
         private const val CHANNEL_ID = "autoclash_controller"
         private const val NOTIFICATION_ID = 1001
         private const val NOTIFICATION_THROTTLE_MS = 900L

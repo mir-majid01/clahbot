@@ -1043,3 +1043,101 @@ can write a wrong value before the screen settles. 2.4.7 addresses the two
 observed causes (duplicate frames and transient zeros); a fresh multi-attack
 device test is still needed before calling the live path proven. This is a new
 clean-holdout test, not a reuse of the 24 tuning captures.
+
+## 2026-10-28 — count-up stabilization, review flags, bonus states, Auto watch (2.4.8)
+
+This section answers the 12:48/12:50/12:57 investigation and supersedes the
+earlier watcher notes.
+
+### Root cause (evidence: A — sidecars, saved PNGs, rolling log)
+
+The six records were produced by **2.4.5 (versionCode 14)**, all from the
+Manual watch button. The three 12:48 rows are one defeat screen (same base,
+same dark 35,016, same bonus 210,000/210,000/1,344). 2.4.5 cleared the recorded
+screen after a **single** missed detection, so the same animated screen was
+captured again. There was also no stability check.
+
+- The impossible gold 25,412,267 passed because ML Kit full-page and Tesseract
+  both returned `2 5412 267` and the parser concatenated the groups into
+  25,412,267. The true value on the screen is **2,541,267**; the extra 2 is a
+  duplicated group-boundary digit. No sanity limit existed.
+- The saved frames of that screen are partly covered by a clan name/particle.
+  Even the all-reader pass reads only dark 35,016 and the bonus; gold/elixir
+  remain conflicts. The true visible values are
+  **2,541,267 / 1,668,782 / 35,016**.
+- 12:57 gold **1,120,000 is correct** (the screenshot shows it); the same
+  screen has an **empty bonus panel**, not "no bonus".
+- 12:50 has **no dark row at all** (the panel shows only gold and elixir), so
+  dark null is honest; no bonus panel.
+- 12:49 is correct.
+
+### Code changes in 2.4.8 (versionCode 17)
+
+- `StableReadGate`: a value is saved only after two consecutive complete reads
+  agree on outcome + gold + elixir + dark. Up to three extra frames 800 ms
+  apart are tried; partial/animated frames never become the saved value.
+- `EpisodeFillPolicy`: later reads of the same open screen only fill null
+  fields of the same record; a changed existing field is flagged, never
+  replaced, and never creates a second record.
+- `LootSanity`: absolute caps (10M gold/elixir, 1M dark, 1M bonus gold/elixir,
+  100k bonus dark) remove implausible fields and flag the record; balance
+  deltas can add a review reason but never substitute a value.
+- `AttackRecord.reviewReason` + `bonusState`; history shows **Needs review**
+  with the reason, and bonus state (`captured`, `not-captured`, `none`, or
+  legacy unknown). Bonus totals are shown separately in Stats/overlay and the
+  main totals stay main-only.
+- The Edit attack loot dialog prefills all six fields; saving keeps the bonus
+  unless the user clears it and clears the review flag.
+- Bonus parser uses the word "bonus", not the percentage (`80% Bonus` test).
+  `bonusPanel` distinguishes absent panel vs present-but-uncaptured.
+- Re-scan includes records with a review reason, reads with ALL engines,
+  applies the sanity check, preserves the original screenshot and existing
+  bonus, and updates only with all three main values.
+- Always-on watcher: while the floating controller runs, an **Auto watch**
+  session starts without a press and restarts after a macro watch ends. The
+  Stats button still creates an explicit **Manual watch**; macro playback uses
+  the macro name. Those labels now match the real source. The button can stop
+  Auto watch. Starting a macro recording aborts the auto watcher so it cannot
+  hide the overlay during recording; it restarts after the recording stops.
+
+### Test results (evidence: A/B)
+
+- Unit tests: **152 app + 50 ocrlab = 202, all passing** (includes the 12:48
+  sequence, one-episode/one-record, fill-only-missing, sanity caps, bonus
+  percentage and the 51,824/373,643/1,731 + 200,000/200,000/1,280 parser
+  case).
+- Lab pack: 24/24 native detected, 23/24 complete, **0 wrong values**, ~1.0 s
+  per screen. The previous 1,163,088 `L163 088` regression now reads correctly.
+- Real 12:48 screenshot with all readers: dark 35,016 and bonus
+  210,000/210,000/1,344 correct; gold/elixir conflict (occluded) and the
+  record stays flagged rather than guessed.
+- Re-scan copy on the flagged 59-record history: 10 scanned, 1 updated
+  (12:57 main values unchanged, source re-scanned), original hash unchanged.
+  The 12:48 frames could not supply gold/elixir, so Re-scan leaves them
+  flagged. Use the Edit action with the visible values above if you want them
+  corrected; that clears the flag and keeps the bonus.
+- The 51,824 test image was **not present** in the workspace or on the phone;
+  its exact values are covered by the parser test. Please drop the image in
+  `newimages/` or the phone test pack to add it physically.
+
+### Live data and build (evidence: A)
+
+- App **2.4.8** (versionCode 17), installed in place; APK SHA-256
+  `0493c0e459f7cb04918e1390dbfaeb95a14aaebb5e5b34c57f4bea428ad81d41`.
+- `attacks.json` SHA `66076a32…b73ed3` (59 records; 5 review flags, no
+  deletions); `macros.json` SHA `e8115ee2…7e0b` unchanged.
+- Flagged: 1793171917880, 1793171934849, 1793171944429 (12:48 group),
+  1793171895776 (the related 12:46 0/0/0 read), 1793172885599 (12:57).
+  Bonus states: the 12:48 group `captured`; 12:57 and 12:46
+  `not-captured`; 12:49/12:50 `none`.
+- Backups: `.ocr-work/step7_backup/attacks.before_248.json`,
+  `attacks.flagged.json`, `rescan_report_flagged.txt`, `macros.before_248.json`.
+
+### Remaining honest limitations
+
+- Auto watch is code-complete but not yet exercised by a live attack after
+  this install; it needs the user's next device test.
+- The 12:48 gold/elixir are physically covered in every saved frame; OCR cannot
+  read them without guessing. Manual edit is the safe way to correct those
+  three historical rows.
+- The 12:50 dark row is absent on the capture, not a missing OCR value.

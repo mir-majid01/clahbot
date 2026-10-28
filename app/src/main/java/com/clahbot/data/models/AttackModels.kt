@@ -36,6 +36,10 @@ data class AttackRecord(
     val resultsSidecar: String? = null,
     val verified: Boolean = false,
     val complete: Boolean = true,
+    /** Human-readable reason this record needs a check; null when it does not. */
+    val reviewReason: String? = null,
+    /** "none" (no panel), "not-captured" (panel present), "captured", or null. */
+    val bonusState: String? = null,
     /**
      * A playback session is not an attack. Only a detected results screen
      * creates a confirmed attack record.
@@ -45,6 +49,7 @@ data class AttackRecord(
 ) {
     val hasLoot: Boolean get() = gold != null || elixir != null || darkElixir != null
     val hasBonus: Boolean get() = bonusGold != null || bonusElixir != null || bonusDarkElixir != null
+    val needsReview: Boolean get() = reviewReason != null
 
     companion object {
         const val LOOT_NONE = "none"
@@ -56,6 +61,9 @@ data class AttackRecord(
         const val RESULT_UNKNOWN = "unknown"
         const val RESULT_COMPLETED = "completed"
         const val RESULT_INTERRUPTED = "interrupted"
+        const val BONUS_NONE = "none"
+        const val BONUS_NOT_CAPTURED = "not-captured"
+        const val BONUS_CAPTURED = "captured"
     }
 }
 
@@ -65,6 +73,10 @@ data class AttackSummary(
     val gold: Long = 0,
     val elixir: Long = 0,
     val darkElixir: Long = 0,
+    /** Bonus totals are kept separate from the main totals above. */
+    val bonusGold: Long = 0,
+    val bonusElixir: Long = 0,
+    val bonusDarkElixir: Long = 0,
     val totalDurationMs: Long = 0,
     val averageDurationMs: Long = 0
 )
@@ -79,6 +91,9 @@ object AttackStats {
         var gold = 0L
         var elixir = 0L
         var dark = 0L
+        var bonusGold = 0L
+        var bonusElixir = 0L
+        var bonusDark = 0L
         var looted = 0
         var duration = 0L
         for (r in records) {
@@ -86,6 +101,9 @@ object AttackStats {
             r.gold?.let { gold += it }
             r.elixir?.let { elixir += it }
             r.darkElixir?.let { dark += it }
+            r.bonusGold?.let { bonusGold += it }
+            r.bonusElixir?.let { bonusElixir += it }
+            r.bonusDarkElixir?.let { bonusDark += it }
             duration += r.durationMs.coerceAtLeast(0L)
         }
         return AttackSummary(
@@ -94,6 +112,9 @@ object AttackStats {
             gold = gold,
             elixir = elixir,
             darkElixir = dark,
+            bonusGold = bonusGold,
+            bonusElixir = bonusElixir,
+            bonusDarkElixir = bonusDark,
             totalDurationMs = duration,
             averageDurationMs = duration / records.size
         )

@@ -99,6 +99,41 @@ class ResultsParserTest {
     }
 
     @Test
+    fun bonusTitlePercentageDoesNotMatterAndBonusStaysSeparate() {
+        val page = OcrPage(
+            2576,
+            1159,
+            listOf(
+                line("Total damage:", 1100, 80, 1400, 140),
+                line("VICTORY", 1000, 240, 1300, 310),
+                line("You got:", 1050, 380, 1300, 430),
+                line("51 824", 1100, 440, 1300, 490),
+                line("373 643", 1100, 525, 1300, 575),
+                line("1 731", 1100, 610, 1300, 660),
+                line("Troops expended:", 1000, 700, 1400, 750),
+                line("80% Bonus:", 1550, 380, 1800, 430),
+                line("+200000", 1550, 440, 1750, 490),
+                line("+200000", 1550, 500, 1750, 550),
+                line("+1280", 1550, 560, 1750, 610),
+                line("18 389 880", 1700, 30, 1950, 80),
+                line("19 074 837", 1700, 90, 1950, 140),
+                line("279 811", 1700, 150, 1950, 200)
+            )
+        )
+        val inspection = requireNotNull(ResultsScreenParser(sampler()).inspect(page))
+        assertTrue(inspection.bonusPanel)
+        assertEquals(3, inspection.bonusRows.size)
+        val read = ResultsAssembler.assemble(inspection, readings(inspection))
+        assertEquals(51_824L, read.gold)
+        assertEquals(373_643L, read.elixir)
+        assertEquals(1_731L, read.darkElixir)
+        assertEquals(200_000L, read.bonusGold)
+        assertEquals(200_000L, read.bonusElixir)
+        assertEquals(1_280L, read.bonusDarkElixir)
+        assertFalse(read.needsReview)
+    }
+
+    @Test
     fun findsOnlyLootRowsInTheValueColumnAndExcludesTheSourPanel() {
         val inspection = requireNotNull(
             ResultsScreenParser(sampler()).inspect(victoryPage(sourPanel = true))
