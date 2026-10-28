@@ -36,6 +36,20 @@ Uninstalling the app deletes its local data.
    one confirmed attack record; a failed read stays `loot not captured` and can
    be corrected from the history. A playback ending alone never creates a record.
 
+## Sharing macros
+
+Each macro card has a **Share** button. It exports only that macro (gestures,
+timing, speed, repeat and wait) as a small versioned JSON file and opens
+Android's share sheet; send it to another AutoClash user through any app.
+Nothing else is included — no other macros, attack history, captures or
+settings.
+
+To receive one, tap **Import** above the macro library and pick the shared
+`.json` file. The imported macro always gets a new local id, and a name that is
+already taken becomes `Name (2)`; the file's original id is ignored. Files that
+are not AutoClash macro JSON, are empty, or come from a newer format version
+are rejected with a toast. Importing never overwrites an existing macro.
+
 ## Recording modes
 
 | Mode | What happens |
@@ -90,6 +104,7 @@ updates from this repository's Releases. See
 | `PassiveGestureBuilder` | Tracks slots, builds independent paths for simultaneous fingers and ignores touches inside the controller bounds. |
 | `MacroPlayer` | Replays macros with `AccessibilityService.dispatchGesture`, including simultaneous paths. |
 | `MacroRepository` | Single authoritative macro list exposed as `StateFlow`, persisted as versioned JSON. |
+| `MacroShare` | Versioned single-macro export/import codec; imports are re-sanitized and always receive a new local id. |
 | `MacroTimeline` | Pure timing and geometry: speed scaling, classification, decimation, repeat modes. |
 | `BotState` | One state machine shared by the dashboard and controller. |
 | `SettingsStore` | Shared preferences as a `StateFlow`. |
@@ -159,7 +174,7 @@ the pause. Delays below one second still apply but do not show a countdown.
 - Coordinates are normalized to the recording display; a very different aspect
   ratio can shift touch positions.
 - Speed changes apply at the next playback run.
-- The v2.4.8 build is **arm64-only** because the bundled OCR native libraries
+- The v2.4.9 build is **arm64-only** because the bundled OCR native libraries
   made the universal APK about 151 MB. The lab and app are verified on the
   arm64 test phone; other ABIs are not packaged in this build.
 - Result-screen OCR needs the accessibility screenshot permission (Android 11+)
