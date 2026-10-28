@@ -9,6 +9,7 @@ import com.clahbot.data.SettingsStore
 import com.clahbot.data.models.AttackRecord
 import com.clahbot.data.models.AttackRecordPolicy
 import com.clahbot.data.models.AttackTrigger
+import com.clahbot.ocr.ResultsRead
 import com.clahbot.service.ClahAccessibilityService
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -209,19 +210,19 @@ class ResultsCaptureCoordinator(
                 val detectStart = System.nanoTime()
                 val check = reader.checkResultsScreen(detectionBitmap)
                 val detectMs = (System.nanoTime() - detectStart) / 1_000_000L
+                val screenHash = runCatching { ScreenHash.fromBitmap(detectionBitmap) }.getOrNull()
                 if (!check.isResults) {
-                    tracker.onPoll(results = false, hash = null)
+                    tracker.onPoll(results = false, hash = screenHash)
                     gate.notePoll(pollStartedAt, false, check.reason)
                     event(
                         "poll #${++poll} t=${pollStartedAt - state.session.startedAt}ms " +
                             "shot=${shotMs}ms detect=${detectMs}ms results=false " +
-                            "reason=${check.reason ?: "-"}"
+                            "hash=${screenHash ?: "-"} reason=${check.reason ?: "-"}"
                     )
                     detectionBitmap.recycle()
                     continue
                 }
 
-                val screenHash = runCatching { ScreenHash.fromBitmap(detectionBitmap) }.getOrNull()
                 val action = tracker.onPoll(results = true, hash = screenHash)
                 event(
                     "poll #${++poll} t=${pollStartedAt - state.session.startedAt}ms " +
@@ -258,6 +259,7 @@ class ResultsCaptureCoordinator(
                         "${detectionBitmap.height}; ${gate.snapshot()}"
                 )
                 var cleanBitmap: Bitmap? = null
+                var settleBitmap: Bitmap? = null
                 var cleanCheck: AppResultsReader.ScreenCheck? = null
                 try {
                     withContext(Dispatchers.Main) { hideOverlay() }
@@ -304,6 +306,30 @@ class ResultsCaptureCoordinator(
                         }
                     }
 
+                    // A loot counter can briefly show 0 while the result
+                    // animation is still running. Re-read a zero result for a
+                    // few seconds; if any non-zero value appears, use that
+                    // frame instead of writing a false zero.
+                    if (readResult != null && isZeroish(readResult.read)) {
+                        for (attempt in 1..ZERO_SETTLE_ATTEMPTS) {
+                            delay(ZERO_SETTLE_DELAY_MS)
+                            val shot = ClahAccessibilityService.captureScreenshot() ?: continue
+                            val next = withTimeoutOrNull(READ_TIMEOUT_MS) { reader.read(shot) }
+                            if (next == null) {
+                                shot.recycle()
+                                continue
+                            }
+                            if (hasNonZero(next.read)) {
+                                settleBitmap = shot
+                                readResult = next
+                                readSource = "settle"
+                                event("zero read settled non-zero after $attempt attempt(s)")
+                                break
+                            }
+                            shot.recycle()
+                        }
+                    }
+
                     if (readResult != null) {
                         val read = readResult.read
                         val outcome = read.outcome.name.lowercase(Locale.US)
@@ -325,7 +351,8 @@ class ResultsCaptureCoordinator(
                             val recordStartedAt = state.lastRecordStartedAt ?: state.session.startedAt
                             val added = saveAndRecord(
                                 state = state,
-                                bitmap = if (readSource == "clean") clean ?: detectionBitmap else detectionBitmap,
+                                bitmap = settleBitmap
+                                    ?: if (readSource == "clean") clean ?: detectionBitmap else detectionBitmap,
                                 result = readResult,
                                 source = readSource,
                                 recordId = recordId,
@@ -377,6 +404,7 @@ class ResultsCaptureCoordinator(
                     gate.releaseHold()
                     event("hold released; ${gate.snapshot()}")
                     cleanBitmap?.recycle()
+                    settleBitmap?.recycle()
                     detectionBitmap.recycle()
                     withContext(Dispatchers.Main) { runCatching { showOverlay() } }
                 }
@@ -578,6 +606,15 @@ class ResultsCaptureCoordinator(
         if (current === state) current = null
     }
 
+    private fun isZeroish(read: ResultsRead): Boolean =
+        !hasNonZero(read) &&
+            (read.gold == 0L || read.elixir == 0L || read.darkElixir == 0L)
+
+    private fun hasNonZero(read: ResultsRead): Boolean =
+        (read.gold != null && read.gold != 0L) ||
+            (read.elixir != null && read.elixir != 0L) ||
+            (read.darkElixir != null && read.darkElixir != 0L)
+
     companion object {
         private const val TAG = "AutoClashResults"
         private const val CAPTURE_WINDOW_MS = 240_000L
@@ -587,5 +624,7 @@ class ResultsCaptureCoordinator(
         private const val RETRY_DELAY_MS = 1_000L
         private const val READ_TIMEOUT_MS = 25_000L
         private const val CLEAN_CAPTURE_DELAY_MS = 600L
+        private const val ZERO_SETTLE_ATTEMPTS = 3
+        private const val ZERO_SETTLE_DELAY_MS = 1_000L
     }
 }

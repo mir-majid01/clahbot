@@ -80,6 +80,12 @@ class NumberParserTest {
     }
 
     @Test
+    fun aSplitGroupWithALeadingZeroKeepsEveryDigit() {
+        assertEquals(setOf(1_163_088L), values("1 163 088"))
+        assertEquals(setOf(1_163_088L), values("L163 088"))
+    }
+
+    @Test
     fun acceptsZeroAndSmallLootValues() {
         assertEquals(setOf(0L), values("0"))
         assertEquals(setOf(0L), values("O"))

@@ -169,7 +169,7 @@ class ResultsScreenParser(
             val center = firstCenter + pitch * slot
             val slotTop = center - pitch * 0.5f
             val slotBottom = center + pitch * 0.5f
-            val hint = page.lines.mapNotNull { line ->
+            val candidates = page.lines.mapNotNull { line ->
                 val box = line.box ?: return@mapNotNull null
                 // Keep the hint near the slot centre and require a value-line
                 // height; small clan-name labels also contain digits.
@@ -185,11 +185,43 @@ class ResultsScreenParser(
                 if (isNonLootText(line.text)) return@mapNotNull null
                 if (NumberParser.lootCandidates(line.text).isEmpty()) return@mapNotNull null
                 line
-            }.maxByOrNull { line ->
-                val digits = NumberParser.lootCandidates(line.text)
-                    .maxOfOrNull { it.digits.length } ?: 0
-                digits * 10_000 + (line.box?.width ?: 0)
+            }.sortedBy { it.box?.left ?: 0 }
+
+            // Wide loot values can be split into several OCR lines ("1" and
+            // "163 088"). Merge adjacent value lines in the same slot before
+            // choosing the row, otherwise the leading digit is lost.
+            val groups = mutableListOf<MutableList<OcrLine>>()
+            for (line in candidates) {
+                val box = line.box ?: continue
+                val group = groups.lastOrNull()
+                val previous = group?.lastOrNull()?.box
+                val adjacent = previous != null &&
+                    kotlin.math.abs(box.centerY - previous.centerY) <= pitch * 0.35f &&
+                    box.left - previous.right <= page.width * 0.03f
+                if (adjacent && group != null) {
+                    group += line
+                } else {
+                    groups += mutableListOf(line)
+                }
             }
+            val hint = groups.mapNotNull { group ->
+                val boxes = group.mapNotNull { it.box }
+                if (boxes.isEmpty()) return@mapNotNull null
+                val text = group.joinToString(" ") { it.text.trim() }
+                val digits = NumberParser.lootCandidates(text)
+                    .maxOfOrNull { it.digits.length } ?: 0
+                if (digits == 0) return@mapNotNull null
+                Hint(
+                    text = text,
+                    box = OcrBox(
+                        left = boxes.minOf { it.left },
+                        top = boxes.minOf { it.top },
+                        right = boxes.maxOf { it.right },
+                        bottom = boxes.maxOf { it.bottom }
+                    ),
+                    digits = digits
+                )
+            }.maxByOrNull { it.digits * 10_000 + it.box.width }
             if (hint == null) {
                 issues += "loot row ${slot + 1}: no OCR line in slot"
             }
@@ -298,5 +330,11 @@ class ResultsScreenParser(
         val youGot: OcrLine,
         val bonus: OcrLine?,
         val outcome: ResultsOutcome
+    )
+
+    private data class Hint(
+        val text: String,
+        val box: OcrBox,
+        val digits: Int
     )
 }

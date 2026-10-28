@@ -33,4 +33,15 @@ object ScreenHash {
         }
         return String.format(Locale.US, "%016x", bits)
     }
+
+    /** Number of differing bits, or null when either hash is missing/invalid. */
+    fun distance(a: String?, b: String?): Int? {
+        if (a == null || b == null) return null
+        return runCatching {
+            java.lang.Long.bitCount(
+                java.lang.Long.parseUnsignedLong(a, 16) xor
+                    java.lang.Long.parseUnsignedLong(b, 16)
+            )
+        }.getOrNull()
+    }
 }

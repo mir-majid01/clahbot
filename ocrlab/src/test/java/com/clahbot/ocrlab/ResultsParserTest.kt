@@ -134,6 +134,33 @@ class ResultsParserTest {
     }
 
     @Test
+    fun aNumberSplitAcrossTwoLinesKeepsTheLeadingDigit() {
+        val page = OcrPage(
+            2576,
+            1159,
+            listOf(
+                line("Total damage:", 1100, 80, 1400, 140),
+                line("VICTORY", 1000, 240, 1300, 310),
+                line("You got:", 1050, 380, 1300, 430),
+                line("1", 1080, 440, 1095, 490),
+                line("163 088", 1100, 440, 1300, 490),
+                line("962 498", 1100, 525, 1300, 575),
+                line("2 796", 1100, 610, 1300, 660),
+                line("Troops expended:", 1000, 700, 1400, 750),
+                line("18 389 880", 1700, 30, 1950, 80),
+                line("19 074 837", 1700, 90, 1950, 140),
+                line("279 811", 1700, 150, 1950, 200)
+            )
+        )
+        val inspection = requireNotNull(ResultsScreenParser(sampler()).inspect(page))
+        assertEquals("1 163 088", inspection.lootRows[0].rawText)
+        val read = ResultsAssembler.assemble(inspection, readings(inspection))
+        assertEquals(1_163_088L, read.gold)
+        assertEquals(962_498L, read.elixir)
+        assertEquals(2_796L, read.darkElixir)
+    }
+
+    @Test
     fun aWarResultWithTotalDestructionIsStillAResultScreen() {
         val page = victoryPage()
         val war = OcrPage(
