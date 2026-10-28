@@ -223,6 +223,13 @@ internal fun sanitizeAttack(raw: AttackRecord): AttackRecord? {
             outcome = outcome,
             resultsScreenshot = raw.resultsScreenshot?.takeIf { it.isNotBlank() },
             resultsSidecar = raw.resultsSidecar?.takeIf { it.isNotBlank() },
+            reviewReason = raw.reviewReason?.trim()?.takeIf { it.isNotBlank() },
+            bonusState = when (raw.bonusState) {
+                AttackRecord.BONUS_NONE,
+                AttackRecord.BONUS_NOT_CAPTURED,
+                AttackRecord.BONUS_CAPTURED -> raw.bonusState
+                else -> if (raw.hasBonus) AttackRecord.BONUS_CAPTURED else null
+            },
             macroName = raw.macroName.orEmpty().ifBlank { "Unknown macro" },
             speedMultiplier = if (raw.speedMultiplier <= 0f) 1f else raw.speedMultiplier
         )

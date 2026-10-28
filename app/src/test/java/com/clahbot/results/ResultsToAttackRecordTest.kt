@@ -42,7 +42,8 @@ class ResultsToAttackRecordTest {
         balanceDarkElixir = 272_302,
         confidence = 1.0,
         needsReview = false,
-        issues = emptyList()
+        issues = emptyList(),
+        bonusPanel = bonusGold != null || bonusElixir != null || bonusDark != null
     )
 
     @Test
@@ -70,6 +71,8 @@ class ResultsToAttackRecordTest {
         assertEquals(370_000L, record.bonusGold)
         assertEquals(370_000L, record.bonusElixir)
         assertEquals(2_750L, record.bonusDarkElixir)
+        assertEquals(AttackRecord.BONUS_CAPTURED, record.bonusState)
+        assertNull(record.reviewReason)
         assertEquals(AttackRecord.LOOT_OCR, record.lootSource)
         assertEquals(AttackRecord.RESULT_COMPLETED, record.result)
         assertEquals("victory", record.outcome)
@@ -124,8 +127,10 @@ class ResultsToAttackRecordTest {
         assertNull(record.elixir)
         assertEquals(5_713L, record.darkElixir)
         assertEquals(AttackRecord.LOOT_OCR, record.lootSource)
-        assertTrue(record.verified)
-        assertTrue(record.note.contains("Some loot fields were not captured"))
+        assertFalse(record.verified)
+        assertTrue(record.needsReview)
+        assertTrue(record.reviewReason!!.contains("not captured"))
+        assertTrue(record.note.contains("Needs review"))
         assertTrue(record.note.contains("stopped before the macro ended"))
     }
 

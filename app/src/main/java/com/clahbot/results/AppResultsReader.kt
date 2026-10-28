@@ -54,6 +54,7 @@ class AppResultsReader(private val context: Context) {
     private var rapidOcr: RapidOcrRowEngine? = null
     private var templates: DigitTemplateEngine? = null
     private var rowReader: RowCropReader? = null
+    private var rowReaderAll: RowCropReader? = null
 
     suspend fun warmUp() {
         if (initialized) return
@@ -73,6 +74,15 @@ class AppResultsReader(private val context: Context) {
                 templates = templates,
                 cropSink = null,
                 strategy = ReaderStrategy.CHEAP_FIRST,
+                runTemplateForTiming = false
+            )
+            rowReaderAll = RowCropReader(
+                mlKit = mlKit,
+                tesseract = tesseract,
+                rapidOcr = rapidOcr,
+                templates = templates,
+                cropSink = null,
+                strategy = ReaderStrategy.ALL,
                 runTemplateForTiming = false
             )
             initialized = true
@@ -97,10 +107,17 @@ class AppResultsReader(private val context: Context) {
     suspend fun isResultsScreen(bitmap: Bitmap): Boolean =
         checkResultsScreen(bitmap).isResults
 
-    suspend fun read(bitmap: Bitmap): ReadResult? {
+    suspend fun read(
+        bitmap: Bitmap,
+        strategy: ReaderStrategy = ReaderStrategy.CHEAP_FIRST
+    ): ReadResult? {
         warmUp()
         return readMutex.withLock {
-            val reader = rowReader ?: return@withLock null
+            val reader = if (strategy == ReaderStrategy.ALL) {
+                rowReaderAll ?: rowReader
+            } else {
+                rowReader
+            } ?: return@withLock null
             val pageStart = System.nanoTime()
             val page = mlKit.recognize(bitmap)
             val pageOcrMs = (System.nanoTime() - pageStart) / 1_000_000L
@@ -141,6 +158,7 @@ class AppResultsReader(private val context: Context) {
                 readMutex.withLock {
                     initialized = false
                     rowReader = null
+                    rowReaderAll = null
                     runCatching { tesseract?.close() }
                     runCatching { rapidOcr?.close() }
                     tesseract = null

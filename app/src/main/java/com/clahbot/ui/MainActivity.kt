@@ -530,6 +530,13 @@ fun DashboardScreen(
                             },
                             captureSource = AttackRecord.SOURCE_MANUAL,
                             verified = anyLoot,
+                            complete = gold != null && elixir != null && dark != null,
+                            bonusState = when {
+                                bonusGold != null || bonusElixir != null || bonusDark != null ->
+                                    AttackRecord.BONUS_CAPTURED
+                                else -> record.bonusState
+                            },
+                            reviewReason = null,
                             confirmed = true
                         )
                     )
@@ -595,6 +602,16 @@ private fun AttackSummaryCard(
                 )
             }
             Spacer(Modifier.height(8.dp))
+            if (summary.bonusGold + summary.bonusElixir + summary.bonusDarkElixir > 0) {
+                Text(
+                    "Bonus (separate) · " + formatNumber(summary.bonusGold) + " gold · " +
+                        formatNumber(summary.bonusElixir) + " elixir · " +
+                        formatNumber(summary.bonusDarkElixir) + " dark",
+                    fontSize = 10.sp,
+                    color = TextMuted
+                )
+                Spacer(Modifier.height(4.dp))
+            }
             Text(
                 "Measured ${formatDuration(summary.totalDurationMs)} · average ${formatDuration(summary.averageDurationMs)}",
                 fontSize = 10.sp,
@@ -733,15 +750,29 @@ private fun AttackHistoryRow(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+                val statusLabel = when {
+                    record.needsReview -> "Needs review"
+                    record.confirmed -> "Confirmed"
+                    else -> "Unconfirmed"
+                }
                 Text(
                     record.macroName + " · " + MacroTimeline.formatSpeed(record.speedMultiplier) +
-                        " · " + if (record.confirmed) "Confirmed" else "Unconfirmed" +
+                        " · " + statusLabel +
                         (record.outcome?.let { " · " + it.replaceFirstChar { c -> c.uppercase() } } ?: ""),
                     fontSize = 10.sp,
-                    color = if (record.confirmed) TextMuted else PauseAmber,
+                    color = if (record.confirmed && !record.needsReview) TextMuted else PauseAmber,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
+                if (record.needsReview) {
+                    Text(
+                        "Needs review: ${record.reviewReason}",
+                        fontSize = 9.sp,
+                        color = PauseAmber,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
                 Spacer(Modifier.height(3.dp))
                 if (record.hasLoot) {
                     Row(
@@ -769,9 +800,9 @@ private fun AttackHistoryRow(
                         color = TextMuted
                     )
                 }
-                if (record.hasBonus) {
-                    Spacer(Modifier.height(2.dp))
-                    Row(
+                Spacer(Modifier.height(2.dp))
+                when {
+                    record.hasBonus -> Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(9.dp)
                     ) {
@@ -780,6 +811,21 @@ private fun AttackHistoryRow(
                         record.bonusElixir?.let { LootChip(R.drawable.ic_elixir, it) }
                         record.bonusDarkElixir?.let { LootChip(R.drawable.ic_dark, it) }
                     }
+                    record.bonusState == AttackRecord.BONUS_NOT_CAPTURED -> Text(
+                        "Bonus panel present · not captured",
+                        fontSize = 9.sp,
+                        color = PauseAmber
+                    )
+                    record.bonusState == AttackRecord.BONUS_NONE -> Text(
+                        "No bonus panel",
+                        fontSize = 9.sp,
+                        color = TextMuted
+                    )
+                    record.confirmed -> Text(
+                        "Bonus not recorded",
+                        fontSize = 9.sp,
+                        color = TextMuted
+                    )
                 }
             }
             if (!record.confirmed) {

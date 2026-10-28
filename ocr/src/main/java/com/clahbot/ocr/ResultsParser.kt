@@ -30,7 +30,9 @@ data class Inspection(
     val lootRows: List<RowCandidate>,
     val bonusRows: List<RowCandidate>,
     val balanceRows: List<RowCandidate>,
-    val issues: List<String>
+    val issues: List<String>,
+    /** True when a bonus panel/title exists, even if none of its rows were read. */
+    val bonusPanel: Boolean = false
 )
 
 data class ResultsRead(
@@ -47,7 +49,9 @@ data class ResultsRead(
     val balanceDarkElixir: Long?,
     val confidence: Double,
     val needsReview: Boolean,
-    val issues: List<String>
+    val issues: List<String>,
+    /** True when a bonus panel/title exists, even if none of its rows were read. */
+    val bonusPanel: Boolean = false
 ) {
     val lootComplete: Boolean
         get() = gold != null && elixir != null && darkElixir != null
@@ -92,7 +96,8 @@ class ResultsScreenParser(
             lootRows = lootRows,
             bonusRows = bonusRows,
             balanceRows = balanceRows,
-            issues = issues
+            issues = issues,
+            bonusPanel = anchors.bonus != null
         )
     }
 
