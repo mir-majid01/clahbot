@@ -34,10 +34,15 @@ import android.view.LayoutInflater
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
+import android.view.inputmethod.InputMethodManager
 import android.widget.Button
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.ImageButton
+import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.Switch
 import android.widget.TextView
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
@@ -131,8 +136,10 @@ class FloatingMenuService : Service() {
 
     private var macros: List<Macro> = emptyList()
     private var selectedId: Long = -1L
-    private var speed: Float = 1f
-    private var repeatMode: String = Macro.REPEAT_ONCE
+    private var settingsView: View? = null
+    private var settingsMacroId: Long = -1L
+    private var pendingDelete: Macro? = null
+    private var undoTicker: Runnable? = null
 
     private var recording: Boolean = false
     private var lastNotificationMs: Long = 0L
@@ -197,7 +204,7 @@ class FloatingMenuService : Service() {
             onRecordSaved = {
                 AppEventLog.log(
                     "record callback playerRunning=${player?.isRunning() == true} " +
-                        "repeat=$repeatMode captureId=${captureSession?.id ?: "-"} " +
+                        "repeat=${captureSession?.repeat ?: "-"} captureId=${captureSession?.id ?: "-"} " +
                         "manual=$manualWatch"
                 )
                 scope.launch {
@@ -244,6 +251,15 @@ class FloatingMenuService : Service() {
             }
         }
         scope.launch { BotState.status.collect { onStatusChanged(it) } }
+        scope.launch {
+            BotState.startCountdown.collect { seconds ->
+                if (seconds == null && BotState.state.value == ControllerState.PLAYING) {
+                    macros.firstOrNull { it.id == BotState.activeMacroId.value }
+                        ?.let { placeControllerForPlayback(it) }
+                }
+                refreshUi()
+            }
+        }
         scope.launch {
             settingsStore.settings.collect { settings ->
                 val params = controllerParams ?: return@collect
@@ -328,10 +344,9 @@ class FloatingMenuService : Service() {
         if (reconciled != selectedId) {
             selectedId = reconciled
             BotState.setSelectedMacroId(reconciled)
-            list.firstOrNull { it.id == reconciled }?.let { macro ->
-                speed = MacroTimeline.clampSpeed(macro.speedMultiplier)
-                repeatMode = macro.repeatMode
-            }
+        }
+        if (settingsMacroId > 0 && list.none { it.id == settingsMacroId }) {
+            closeMacroSettings()
         }
 
         val activeId = BotState.activeMacroId.value
@@ -379,7 +394,7 @@ class FloatingMenuService : Service() {
             .inflate(R.layout.overlay_controller, null)
         // Fit the list to the usable screen and keep the footer anchored below it.
         val scaledDensity = controllerContext.resources.displayMetrics.density
-        val listDp = (screenHeight / scaledDensity - 320f).coerceIn(48f, 132f)
+        val listDp = (screenHeight / scaledDensity - 340f).coerceIn(56f, 170f)
         view.findViewById<View>(R.id.macroScroll)?.let { scroll ->
             scroll.layoutParams = scroll.layoutParams.apply {
                 height = (listDp * scaledDensity).toInt()
@@ -419,10 +434,6 @@ class FloatingMenuService : Service() {
             refreshControllerBoundsSnapshot()
         }
 
-        if (selectedId <= 0) {
-            speed = MacroTimeline.clampSpeed(prefs.defaultSpeed)
-            repeatMode = prefs.defaultRepeat
-        }
         if (prefs.startMinimized) collapseController()
 
         page = PAGE_CONTROLLER
@@ -466,18 +477,16 @@ class FloatingMenuService : Service() {
             haptic()
             startRecording()
         }
-        view.findViewById<Button>(R.id.btnPlay).setOnClickListener { playSelected() }
         view.findViewById<Button>(R.id.btnPageController).setOnClickListener { setPage(PAGE_CONTROLLER) }
         view.findViewById<Button>(R.id.btnPageStats).setOnClickListener { setPage(PAGE_STATS) }
         view.findViewById<Button>(R.id.btnWatchResults).setOnClickListener {
             haptic()
             toggleManualWatch()
         }
-        view.findViewById<ImageButton>(R.id.btnRename).setOnClickListener { editSelected() }
-        view.findViewById<ImageButton>(R.id.btnDelete).setOnClickListener { deleteSelected() }
-        view.findViewById<ImageButton>(R.id.btnSpeedDown).setOnClickListener { changeSpeed(-1) }
-        view.findViewById<ImageButton>(R.id.btnSpeedUp).setOnClickListener { changeSpeed(1) }
-        view.findViewById<Button>(R.id.btnRepeat).setOnClickListener { cycleRepeat() }
+        view.findViewById<Button>(R.id.btnUndo).setOnClickListener {
+            haptic()
+            undoDelete()
+        }
 
         view.findViewById<Button>(R.id.btnRecPause).setOnClickListener { toggleRecordingPause() }
         view.findViewById<Button>(R.id.btnRecFinish).setOnClickListener {
@@ -496,6 +505,12 @@ class FloatingMenuService : Service() {
         }
         view.findViewById<Button>(R.id.btnSave).setOnClickListener { saveRecording() }
 
+        view.findViewById<Button>(R.id.btnStopCountdown).setOnClickListener {
+            haptic()
+            stopPlayback()
+            BotState.setState(ControllerState.READY)
+            BotState.setStatus("Playback stopped")
+        }
         view.findViewById<Button>(R.id.btnPlayPause).setOnClickListener { togglePlaybackPause() }
         view.findViewById<Button>(R.id.btnStopPlayback).setOnClickListener {
             haptic()
@@ -1392,15 +1407,6 @@ class FloatingMenuService : Service() {
 
     // -------------------------------------------------------------- playback
 
-    private fun playSelected() {
-        val macro = macros.firstOrNull { it.id == selectedId }
-        if (macro == null) {
-            toast("Select a macro first")
-            return
-        }
-        startPlayback(macro)
-    }
-
     private fun startPlayback(macro: Macro) {
         if (recording) {
             toast("Finish the recording first")
@@ -1420,7 +1426,7 @@ class FloatingMenuService : Service() {
             toast("This macro has no gestures")
             return
         }
-        val adjusted = macro.copy(speedMultiplier = speed, repeatMode = repeatMode)
+        val adjusted = macro
         if (adjusted.orientation != currentOrientation()) {
             BotState.setStatus("Warning: macro was recorded in ${adjusted.orientation}")
         }
@@ -1436,19 +1442,23 @@ class FloatingMenuService : Service() {
         player?.stop()
         AppEventLog.log(
             "playback start macroId=${macro.id} gestures=${macro.gestures.size} " +
-                "durationMs=${macro.durationMs} repeat=$repeatMode speed=$speed"
+                "durationMs=${macro.durationMs} repeat=${macro.repeatMode} " +
+                "speed=${macro.speedMultiplier} countdownMs=${macro.effectiveStartCountdownMs} " +
+                "delayMs=${macro.effectiveRepeatDelayMs}"
         )
-        // Place the icon before the first injected gesture can run.
-        placeControllerForPlayback(macro)
+        // Place the icon before the first injected gesture can run. A macro with
+        // a start countdown keeps the panel open so the countdown is visible.
+        if (adjusted.effectiveStartCountdownMs <= 0L) placeControllerForPlayback(macro)
         scope.launch { resultsReader.warmUp() }
+        scope.launch { repository.markPlayed(macro.id) }
         val startedAt = System.currentTimeMillis()
         val capture = CaptureSession(
             id = startedAt,
             startedAt = startedAt,
             macroId = macro.id,
             macroName = macro.name,
-            speed = speed,
-            repeat = repeatMode
+            speed = macro.speedMultiplier,
+            repeat = macro.repeatMode
         )
         captureSession = capture
         resultsCapture.begin(capture)
@@ -1773,24 +1783,6 @@ class FloatingMenuService : Service() {
     private fun formatClockOfDay(timestamp: Long): String =
         SimpleDateFormat("HH:mm", Locale.US).format(Date(timestamp))
 
-    private fun changeSpeed(direction: Int) {
-        speed = MacroTimeline.stepSpeed(speed, direction)
-        persistPlaybackSettings()
-        refreshUi()
-    }
-
-    private fun cycleRepeat() {
-        repeatMode = MacroTimeline.nextRepeat(repeatMode)
-        persistPlaybackSettings()
-        refreshUi()
-    }
-
-    private fun persistPlaybackSettings() {
-        val id = selectedId
-        if (id <= 0) return
-        scope.launch { repository.updatePlayback(id, speed, repeatMode) }
-    }
-
     // ----------------------------------------------------------- macro library
 
     private fun refreshMacros() {
@@ -1799,8 +1791,6 @@ class FloatingMenuService : Service() {
 
     private fun selectMacro(macro: Macro) {
         selectedId = macro.id
-        speed = MacroTimeline.clampSpeed(macro.speedMultiplier)
-        repeatMode = macro.repeatMode
         BotState.setSelectedMacroId(macro.id)
         renderMacroList()
         refreshUi()
@@ -1814,49 +1804,92 @@ class FloatingMenuService : Service() {
         }
         container.removeAllViews()
         Log.i(TAG, "Rendering ${macros.size} macro(s) in the controller")
-        val rowContext = view.context
 
         view.findViewById<TextView>(R.id.tvLibraryLabel)?.text =
             if (macros.isEmpty()) "Macros" else "Macros · ${macros.size}"
 
         if (macros.isEmpty()) {
-            container.addView(TextView(rowContext).apply {
+            container.addView(TextView(this).apply {
                 text = "No macros yet. Record one to get started."
                 setTextColor(0xFF94A3B8.toInt())
                 textSize = 10f
-                setPadding(dp(rowContext, 6), dp(rowContext, 8), dp(rowContext, 6), dp(rowContext, 8))
+                setPadding(dp(6), dp(8), dp(6), dp(8))
             })
             return
         }
 
         for (macro in macros) {
-            val row = LinearLayout(rowContext).apply {
-                orientation = LinearLayout.VERTICAL
-                setPadding(
-                    dp(rowContext, 8),
-                    dp(rowContext, 6),
-                    dp(rowContext, 8),
-                    dp(rowContext, 6)
-                )
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(6), dp(4), dp(0), dp(4))
                 setBackgroundColor(if (macro.id == selectedId) 0x2E3B82F6 else Color.TRANSPARENT)
             }
-            row.addView(TextView(rowContext).apply {
-                text = macro.name
+            val info = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(2), 0, dp(2), 0)
+                layoutParams = LinearLayout.LayoutParams(
+                    0,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    1f
+                )
+                setOnClickListener { selectMacro(macro) }
+            }
+            info.addView(TextView(this).apply {
+                text = if (macro.pinned) "PIN · ${macro.name}" else macro.name
                 setTextColor(0xFFE2E8F0.toInt())
                 textSize = 12f
                 maxLines = 1
                 ellipsize = android.text.TextUtils.TruncateAt.END
             })
-            row.addView(TextView(rowContext).apply {
+            info.addView(TextView(this).apply {
                 text = "${macro.gestures.size} gestures · ${formatDuration(macro.durationMs)} · " +
-                    MacroTimeline.formatSpeed(macro.speedMultiplier) + " · " +
-                    MacroTimeline.repeatLabel(macro.repeatMode)
+                    MacroTimeline.formatSpeed(macro.speedMultiplier)
                 setTextColor(0xFF94A3B8.toInt())
                 textSize = 9f
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
             })
-            row.setOnClickListener { selectMacro(macro) }
+            info.addView(TextView(this).apply {
+                text = MacroTimeline.repeatLabel(macro.repeatMode) + " · " +
+                    macroDelayLabel(macro)
+                setTextColor(0xFF94A3B8.toInt())
+                textSize = 9f
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+            })
+            row.addView(info)
+            row.addView(iconButton(R.drawable.ic_play, "Play ${macro.name}") {
+                haptic()
+                selectedId = macro.id
+                BotState.setSelectedMacroId(macro.id)
+                renderMacroList()
+                startPlayback(macro)
+            })
+            row.addView(iconButton(R.drawable.ic_gear, "Settings for ${macro.name}") {
+                haptic()
+                showMacroSettings(macro)
+            })
             container.addView(row)
         }
+    }
+
+    private fun iconButton(iconRes: Int, description: String, onClick: () -> Unit): ImageButton =
+        ImageButton(this).apply {
+            setImageResource(iconRes)
+            contentDescription = description
+            background = getDrawable(R.drawable.bg_icon_button)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            setPadding(dp(14), dp(14), dp(14), dp(14))
+            layoutParams = LinearLayout.LayoutParams(dp(48), dp(48)).apply {
+                marginStart = dp(2)
+            }
+            setOnClickListener { onClick() }
+        }
+
+    private fun macroDelayLabel(macro: Macro): String {
+        val delay = macro.effectiveRepeatDelayMs
+        return if (delay <= 0L) "no wait" else formatDelaySeconds(delay) + "s wait"
     }
 
     private fun saveRecording() {
@@ -1868,6 +1901,7 @@ class FloatingMenuService : Service() {
 
         fun persist(name: String) {
             val gestures = recorded.toList()
+            val prefs = settingsStore.settings.value
             val macro = Macro(
                 id = nextMacroId(),
                 name = name,
@@ -1877,8 +1911,8 @@ class FloatingMenuService : Service() {
                 deviceHeight = screenHeight,
                 orientation = currentOrientation(),
                 gestures = gestures,
-                repeatMode = repeatMode,
-                speedMultiplier = speed
+                repeatMode = prefs.defaultRepeat,
+                speedMultiplier = MacroTimeline.clampSpeed(prefs.defaultSpeed)
             )
             Log.i(TAG, "Saving \"$name\" with ${gestures.size} gesture(s)")
             scope.launch {
@@ -1911,97 +1945,369 @@ class FloatingMenuService : Service() {
         ) { name -> persist(name) }
     }
 
-    private fun editSelected() {
-        val macro = macros.firstOrNull { it.id == selectedId } ?: run {
-            toast("Select a macro first")
-            return
-        }
-        showMacroSettingsDialog(macro)
-    }
+    // ------------------------------------------------------ macro settings
 
-    private fun showMacroSettingsDialog(macro: Macro) {
-        val view = LayoutInflater.from(this).inflate(R.layout.dialog_macro_settings, null)
-        val dialog = Dialog(this).apply {
-            setContentView(view)
-            window?.setType(overlayType())
-            window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-            window?.setLayout(dp(300), WindowManager.LayoutParams.WRAP_CONTENT)
-            window?.setSoftInputMode(
-                WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE or
-                    WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE
-            )
-            setCanceledOnTouchOutside(false)
+    private fun showMacroSettings(macro: Macro) {
+        val view = controllerView ?: return
+        val host = view.findViewById<FrameLayout>(R.id.settingsHost) ?: return
+        if (settingsView != null) closeMacroSettings()
+        val settings = LayoutInflater.from(this).inflate(R.layout.overlay_macro_settings, host, false)
+        host.removeAllViews()
+        host.addView(settings)
+        settingsView = settings
+        settingsMacroId = macro.id
+        host.visibility = View.VISIBLE
+        view.findViewById<View>(R.id.pageTabs).visibility = View.GONE
+        view.findViewById<View>(R.id.contentFrame).visibility = View.GONE
+
+        settings.findViewById<TextView>(R.id.tvSettingsTitle).text = "Settings"
+        val nameInput = settings.findViewById<EditText>(R.id.etSettingsName)
+        val nameCount = settings.findViewById<TextView>(R.id.tvSettingsNameCount)
+        val repeatCountInput = settings.findViewById<EditText>(R.id.etRepeatCount)
+        val delayInput = settings.findViewById<EditText>(R.id.etDelay)
+        val countdownInput = settings.findViewById<EditText>(R.id.etCountdown)
+        val stopMinutesInput = settings.findViewById<EditText>(R.id.etStopMinutes)
+        val stopAttacksInput = settings.findViewById<EditText>(R.id.etStopAttacks)
+        val swStopMinutes = settings.findViewById<Switch>(R.id.swStopMinutes)
+        val swStopAttacks = settings.findViewById<Switch>(R.id.swStopAttacks)
+        val pinned = settings.findViewById<Switch>(R.id.swPinned)
+        val info = settings.findViewById<TextView>(R.id.tvSettingsInfo)
+        val error = settings.findViewById<TextView>(R.id.tvSettingsError)
+
+        val fields = arrayOf(
+            nameInput, repeatCountInput, delayInput,
+            countdownInput, stopMinutesInput, stopAttacksInput
+        )
+        val settingsScroll = settings.findViewById<ScrollView>(R.id.settingsScroll)
+        fun focusField(field: EditText) {
+            setControllerFocusable(true)
+            field.post {
+                field.requestFocus()
+                val imm = getSystemService(INPUT_METHOD_SERVICE) as? InputMethodManager
+                imm?.showSoftInput(field, InputMethodManager.SHOW_IMPLICIT)
+                settingsScroll.smoothScrollTo(0, (field.top - dp(48)).coerceAtLeast(0))
+            }
         }
-        val nameInput = view.findViewById<EditText>(R.id.etSettingsName)
-        val nameCount = view.findViewById<TextView>(R.id.tvSettingsNameCount)
-        val delayInput = view.findViewById<EditText>(R.id.etSettingsDelay)
-        val error = view.findViewById<TextView>(R.id.tvSettingsError)
-        val save = view.findViewById<Button>(R.id.btnSettingsSave)
+        fields.forEach { field ->
+            field.setOnTouchListener { _, event ->
+                if (event.actionMasked == MotionEvent.ACTION_DOWN) focusField(field)
+                false
+            }
+            field.setOnFocusChangeListener { _, hasFocus ->
+                if (hasFocus) {
+                    setControllerFocusable(true)
+                    settingsScroll.smoothScrollTo(0, (field.top - dp(48)).coerceAtLeast(0))
+                }
+            }
+        }
+
+        var speed = MacroTimeline.clampSpeed(macro.speedMultiplier)
+        var repeat = macro.repeatMode
+        val speedLabel = settings.findViewById<TextView>(R.id.tvSettingsSpeed)
+        val repeatOnce = settings.findViewById<Button>(R.id.btnRepeatOnce)
+        val repeatLoop = settings.findViewById<Button>(R.id.btnRepeatLoop)
+        val repeatCustom = settings.findViewById<Button>(R.id.btnRepeatCustom)
+        fun paintRepeat() {
+            val active = 0xFF3B82F6.toInt()
+            val idle = 0xFF1E293B.toInt()
+            repeatOnce.backgroundTintList =
+                ColorStateList.valueOf(if (repeat == Macro.REPEAT_ONCE) active else idle)
+            repeatLoop.backgroundTintList =
+                ColorStateList.valueOf(if (repeat == Macro.REPEAT_INFINITE) active else idle)
+            repeatCustom.backgroundTintList =
+                ColorStateList.valueOf(if (MacroTimeline.isCustomRepeat(repeat)) active else idle)
+            repeatCountInput.visibility =
+                if (MacroTimeline.isCustomRepeat(repeat)) View.VISIBLE else View.GONE
+        }
+        fun setSpeed(value: Float) {
+            speed = MacroTimeline.clampSpeed(value)
+            speedLabel.text = MacroTimeline.formatSpeed(speed)
+        }
+        fun addPreset(container: LinearLayout, label: String, onClick: () -> Unit) {
+            container.addView(Button(this).apply {
+                text = label
+                textSize = 10f
+                minWidth = 0
+                minimumWidth = 0
+                setPadding(dp(10), 0, dp(10), 0)
+                setTextColor(0xFFE2E8F0.toInt())
+                backgroundTintList = ColorStateList.valueOf(0xFF1E293B.toInt())
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    dp(44)
+                ).apply {
+                    marginEnd = dp(4)
+                }
+                setOnClickListener {
+                    haptic()
+                    onClick()
+                }
+            })
+        }
 
         nameInput.setText(macro.name)
         nameInput.setSelection(nameInput.text.length)
+        nameCount.text = "${nameInput.text.length}/40"
+        repeatCountInput.setText(
+            if (MacroTimeline.isCustomRepeat(repeat)) MacroTimeline.repeatCount(repeat).toString()
+            else "3"
+        )
         delayInput.setText(formatDelaySeconds(macro.effectiveRepeatDelayMs))
+        countdownInput.setText((macro.effectiveStartCountdownMs / 1000L).toString())
+        swStopMinutes.isChecked = macro.effectiveStopAfterMinutes != null
+        stopMinutesInput.setText((macro.effectiveStopAfterMinutes ?: 30).toString())
+        stopMinutesInput.isEnabled = swStopMinutes.isChecked
+        swStopAttacks.isChecked = macro.effectiveStopAfterAttacks != null
+        stopAttacksInput.setText((macro.effectiveStopAfterAttacks ?: 10).toString())
+        stopAttacksInput.isEnabled = swStopAttacks.isChecked
+        settings.findViewById<Switch>(R.id.swStopOnBackground).isChecked = macro.stopOnBackground
+        pinned.isChecked = macro.pinned
 
-        val showError = { message: String ->
-            error.text = message
-            error.visibility = View.VISIBLE
-        }
-        val refresh = {
-            nameCount.text = "${nameInput.text.length}/40"
-            save.isEnabled = nameInput.text.toString().isNotBlank()
-        }
         nameInput.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
             override fun afterTextChanged(s: Editable?) {
-                error.visibility = View.GONE
-                refresh()
-            }
-        })
-        delayInput.addTextChangedListener(object : TextWatcher {
-            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
-            override fun afterTextChanged(s: Editable?) {
+                nameCount.text = "${s?.length ?: 0}/40"
                 error.visibility = View.GONE
             }
         })
 
-        save.setOnClickListener {
+        repeatOnce.setOnClickListener {
+            repeat = Macro.REPEAT_ONCE
+            paintRepeat()
+        }
+        repeatLoop.setOnClickListener {
+            repeat = Macro.REPEAT_INFINITE
+            paintRepeat()
+        }
+        repeatCustom.setOnClickListener {
+            repeat = MacroTimeline.customRepeatMode(
+                repeatCountInput.text.toString().toIntOrNull() ?: 3
+            )
+            paintRepeat()
+            focusField(repeatCountInput)
+        }
+        paintRepeat()
+        repeatCountInput.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
+            override fun afterTextChanged(s: Editable?) {
+                error.visibility = View.GONE
+                if (repeat != Macro.REPEAT_ONCE && repeat != Macro.REPEAT_INFINITE) {
+                    repeat = MacroTimeline.customRepeatMode(
+                        s?.toString()?.toIntOrNull() ?: 1
+                    )
+                    paintRepeat()
+                }
+            }
+        })
+
+        setSpeed(speed)
+        settings.findViewById<ImageButton>(R.id.btnSettingsSpeedDown).setOnClickListener {
+            setSpeed(MacroTimeline.stepSpeed(speed, -1))
+        }
+        settings.findViewById<ImageButton>(R.id.btnSettingsSpeedUp).setOnClickListener {
+            setSpeed(MacroTimeline.stepSpeed(speed, 1))
+        }
+        val speedPresets = settings.findViewById<LinearLayout>(R.id.speedPresets)
+        listOf(0.25f, 0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f, 3f, 4f).forEach { preset ->
+            addPreset(speedPresets, MacroTimeline.formatSpeed(preset)) { setSpeed(preset) }
+        }
+        val delayPresets = settings.findViewById<LinearLayout>(R.id.delayPresets)
+        listOf(3, 5, 10, 30).forEach { seconds ->
+            addPreset(delayPresets, "${seconds}s") { delayInput.setText(seconds.toString()) }
+        }
+        val countdownPresets = settings.findViewById<LinearLayout>(R.id.countdownPresets)
+        listOf(0, 3, 5, 10).forEach { seconds ->
+            addPreset(countdownPresets, "${seconds}s") { countdownInput.setText(seconds.toString()) }
+        }
+
+        swStopMinutes.setOnCheckedChangeListener { _, checked ->
+            stopMinutesInput.isEnabled = checked
+        }
+        swStopAttacks.setOnCheckedChangeListener { _, checked ->
+            stopAttacksInput.isEnabled = checked
+        }
+
+        fun updateInfo(updated: Macro) {
+            val lastPlayed = updated.lastPlayedAt?.let {
+                SimpleDateFormat("MM/dd HH:mm", Locale.US).format(Date(it))
+            } ?: "never"
+            info.text = buildString {
+                append("${updated.gestures.size} gestures · ${formatDuration(updated.durationMs)}")
+                append("\nCreated ${SimpleDateFormat("MM/dd HH:mm", Locale.US).format(Date(updated.createdAt))}")
+                append(" · Last played $lastPlayed")
+                append("\nPlayed ${updated.playCount} time(s)")
+            }
+        }
+        updateInfo(macro)
+
+        fun showError(message: String) {
+            error.text = message
+            error.visibility = View.VISIBLE
+        }
+
+        fun saveFromForm(onSaved: (Macro) -> Unit) {
             val name = nameInput.text.toString().trim()
-            val seconds = delayInput.text.toString().trim().toDoubleOrNull()
-            when {
-                name.isEmpty() -> showError("Enter a macro name")
-                seconds == null || !seconds.isFinite() || seconds < 0.0 || seconds > 600.0 ->
-                    showError("Enter a wait between 0 and 600 seconds")
-                else -> {
-                    val delayMs = (seconds * 1000.0).roundToLong()
-                        .coerceIn(0L, Macro.MAX_REPEAT_DELAY_MS)
-                    dialog.dismiss()
-                    scope.launch {
-                        val saved = repository.save(
-                            macro.copy(name = name, repeatDelayMs = delayMs)
-                        )
-                        if (saved == null) {
-                            toast("Save failed")
-                        } else {
-                            BotState.setStatus("Settings saved for \"${saved.name}\"")
-                            toast("Saved")
-                        }
+            if (name.isEmpty()) {
+                showError("Enter a macro name")
+                return
+            }
+            if (MacroTimeline.isCustomRepeat(repeat)) {
+                val count = repeatCountInput.text.toString().toIntOrNull()
+                if (count == null || count !in 1..Macro.MAX_CUSTOM_REPEAT) {
+                    showError("Runs must be between 1 and ${Macro.MAX_CUSTOM_REPEAT}")
+                    return
+                }
+                repeat = MacroTimeline.customRepeatMode(count)
+            }
+            val delaySeconds = delayInput.text.toString().trim().toDoubleOrNull()
+            if (delaySeconds == null || !delaySeconds.isFinite() ||
+                delaySeconds < 0.0 || delaySeconds > 600.0
+            ) {
+                showError("Delay must be between 0 and 600 seconds")
+                return
+            }
+            val countdownSeconds = countdownInput.text.toString().trim().toIntOrNull()
+            if (countdownSeconds == null || countdownSeconds !in 0..30) {
+                showError("Countdown must be between 0 and 30 seconds")
+                return
+            }
+            val stopMinutes = if (swStopMinutes.isChecked) {
+                stopMinutesInput.text.toString().toIntOrNull()
+                    ?.takeIf { it in 1..Macro.MAX_STOP_AFTER_MINUTES }
+                    ?: run {
+                        showError("Minutes must be between 1 and ${Macro.MAX_STOP_AFTER_MINUTES}")
+                        return
                     }
+            } else {
+                null
+            }
+            val stopAttacks = if (swStopAttacks.isChecked) {
+                stopAttacksInput.text.toString().toIntOrNull()
+                    ?.takeIf { it in 1..Macro.MAX_STOP_AFTER_ATTACKS }
+                    ?: run {
+                        showError("Attacks must be between 1 and ${Macro.MAX_STOP_AFTER_ATTACKS}")
+                        return
+                    }
+            } else {
+                null
+            }
+            val updated = macro.copy(
+                name = name,
+                speedMultiplier = speed,
+                repeatMode = repeat,
+                repeatDelayMs = (delaySeconds * 1000.0).roundToLong()
+                    .coerceIn(0L, Macro.MAX_REPEAT_DELAY_MS),
+                startCountdownMs = countdownSeconds * 1000L,
+                stopOnBackground = settings.findViewById<Switch>(R.id.swStopOnBackground).isChecked,
+                stopAfterMinutes = stopMinutes,
+                stopAfterAttacks = stopAttacks,
+                pinned = pinned.isChecked
+            )
+            scope.launch {
+                val saved = repository.save(updated)
+                if (saved == null) {
+                    showError("Save failed")
+                } else {
+                    error.visibility = View.GONE
+                    onSaved(saved)
                 }
             }
         }
-        view.findViewById<Button>(R.id.btnSettingsCancel).setOnClickListener {
-            dialog.dismiss()
+
+        settings.findViewById<Button>(R.id.btnSettingsSave).setOnClickListener {
+            saveFromForm { saved ->
+                closeMacroSettings()
+                BotState.setStatus("Settings saved for \"${saved.name}\"")
+                toast("Saved")
+            }
         }
-        refresh()
+        settings.findViewById<ImageButton>(R.id.btnSettingsBack).setOnClickListener {
+            closeMacroSettings()
+        }
+        settings.findViewById<Button>(R.id.btnDuplicate).setOnClickListener {
+            saveFromForm {
+                scope.launch {
+                    val copy = repository.duplicate(it.id)
+                    closeMacroSettings()
+                    toast(
+                        if (copy != null) "Duplicated as \"${copy.name}\""
+                        else "Duplicate failed"
+                    )
+                }
+            }
+        }
+        settings.findViewById<Button>(R.id.btnResetDefaults).setOnClickListener {
+            nameInput.setText(macro.name)
+            setSpeed(1f)
+            repeat = Macro.REPEAT_ONCE
+            paintRepeat()
+            delayInput.setText(formatDelaySeconds(Macro.LEGACY_REPEAT_DELAY_MS))
+            countdownInput.setText("0")
+            settings.findViewById<Switch>(R.id.swStopOnBackground).isChecked = true
+            swStopMinutes.isChecked = false
+            stopMinutesInput.setText("30")
+            swStopAttacks.isChecked = false
+            stopAttacksInput.setText("10")
+            pinned.isChecked = false
+            error.visibility = View.GONE
+        }
+        settings.findViewById<Button>(R.id.btnDeleteMacro).setOnClickListener {
+            deleteMacro(macro)
+        }
+
+        settingsScroll.layoutParams = settingsScroll.layoutParams.apply {
+            height = (screenHeight * 0.86f - dp(120)).toInt().coerceAtLeast(dp(140))
+        }
+        view.post { clampControllerToScreen() }
+    }
+
+    private fun closeMacroSettings() {
+        val view = controllerView ?: return
+        val host = view.findViewById<FrameLayout>(R.id.settingsHost) ?: return
+        settingsView?.findViewById<EditText>(R.id.etSettingsName)?.clearFocus()
+        settingsView = null
+        settingsMacroId = -1L
+        hideKeyboard()
+        setControllerFocusable(false)
+        host.removeAllViews()
+        host.visibility = View.GONE
+        view.findViewById<View>(R.id.pageTabs).visibility = View.VISIBLE
+        view.findViewById<View>(R.id.contentFrame).visibility = View.VISIBLE
+        view.post { clampControllerToScreen() }
+        refreshUi()
+    }
+
+    private fun setControllerFocusable(focusable: Boolean) {
+        val view = controllerView ?: return
+        val params = controllerParams ?: return
+        AppEventLog.log("controller focusable=$focusable")
+        val base = WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+        params.flags = if (focusable) {
+            base
+        } else {
+            base or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+        }
+        params.softInputMode = if (focusable) {
+            WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE or
+                WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE
+        } else {
+            WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN
+        }
         try {
-            dialog.show()
-            nameInput.requestFocus()
-        } catch (e: Exception) {
-            Log.e(TAG, "Macro settings dialog failed", e)
-            toast("Could not open dialog")
+            windowManager.updateViewLayout(view, params)
+        } catch (_: Exception) {
+            // Window detached.
         }
+        if (focusable) view.post { clampControllerToScreen() }
+    }
+
+    private fun hideKeyboard() {
+        val imm = getSystemService(INPUT_METHOD_SERVICE) as? InputMethodManager ?: return
+        val token = controllerView?.windowToken ?: return
+        imm.hideSoftInputFromWindow(token, 0)
     }
 
     private fun formatDelaySeconds(ms: Long): String =
@@ -2009,23 +2315,48 @@ class FloatingMenuService : Service() {
             .trimEnd('0')
             .trimEnd('.')
 
-    private fun deleteSelected() {
-        val macro = macros.firstOrNull { it.id == selectedId } ?: run {
-            toast("Select a macro first")
-            return
-        }
+    private fun deleteMacro(macro: Macro) {
         showConfirmDialog(
             title = "Delete macro?",
-            message = "\"${macro.name}\" will be removed.",
+            message = "\"${macro.name}\" will be removed. You can undo for 5 seconds.",
             positive = "Delete"
         ) {
             scope.launch {
                 if (repository.delete(macro.id)) {
+                    closeMacroSettings()
                     BotState.setStatus("Deleted \"${macro.name}\"")
+                    showUndo(macro)
                 } else {
                     toast("Delete failed")
                 }
             }
+        }
+    }
+
+    private fun showUndo(macro: Macro) {
+        val view = controllerView ?: return
+        pendingDelete = macro
+        view.findViewById<View>(R.id.undoRow).visibility = View.VISIBLE
+        view.findViewById<TextView>(R.id.tvUndoText).text = "Deleted \"${macro.name}\""
+        undoTicker?.let(handler::removeCallbacks)
+        val ticker = Runnable {
+            pendingDelete = null
+            view.findViewById<View>(R.id.undoRow)?.visibility = View.GONE
+        }
+        undoTicker = ticker
+        handler.postDelayed(ticker, UNDO_WINDOW_MS)
+    }
+
+    private fun undoDelete() {
+        val macro = pendingDelete ?: return
+        val view = controllerView ?: return
+        pendingDelete = null
+        undoTicker?.let(handler::removeCallbacks)
+        undoTicker = null
+        view.findViewById<View>(R.id.undoRow).visibility = View.GONE
+        scope.launch {
+            val restored = repository.save(macro)
+            toast(if (restored != null) "Restored \"${macro.name}\"" else "Undo failed")
         }
     }
 
@@ -2072,11 +2403,21 @@ class FloatingMenuService : Service() {
         val showReady = !showRecording && !showReview && !showPlaying
 
         val statsVisible = page == PAGE_STATS
+        val startCountdown = BotState.startCountdown.value
+        val countdownVisible = startCountdown != null && !statsVisible
         view.findViewById<View>(R.id.statsPanel).visibility = if (statsVisible) View.VISIBLE else View.GONE
-        view.findViewById<View>(R.id.readyPanel).visibility = if (!statsVisible && showReady) View.VISIBLE else View.GONE
-        view.findViewById<View>(R.id.recordingPanel).visibility = if (!statsVisible && showRecording) View.VISIBLE else View.GONE
-        view.findViewById<View>(R.id.reviewPanel).visibility = if (!statsVisible && showReview) View.VISIBLE else View.GONE
-        view.findViewById<View>(R.id.playingPanel).visibility = if (!statsVisible && showPlaying) View.VISIBLE else View.GONE
+        view.findViewById<View>(R.id.readyPanel).visibility =
+            if (!statsVisible && showReady && !countdownVisible) View.VISIBLE else View.GONE
+        view.findViewById<View>(R.id.recordingPanel).visibility =
+            if (!statsVisible && showRecording && !countdownVisible) View.VISIBLE else View.GONE
+        view.findViewById<View>(R.id.reviewPanel).visibility =
+            if (!statsVisible && showReview && !countdownVisible) View.VISIBLE else View.GONE
+        view.findViewById<View>(R.id.playingPanel).visibility =
+            if (!statsVisible && showPlaying && !countdownVisible) View.VISIBLE else View.GONE
+        view.findViewById<View>(R.id.countdownPanel).visibility =
+            if (countdownVisible) View.VISIBLE else View.GONE
+        view.findViewById<TextView>(R.id.tvStartCountdown).text =
+            startCountdown?.toString() ?: ""
         val tabActive = 0xFF3B82F6.toInt()
         val tabIdle = 0xFF1E293B.toInt()
         view.findViewById<Button>(R.id.btnPageController).backgroundTintList =
@@ -2084,13 +2425,7 @@ class FloatingMenuService : Service() {
         view.findViewById<Button>(R.id.btnPageStats).backgroundTintList =
             ColorStateList.valueOf(if (statsVisible) tabActive else tabIdle)
 
-        view.findViewById<TextView>(R.id.tvSpeed).text = MacroTimeline.formatSpeed(speed)
-        view.findViewById<Button>(R.id.btnRepeat).text = MacroTimeline.repeatLabel(repeatMode)
-
-        view.findViewById<Button>(R.id.btnPlay).isEnabled = selectedId > 0
         view.findViewById<Button>(R.id.btnRecord).isEnabled = !startingPassive
-        view.findViewById<ImageButton>(R.id.btnRename).isEnabled = selectedId > 0
-        view.findViewById<ImageButton>(R.id.btnDelete).isEnabled = selectedId > 0
         view.findViewById<Button>(R.id.btnWatchResults).apply {
             val captureBusy = resultsCapture.isActive() && !manualWatch && !autoWatch
             text = when {
@@ -2130,10 +2465,11 @@ class FloatingMenuService : Service() {
         view.findViewById<TextView>(R.id.tvPlayingStatus).text = BotState.status.value
         view.findViewById<Button>(R.id.btnPlayPause).text =
             if (state == ControllerState.PLAYBACK_PAUSED) "Resume" else "Pause"
+        val activeMacro = macros.firstOrNull { it.id == BotState.activeMacroId.value }
         view.findViewById<TextView>(R.id.tvPlayingSpeed).text =
-            "Speed ${MacroTimeline.formatSpeed(speed)}"
+            "Speed ${MacroTimeline.formatSpeed(activeMacro?.speedMultiplier ?: 1f)}"
         view.findViewById<TextView>(R.id.tvPlayingRepeat).text =
-            MacroTimeline.repeatLabel(repeatMode)
+            MacroTimeline.repeatLabel(activeMacro?.repeatMode)
 
         val countdown = BotState.repeatCountdown.value
         val bubbleStatus = view.findViewById<TextView>(R.id.bubbleStatus)
@@ -2142,6 +2478,7 @@ class FloatingMenuService : Service() {
             state == ControllerState.RECORDING -> "REC"
             state == ControllerState.RECORDING_PAUSED -> "PAUSED"
             state == ControllerState.PLAYBACK_PAUSED -> "II"
+            state == ControllerState.PLAYING && startCountdown != null -> "${startCountdown}s"
             state == ControllerState.PLAYING && countdown != null -> "${countdown}s"
             state == ControllerState.PLAYING -> "PLAY"
             else -> ""
@@ -2204,6 +2541,7 @@ class FloatingMenuService : Service() {
 
     private fun requestClose() {
         val state = BotState.state.value
+        AppEventLog.log("requestClose state=$state settingsOpen=${settingsView != null}")
         val unsaved = state == ControllerState.RECORDING ||
             state == ControllerState.RECORDING_PAUSED ||
             (state == ControllerState.REVIEW && recorded.isNotEmpty())
@@ -2379,6 +2717,7 @@ class FloatingMenuService : Service() {
     // --------------------------------------------------------------- helpers
 
     private fun closeEverything() {
+        AppEventLog.log("closeEverything state=${BotState.state.value}")
         stopPlayback()
         stopRecording(silent = true)
         stopPassiveRecorder()
@@ -2459,6 +2798,7 @@ class FloatingMenuService : Service() {
         private const val NOTIFICATION_ID = 1001
         private const val NOTIFICATION_THROTTLE_MS = 900L
         private const val STATUS_THROTTLE_MS = 500L
+        private const val UNDO_WINDOW_MS = 5_000L
         private const val BUBBLE_SIZE_DP = 48
         private const val BUBBLE_ICON_DP = 34
         private const val BUBBLE_MARGIN_DP = 8

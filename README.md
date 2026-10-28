@@ -28,13 +28,33 @@ Uninstalling the app deletes its local data.
    AutoClash reads the raw touchscreen through Shizuku or root.
 3. Play the attack, then tap **Finish**.
 4. **Review** lets you save, discard, or record again.
-5. Select a saved macro, set speed and repeat, then tap **Play**.
+5. Each macro row has its own **Play** and **gear**. The gear opens that
+   macro's settings: name, speed (0.25–4×), repeat (Once/Loop/Custom N), wait
+   between repeats, start countdown, stop conditions, pin, duplicate, reset and
+   delete with a 5-second Undo. Settings are saved with the macro and used by
+   playback; there is no shared speed/repeat row.
 6. During playback the panel collapses to a small draggable logo placed in the
    top corner that the macro touches least.
 7. After playback, AutoClash watches for the result screen and reads the loot
    on-device through the multi-reader OCR core. A detected result screen creates
    one confirmed attack record; a failed read stays `loot not captured` and can
    be corrected from the history. A playback ending alone never creates a record.
+
+## Per-macro playback settings
+
+Open the gear on a macro row. **Speed** and **repeat** are stored on that macro
+(Once, Loop, or Custom 1–9999), along with the wait between repeats (0–600 s),
+a start countdown (0–30 s) that is shown on screen so there is time to switch
+to Clash, and optional stop conditions: stop when Clash leaves the foreground
+(on by default), stop after N minutes, stop after N attacks. **Pin to top**
+keeps a macro first in both the floating list and the dashboard. **Duplicate**
+creates an independent copy; **Delete** asks first and offers Undo for five
+seconds. The old shared Speed/Loop row and the `3×` repeat option are gone; the
+dashboard's default repeat is also Once/Loop/Custom.
+
+A macro with stop-on-background turned **off** keeps dispatching its gestures
+when Clash is not in front, so use that option only when you mean it. Stop
+cancels a countdown or a wait between repeats immediately.
 
 ## Sharing macros
 
@@ -174,7 +194,7 @@ the pause. Delays below one second still apply but do not show a countdown.
 - Coordinates are normalized to the recording display; a very different aspect
   ratio can shift touch positions.
 - Speed changes apply at the next playback run.
-- The v2.4.9 build is **arm64-only** because the bundled OCR native libraries
+- The v2.5.0 build is **arm64-only** because the bundled OCR native libraries
   made the universal APK about 151 MB. The lab and app are verified on the
   arm64 test phone; other ABIs are not packaged in this build.
 - Result-screen OCR needs the accessibility screenshot permission (Android 11+)

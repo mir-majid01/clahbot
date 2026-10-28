@@ -97,6 +97,7 @@
                 android:textSize="10sp" />
         </LinearLayout>
         <FrameLayout
+            android:id="@+id/contentFrame"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp">
@@ -111,7 +112,7 @@
                 <Button
                     android:id="@+id/btnRecord"
                     android:layout_width="match_parent"
-                    android:layout_height="44dp"
+                    android:layout_height="48dp"
                     android:backgroundTint="#DC2626"
                     android:text="●  Record"
                     android:textSize="13sp"
@@ -127,11 +128,43 @@
                     android:textColor="#22C55E"
                     android:textSize="9sp" />
 
+                <LinearLayout
+                    android:id="@+id/undoRow"
+                    android:layout_width="match_parent"
+                    android:layout_height="48dp"
+                    android:layout_marginTop="6dp"
+                    android:background="#1E293B"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal"
+                    android:paddingHorizontal="10dp"
+                    android:visibility="gone">
+
+                    <TextView
+                        android:id="@+id/tvUndoText"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:ellipsize="end"
+                        android:maxLines="1"
+                        android:text="Macro deleted"
+                        android:textColor="#E2E8F0"
+                        android:textSize="11sp" />
+
+                    <Button
+                        android:id="@+id/btnUndo"
+                        android:layout_width="72dp"
+                        android:layout_height="44dp"
+                        android:backgroundTint="#3B82F6"
+                        android:minWidth="0dp"
+                        android:text="Undo"
+                        android:textSize="11sp" />
+                </LinearLayout>
+
                 <TextView
                     android:id="@+id/tvLibraryLabel"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="10dp"
+                    android:layout_marginTop="8dp"
                     android:text="Macros"
                     android:textColor="#94A3B8"
                     android:textSize="10sp" />
@@ -150,102 +183,6 @@
                         android:layout_height="wrap_content"
                         android:orientation="vertical" />
                 </ScrollView>
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="44dp"
-                    android:layout_marginTop="8dp"
-                    android:orientation="horizontal">
-
-                    <Button
-                        android:id="@+id/btnPlay"
-                        android:layout_width="0dp"
-                        android:layout_height="44dp"
-                        android:layout_weight="1"
-                        android:backgroundTint="#3B82F6"
-                        android:text="▶  Play"
-                        android:textSize="12sp"
-                        android:textStyle="bold" />
-
-                    <ImageButton
-                        android:id="@+id/btnRename"
-                        android:layout_width="44dp"
-                        android:layout_height="44dp"
-                        android:layout_marginStart="6dp"
-                        android:background="@drawable/bg_icon_button"
-                        android:contentDescription="Rename macro"
-                        android:padding="11dp"
-                        android:scaleType="fitCenter"
-                        android:src="@drawable/ic_edit" />
-
-                    <ImageButton
-                        android:id="@+id/btnDelete"
-                        android:layout_width="44dp"
-                        android:layout_height="44dp"
-                        android:layout_marginStart="6dp"
-                        android:background="@drawable/bg_icon_button"
-                        android:contentDescription="Delete macro"
-                        android:padding="11dp"
-                        android:scaleType="fitCenter"
-                        android:src="@drawable/ic_delete" />
-                </LinearLayout>
-
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="44dp"
-                    android:layout_marginTop="6dp"
-                    android:gravity="center_vertical"
-                    android:orientation="horizontal">
-
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="Speed"
-                        android:textColor="#94A3B8"
-                        android:textSize="10sp" />
-
-                    <ImageButton
-                        android:id="@+id/btnSpeedDown"
-                        android:layout_width="40dp"
-                        android:layout_height="36dp"
-                        android:layout_marginStart="6dp"
-                        android:background="@drawable/bg_icon_button"
-                        android:contentDescription="Slower"
-                        android:padding="10dp"
-                        android:scaleType="fitCenter"
-                        android:src="@drawable/ic_minus" />
-
-                    <TextView
-                        android:id="@+id/tvSpeed"
-                        android:layout_width="46dp"
-                        android:layout_height="wrap_content"
-                        android:gravity="center"
-                        android:text="1.0x"
-                        android:textColor="#E2E8F0"
-                        android:textSize="12sp"
-                        android:textStyle="bold" />
-
-                    <ImageButton
-                        android:id="@+id/btnSpeedUp"
-                        android:layout_width="40dp"
-                        android:layout_height="36dp"
-                        android:background="@drawable/bg_icon_button"
-                        android:contentDescription="Faster"
-                        android:padding="10dp"
-                        android:scaleType="fitCenter"
-                        android:src="@drawable/ic_plus" />
-
-                    <Button
-                        android:id="@+id/btnRepeat"
-                        android:layout_width="0dp"
-                        android:layout_height="36dp"
-                        android:layout_marginStart="6dp"
-                        android:layout_weight="1"
-                        android:backgroundTint="#1E293B"
-                        android:text="Once"
-                        android:textColor="#E2E8F0"
-                        android:textSize="11sp" />
-                </LinearLayout>
             </LinearLayout>
 
             <!-- RECORDING -->
@@ -511,7 +448,51 @@
                         android:textStyle="bold" />
                 </LinearLayout>
             </ScrollView>
+
+            <LinearLayout
+                android:id="@+id/countdownPanel"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center"
+                android:orientation="vertical"
+                android:paddingVertical="18dp"
+                android:visibility="gone">
+
+                <TextView
+                    android:id="@+id/tvStartCountdown"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center"
+                    android:text="5"
+                    android:textColor="#F1F5F9"
+                    android:textSize="44sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:gravity="center"
+                    android:text="Switch to Clash of Clans"
+                    android:textColor="#94A3B8"
+                    android:textSize="11sp" />
+
+                <Button
+                    android:id="@+id/btnStopCountdown"
+                    android:layout_width="match_parent"
+                    android:layout_height="48dp"
+                    android:layout_marginTop="10dp"
+                    android:backgroundTint="#DC2626"
+                    android:text="Stop"
+                    android:textSize="12sp" />
+            </LinearLayout>
         </FrameLayout>
+
+        <FrameLayout
+            android:id="@+id/settingsHost"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:visibility="gone" />
     </LinearLayout>
 
     <FrameLayout

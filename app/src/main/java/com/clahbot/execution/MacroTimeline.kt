@@ -81,23 +81,20 @@ object MacroTimeline {
     fun repeatCount(repeatMode: String?): Int {
         if (repeatMode == null) return 1
         if (repeatMode == Macro.REPEAT_INFINITE) return Int.MAX_VALUE
-        return repeatMode.trim().toIntOrNull()?.coerceIn(1, 10_000) ?: 1
+        return repeatMode.trim().toIntOrNull()?.coerceIn(1, Macro.MAX_CUSTOM_REPEAT) ?: 1
     }
-
-    /** Repeat modes the controller cycles through. */
-    val REPEAT_CYCLE = listOf(Macro.REPEAT_ONCE, Macro.REPEAT_INFINITE, "3")
 
     fun repeatLabel(repeatMode: String?): String = when {
         repeatMode == Macro.REPEAT_INFINITE -> "Loop"
         repeatMode == Macro.REPEAT_ONCE || repeatMode == null -> "Once"
-        else -> "${repeatMode}×"
+        else -> "${repeatCount(repeatMode)}×"
     }
 
-    fun nextRepeat(repeatMode: String?): String {
-        val index = REPEAT_CYCLE.indexOf(repeatMode)
-        if (index < 0) return REPEAT_CYCLE.first()
-        return REPEAT_CYCLE[(index + 1) % REPEAT_CYCLE.size]
-    }
+    fun customRepeatMode(count: Int): String =
+        count.coerceIn(1, Macro.MAX_CUSTOM_REPEAT).toString()
+
+    fun isCustomRepeat(repeatMode: String?): Boolean =
+        repeatMode != Macro.REPEAT_ONCE && repeatMode != Macro.REPEAT_INFINITE
 
     /** Distance from the start point to the furthest sampled point, in pixels. */
     fun maxDeviationPx(points: List<GesturePoint>): Float {
