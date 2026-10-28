@@ -3,6 +3,7 @@ package com.clahbot.execution
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.graphics.Path
+import android.os.SystemClock
 import com.clahbot.data.AppEventLog
 import com.clahbot.data.BotState
 import com.clahbot.data.ControllerState
@@ -60,6 +61,7 @@ class MacroPlayer(
         stopped = false
         paused = false
         BotState.setRepeatCountdown(null)
+        BotState.setStartCountdown(null)
         active = this
         BotState.setActiveMacro(macro.id, macro.name)
         BotState.setState(ControllerState.PLAYING)
@@ -68,23 +70,40 @@ class MacroPlayer(
         val newJob = scope.launch {
             val self = coroutineContext[Job]
             var iteration = 0
+            var timedOut = false
+            val plan = PlaybackSettings.planFor(macro)
             try {
-                val repeats = MacroTimeline.repeatCount(macro.repeatMode)
+                if (!startingCountdown(plan)) return@launch
+                val startedAt = SystemClock.elapsedRealtime()
+                val deadlineReached = {
+                    PlaybackSettings.deadlineReached(
+                        plan,
+                        SystemClock.elapsedRealtime() - startedAt
+                    )
+                }
 
-                while (isActive && !stopped && iteration < repeats) {
+                while (isActive && !stopped && iteration < plan.iterations) {
+                    if (deadlineReached()) {
+                        timedOut = true
+                        break
+                    }
                     iteration++
                     AppEventLog.log(
                         "macro iteration=$iteration " +
-                            "repeats=${if (repeats == Int.MAX_VALUE) "infinite" else repeats}"
+                            "iterations=${if (plan.infinite) "infinite" else plan.iterations}"
                     )
                     BotState.setStatus(
-                        if (repeats == Int.MAX_VALUE) "Loop $iteration" else "Run $iteration/$repeats"
+                        if (plan.infinite) "Loop $iteration" else "Run $iteration/${plan.iterations}"
                     )
 
                     var lastTimestamp = 0L
                     for (gesture in gestures) {
                         if (!isActive || stopped) break
-                        ensureForeground()
+                        if (deadlineReached()) {
+                            timedOut = true
+                            break
+                        }
+                        if (plan.stopOnBackground) ensureForeground()
 
                         val gap = MacroTimeline.gapMillis(
                             (gesture.timestampMs - lastTimestamp).coerceAtLeast(0L),
@@ -113,19 +132,24 @@ class MacroPlayer(
                         lastTimestamp = gesture.timestampMs
                     }
 
-                    if (iteration < repeats && !stopped) {
-                        ensureForeground()
+                    if (iteration < plan.iterations && !stopped) {
+                        if (plan.stopOnBackground) ensureForeground()
                         waitBetweenRepeats(
                             totalMs = macro.effectiveRepeatDelayMs,
-                            infinite = repeats == Int.MAX_VALUE
-                        )
+                            infinite = plan.infinite,
+                            stopOnBackground = plan.stopOnBackground,
+                            deadlineReached = deadlineReached
+                        ) { timedOut = true }
                     }
                 }
 
                 if (!stopped) {
                     BotState.clearActiveMacro()
                     BotState.setState(ControllerState.READY)
-                    BotState.setStatus("Playback complete")
+                    BotState.setStatus(
+                        if (timedOut) "Stopped after ${plan.stopAfterMinutes} min"
+                        else "Playback complete"
+                    )
                     onFinished?.invoke()
                 }
             } catch (_: CancellationException) {
@@ -133,6 +157,7 @@ class MacroPlayer(
             } finally {
                 AppEventLog.log("macro loop exit iteration=$iteration stopped=$stopped")
                 BotState.setRepeatCountdown(null)
+                BotState.setStartCountdown(null)
                 if (job === null || job === self) {
                     job = null
                     if (active === this@MacroPlayer) active = null
@@ -140,6 +165,25 @@ class MacroPlayer(
             }
         }
         job = newJob
+    }
+
+    /** Returns false when Stop was pressed during the countdown. */
+    private suspend fun startingCountdown(plan: PlaybackPlan): Boolean {
+        if (plan.countdownMs <= 0L) return true
+        var remaining = plan.countdownMs
+        try {
+            while (remaining > 0L && !stopped) {
+                val seconds = ((remaining + 999L) / 1000L).toInt()
+                BotState.setStartCountdown(seconds)
+                BotState.setStatus("Starting in ${seconds}s")
+                val step = minOf(COUNTDOWN_TICK_MS, remaining)
+                delay(step)
+                remaining -= step
+            }
+        } finally {
+            BotState.setStartCountdown(null)
+        }
+        return !stopped
     }
 
     private fun shouldGateTap(macro: Macro, gesture: RecordedGesture): Boolean =
@@ -163,12 +207,22 @@ class MacroPlayer(
      * Waits between repetitions, publishing the remaining whole seconds for the
      * controller. Foreground loss pauses the wait; stopping cancels it.
      */
-    private suspend fun waitBetweenRepeats(totalMs: Long, infinite: Boolean) {
+    private suspend fun waitBetweenRepeats(
+        totalMs: Long,
+        infinite: Boolean,
+        stopOnBackground: Boolean,
+        deadlineReached: () -> Boolean,
+        onDeadline: () -> Unit
+    ) {
         if (totalMs <= 0L) return
         var remaining = totalMs
         try {
             while (remaining > 0L && !stopped) {
-                ensureForeground()
+                if (deadlineReached()) {
+                    onDeadline()
+                    break
+                }
+                if (stopOnBackground) ensureForeground()
                 if (stopped) break
                 if (totalMs >= COUNTDOWN_MIN_MS) {
                     val seconds = ((remaining + 999L) / 1000L).toInt()
@@ -288,6 +342,7 @@ class MacroPlayer(
         stopped = true
         paused = false
         BotState.setRepeatCountdown(null)
+        BotState.setStartCountdown(null)
         job?.cancel()
         job = null
         if (active === this) active = null

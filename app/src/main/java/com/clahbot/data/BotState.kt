@@ -56,6 +56,9 @@ object BotState {
     private val _repeatCountdown = MutableStateFlow<Int?>(null)
     val repeatCountdown: StateFlow<Int?> = _repeatCountdown.asStateFlow()
 
+    private val _startCountdown = MutableStateFlow<Int?>(null)
+    val startCountdown: StateFlow<Int?> = _startCountdown.asStateFlow()
+
     fun setState(value: ControllerState) {
         _state.value = value
     }
@@ -88,6 +91,10 @@ object BotState {
 
     fun setRepeatCountdown(seconds: Int?) {
         _repeatCountdown.value = seconds
+    }
+
+    fun setStartCountdown(seconds: Int?) {
+        _startCountdown.value = seconds
     }
 
     fun clearRecording() {

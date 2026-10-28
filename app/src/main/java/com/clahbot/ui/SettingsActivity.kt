@@ -450,14 +450,60 @@ fun SettingsScreen(
                     Spacer(Modifier.height(10.dp))
                     Text("Default repeat", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface)
                     Spacer(Modifier.height(6.dp))
+                    val custom = MacroTimeline.isCustomRepeat(settings.defaultRepeat)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        MacroTimeline.REPEAT_CYCLE.forEach { mode ->
-                            FilterChip(
-                                selected = settings.defaultRepeat == mode,
-                                onClick = { onUpdate { it.copy(defaultRepeat = mode) } },
-                                label = { Text(MacroTimeline.repeatLabel(mode), fontSize = 11.sp) }
-                            )
-                        }
+                        FilterChip(
+                            selected = settings.defaultRepeat == Macro.REPEAT_ONCE,
+                            onClick = {
+                                onUpdate { it.copy(defaultRepeat = Macro.REPEAT_ONCE) }
+                            },
+                            label = { Text("Once", fontSize = 11.sp) }
+                        )
+                        FilterChip(
+                            selected = settings.defaultRepeat == Macro.REPEAT_INFINITE,
+                            onClick = {
+                                onUpdate { it.copy(defaultRepeat = Macro.REPEAT_INFINITE) }
+                            },
+                            label = { Text("Loop", fontSize = 11.sp) }
+                        )
+                        FilterChip(
+                            selected = custom,
+                            onClick = {
+                                if (!custom) {
+                                    onUpdate {
+                                        it.copy(
+                                            defaultRepeat = MacroTimeline.customRepeatMode(3)
+                                        )
+                                    }
+                                }
+                            },
+                            label = { Text("Custom", fontSize = 11.sp) }
+                        )
+                    }
+                    if (custom) {
+                        Spacer(Modifier.height(4.dp))
+                        StepperRow(
+                            title = "Runs",
+                            value = "${MacroTimeline.repeatCount(settings.defaultRepeat)}×",
+                            onMinus = {
+                                onUpdate {
+                                    it.copy(
+                                        defaultRepeat = MacroTimeline.customRepeatMode(
+                                            MacroTimeline.repeatCount(it.defaultRepeat) - 1
+                                        )
+                                    )
+                                }
+                            },
+                            onPlus = {
+                                onUpdate {
+                                    it.copy(
+                                        defaultRepeat = MacroTimeline.customRepeatMode(
+                                            MacroTimeline.repeatCount(it.defaultRepeat) + 1
+                                        )
+                                    )
+                                }
+                            }
+                        )
                     }
                     Spacer(Modifier.height(10.dp))
                     SwitchRow(

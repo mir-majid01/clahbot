@@ -91,10 +91,78 @@ class MacroRepositoryTest {
 
     @Test
     fun playbackSettingsArePersistedAndClamped() = runBlocking {
-        val saved = repository.save(sampleMacro())!!
-        val updated = repository.updatePlayback(saved.id, 12f, Macro.REPEAT_INFINITE)
-        assertEquals(4f, updated?.speedMultiplier ?: 0f, 0.0001f)
+        val saved = repository.save(
+            sampleMacro(speed = 12f, repeat = Macro.REPEAT_INFINITE)
+        )!!
+        assertEquals(4f, saved.speedMultiplier, 0.0001f)
         assertEquals(Macro.REPEAT_INFINITE, repository.get(saved.id)?.repeatMode)
+    }
+
+    @Test
+    fun customRepeatAndStopConditionsAreClampedAndPersisted() = runBlocking {
+        val saved = repository.save(
+            sampleMacro(
+                repeat = "10000",
+                countdownMs = 90_000L,
+                stopMinutes = 0,
+                stopAttacks = 20_000
+            )
+        )!!
+        assertEquals(Macro.REPEAT_ONCE, saved.repeatMode)
+        assertEquals(Macro.MAX_START_COUNTDOWN_MS, saved.startCountdownMs)
+        assertNull(saved.stopAfterMinutes)
+        assertEquals(Macro.MAX_STOP_AFTER_ATTACKS, saved.stopAfterAttacks)
+
+        val custom = repository.save(
+            sampleMacro(id = 2, repeat = "7", stopMinutes = 15, stopAttacks = 4)
+        )!!
+        assertEquals("7", custom.repeatMode)
+        assertEquals(15, custom.stopAfterMinutes)
+        assertEquals(4, custom.stopAfterAttacks)
+        assertEquals("7", repository.load().first { it.id == 2L }.repeatMode)
+    }
+
+    @Test
+    fun pinnedMacrosSortFirstWithoutChangingRecencyOtherwise() = runBlocking {
+        repository.save(sampleMacro(id = 1, name = "Old", createdAt = 1))
+        repository.save(sampleMacro(id = 2, name = "New", createdAt = 2))
+        assertEquals("New", repository.macros.value.first().name)
+
+        repository.save(
+            repository.get(1)!!.copy(pinned = true)
+        )
+        assertEquals("Old", repository.macros.value.first().name)
+        assertEquals("New", repository.macros.value[1].name)
+    }
+
+    @Test
+    fun duplicateGetsANewIdAndDoesNotCopyPlayStats() = runBlocking {
+        val source = repository.save(sampleMacro(name = "Attack"))!!
+        repository.markPlayed(source.id)
+        val copy = repository.duplicate(source.id)!!
+
+        assertTrue(copy.id != source.id)
+        assertEquals("Attack (copy)", copy.name)
+        assertEquals(0, copy.playCount)
+        assertNull(copy.lastPlayedAt)
+        assertEquals(source.gestures.size, copy.gestures.size)
+        assertEquals(2, repository.load().size)
+
+        val played = repository.markPlayed(source.id)!!
+        assertEquals(2, played.playCount)
+        assertNotNull(played.lastPlayedAt)
+    }
+
+    @Test
+    fun oldMacroDefaultsForNewSettings() = runBlocking {
+        repository.save(sampleMacro())
+        val loaded = repository.load().first()
+        assertEquals(0L, loaded.startCountdownMs)
+        assertTrue(loaded.stopOnBackground)
+        assertNull(loaded.stopAfterMinutes)
+        assertNull(loaded.stopAfterAttacks)
+        assertEquals(0, loaded.playCount)
+        assertEquals(false, loaded.pinned)
     }
 
     @Test
@@ -192,16 +260,25 @@ class MacroRepositoryTest {
         id: Long = 1,
         name: String = "Test macro",
         speed: Float = 1f,
-        repeatDelayMs: Long? = null
+        repeatDelayMs: Long? = null,
+        repeat: String = Macro.REPEAT_ONCE,
+        createdAt: Long = 1_000L + id,
+        countdownMs: Long = 0L,
+        stopMinutes: Int? = null,
+        stopAttacks: Int? = null
     ) = Macro(
         id = id,
         name = name,
-        createdAt = 1_000L + id,
+        createdAt = createdAt,
         deviceWidth = 1080,
         deviceHeight = 2400,
         orientation = "portrait",
         speedMultiplier = speed,
         repeatDelayMs = repeatDelayMs,
+        repeatMode = repeat,
+        startCountdownMs = countdownMs,
+        stopAfterMinutes = stopMinutes,
+        stopAfterAttacks = stopAttacks,
         gestures = listOf(
             RecordedGesture(
                 id = 1,

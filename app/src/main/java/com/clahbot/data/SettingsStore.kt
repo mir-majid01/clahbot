@@ -89,10 +89,14 @@ class SettingsStore private constructor(private val prefs: SharedPreferences) {
         _settings.value = normalized
     }
 
-    private fun normalizeRepeat(value: String?): String = when {
-        value == Macro.REPEAT_INFINITE -> Macro.REPEAT_INFINITE
-        value != null && value.toIntOrNull() != null -> value
-        else -> Macro.REPEAT_ONCE
+    private fun normalizeRepeat(value: String?): String {
+        if (value == Macro.REPEAT_INFINITE) return Macro.REPEAT_INFINITE
+        val count = value?.toIntOrNull()
+        return if (count != null && count in 1..Macro.MAX_CUSTOM_REPEAT) {
+            count.toString()
+        } else {
+            Macro.REPEAT_ONCE
+        }
     }
 
     companion object {

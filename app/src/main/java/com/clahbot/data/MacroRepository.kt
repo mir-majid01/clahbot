@@ -34,7 +34,7 @@ class MacroRepository(private val file: File) {
 
     suspend fun refresh(): List<Macro> = withContext(Dispatchers.IO) {
         mutex.withLock {
-            val list = readLocked().sortedByDescending { it.createdAt }
+            val list = sortedForDisplay(readLocked())
             _macros.value = list
             list
         }
@@ -66,21 +66,47 @@ class MacroRepository(private val file: File) {
         mutex.withLock {
             val base = sanitizeMacro(macro.copy(id = 0)) ?: return@withLock null
             val all = readLocked().toMutableList()
-            var id = System.currentTimeMillis()
-            while (id <= 0L || all.any { it.id == id }) id++
-            val names = all.map { it.name }.toSet()
-            val name = if (base.name !in names) {
-                base.name
-            } else {
-                var suffix = 2
-                while ("${base.name} ($suffix)" in names) suffix++
-                "${base.name} ($suffix)"
-            }
+            val id = nextId(all)
+            val name = uniqueName(base.name, all.map { it.name }.toSet())
             val imported = base.copy(id = id, name = name, createdAt = System.currentTimeMillis())
             all.add(imported)
             writeLocked(all)
             publish(all)
             imported
+        }
+    }
+
+    suspend fun duplicate(id: Long): Macro? = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            val all = readLocked().toMutableList()
+            val source = all.firstOrNull { it.id == id } ?: return@withLock null
+            val copy = source.copy(
+                id = nextId(all),
+                name = uniqueName("${source.name} (copy)", all.map { it.name }.toSet()),
+                createdAt = System.currentTimeMillis(),
+                playCount = 0,
+                lastPlayedAt = null
+            )
+            all.add(copy)
+            writeLocked(all)
+            publish(all)
+            copy
+        }
+    }
+
+    suspend fun markPlayed(id: Long): Macro? = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            val all = readLocked().toMutableList()
+            val index = all.indexOfFirst { it.id == id }
+            if (index < 0) return@withLock null
+            val updated = all[index].copy(
+                playCount = (all[index].playCount + 1).coerceAtLeast(1),
+                lastPlayedAt = System.currentTimeMillis()
+            )
+            all[index] = updated
+            writeLocked(all)
+            publish(all)
+            updated
         }
     }
 
@@ -119,30 +145,29 @@ class MacroRepository(private val file: File) {
         }
     }
 
-    suspend fun updatePlayback(id: Long, speedMultiplier: Float, repeatMode: String): Macro? =
-        withContext(Dispatchers.IO) {
-            mutex.withLock {
-                val all = readLocked().toMutableList()
-                val index = all.indexOfFirst { it.id == id }
-                if (index < 0) return@withLock null
-                val updated = sanitizeMacro(
-                    all[index].copy(
-                        speedMultiplier = speedMultiplier,
-                        repeatMode = repeatMode
-                    )
-                ) ?: return@withLock null
-                all[index] = updated
-                writeLocked(all)
-                publish(all)
-                updated
-            }
-        }
-
     /** Size of the macro file on disk, for the storage section in Settings. */
     fun storageBytes(): Long = if (file.exists()) file.length() else 0L
 
     private fun publish(macros: List<Macro>) {
-        _macros.value = macros.sortedByDescending { it.createdAt }
+        _macros.value = sortedForDisplay(macros)
+    }
+
+    private fun sortedForDisplay(macros: List<Macro>): List<Macro> =
+        macros.sortedWith(
+            compareByDescending<Macro> { it.pinned }.thenByDescending { it.createdAt }
+        )
+
+    private fun nextId(all: List<Macro>): Long {
+        var id = System.currentTimeMillis()
+        while (id <= 0L || all.any { it.id == id }) id++
+        return id
+    }
+
+    private fun uniqueName(base: String, names: Set<String>): String {
+        if (base !in names) return base
+        var suffix = 2
+        while ("$base ($suffix)" in names) suffix++
+        return "$base ($suffix)"
     }
 
     private fun readLocked(): List<Macro> {
@@ -240,7 +265,8 @@ internal fun sanitizeMacro(raw: Macro): Macro? {
         val repeatMode = when {
             rawRepeat == Macro.REPEAT_INFINITE -> Macro.REPEAT_INFINITE
             rawRepeat == Macro.REPEAT_ONCE -> Macro.REPEAT_ONCE
-            else -> rawRepeat?.trim()?.toIntOrNull()?.takeIf { it > 0 }?.toString()
+            else -> rawRepeat?.trim()?.toIntOrNull()
+                ?.takeIf { it in 1..Macro.MAX_CUSTOM_REPEAT }?.toString()
                 ?: Macro.REPEAT_ONCE
         }
 
@@ -256,6 +282,10 @@ internal fun sanitizeMacro(raw: Macro): Macro? {
             repeatMode = repeatMode,
             speedMultiplier = speed,
             repeatDelayMs = raw.repeatDelayMs?.coerceIn(0L, Macro.MAX_REPEAT_DELAY_MS),
+            startCountdownMs = raw.effectiveStartCountdownMs,
+            stopAfterMinutes = raw.effectiveStopAfterMinutes,
+            stopAfterAttacks = raw.effectiveStopAfterAttacks,
+            playCount = raw.playCount.coerceAtLeast(0),
             orientation = orientation,
             schemaVersion = Macro.CURRENT_SCHEMA_VERSION
         )

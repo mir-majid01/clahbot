@@ -1193,3 +1193,82 @@ unit tests, and the device run above already exercised the picker path.
 
 Only the macro-sharing item was recalled. The other postponed features/UI
 changes still need the user's list.
+
+## 2026-10-28 — Version 1: per-macro settings (2.5.0, versionCode 19)
+
+### Base decision (evidence: A — git)
+
+The requested base `paused/repeat-delay-2.4.3` is an **ancestor of `main`**
+(`git merge-base --is-ancestor`), and `git diff paused/repeat-delay-2.4.3 main`
+contains all later loot-capture work. Branching from `paused` would drop 2.4.6–2.4.9.
+Version 1 is therefore built on `main`, which already contains the paused delay
+work plus the installed loot fixes and macro sharing.
+
+### What changed
+
+- `Macro` schema 4, all new fields additive with defaults: `pinned`,
+  `startCountdownMs`, `stopOnBackground`, `stopAfterMinutes`,
+  `stopAfterAttacks`, `lastPlayedAt`, `playCount`. Old files load unchanged;
+  sanitizer clamps countdown 0–30 s, minutes 1–1440, attacks 1–9999, custom
+  repeat 1–9999.
+- Floating macro list redesigned: each row has name, compact summary
+  (gestures, duration, speed, repeat, delay), a 48 dp Play button and its own
+  48 dp gear. The shared Speed/Loop/Rename/Delete footer is removed; Record
+  stays.
+- The gear opens an in-window sub-screen (same overlay, back arrow) with:
+  rename; speed step + presets 0.25–4×; Once/Loop/Custom N; delay + presets
+  3/5/10/30 s; start countdown + presets 0/3/5/10 s; stop on background
+  (default on); stop after minutes; stop after attacks; pin; duplicate;
+  reset; delete with a 5-second Undo row; play count / last played info.
+- The controller window is normally not focusable; it becomes focusable only
+  while a text field is focused, then restores `FLAG_NOT_FOCUSABLE` and hides
+  the keyboard. Settings scroll height is capped at 86% of the display so the
+  panel fits landscape.
+- Playback now uses the macro's own settings (the shared live speed/repeat was
+  removed). `PlaybackPlan` resolves iterations = min(repeat, attack cap),
+  countdown, background policy and the minutes deadline. `MacroPlayer`
+  counts down on screen, stops the whole run at the deadline, and Stop cancels
+  countdown or delay immediately.
+- Custom repeat replaces the old `3×` cycle in the default-repeat setting;
+  default custom counts are validated 1–9999.
+- `MacroRepository`: pinned-first ordering, `duplicate` (new id, no play stats),
+  `markPlayed` (increments count and last-played), unique names shared with
+  import. `updatePlayback` (the old shared-control path) was removed.
+
+### Tests (evidence: A/B)
+
+- **167 app unit tests green** (0 failures). New coverage: repository clamping
+  and persistence of custom repeat/stop conditions, pinned ordering, duplicate
+  identity, old-macro defaults, repeat labels/custom modes, and PlaybackPlan
+  (iterations, attack cap, countdown clamp, deadline, background flag).
+- `:app:assembleDebug` builds; local APK SHA-256
+  `8c4038ba9a84ea94c5baa1cb99f621a77c4928b1708de1be21de0249a6d8f6fb`
+  (installed in place; versionCode 19 / 2.5.0).
+
+### 2.5.0 device test log (partial)
+
+- Install in place succeeded (versionCode 19, versionName 2.5.0); `attacks.json`
+  and `macros.json` matched their pre-install hashes immediately after install.
+- New floating list, per-row Play/Gear, in-window settings panel, Save,
+  Duplicate, Reset, Delete and info all render. Duplicate produced
+  `Macro Oct 28 00:04 (copy)` with a new id, schema 4, 0 plays, same gestures.
+- Found during the test: tapping a numeric/name field did not bring up the
+  keyboard because the overlay stayed behind `FLAG_NOT_FOCUSABLE` on
+  programmatic focus. Fixed: the window becomes focusable on field touch and
+  calls `showSoftInput` explicitly; it stays focusable while the settings
+  panel is open and is restored to non-focusable only on close. Focus no
+  longer drops on blur between fields.
+- Also fixed: the row summary was truncated after "Loo…"; it is now two lines
+  (gestures/duration/speed, then repeat/delay), the gear icon was redrawn, and
+  the settings title is simply "Settings".
+- The controller window closed twice during the automated session. Nothing in
+  the new code calls close on focus changes, and `requestClose`/`closeEverything`
+  now log to `autoclash_events.log`. The phone was being used interactively
+  during the test (ChatGPT in the foreground at the end), so the close may have
+  been an external tap on the X/notification; attribution is still open.
+- The temporary duplicate is still in the live library
+  (`macros.json` `f00a40a8…`); the original two macros are untouched. Remove
+  the copy and restore `e8115ee2…` after the next clean device session.
+- Remaining V1 device checks: keyboard in landscape, Save persistence, custom
+  repeat, countdown visible + Stop during countdown, 5-second Undo, delete of
+  the copy, rotation/app-switch/screen-off window cleanup.

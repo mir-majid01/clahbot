@@ -54,15 +54,17 @@ class MacroTimelineTest {
     }
 
     @Test
-    fun repeatCycleRotatesAndLabels() {
-        assertEquals(Macro.REPEAT_INFINITE, MacroTimeline.nextRepeat(Macro.REPEAT_ONCE))
-        assertEquals("3", MacroTimeline.nextRepeat(Macro.REPEAT_INFINITE))
-        assertEquals(Macro.REPEAT_ONCE, MacroTimeline.nextRepeat("3"))
-        assertEquals(Macro.REPEAT_ONCE, MacroTimeline.nextRepeat("unknown"))
-
+    fun repeatLabelsAndCustomModes() {
         assertEquals("Once", MacroTimeline.repeatLabel(Macro.REPEAT_ONCE))
         assertEquals("Loop", MacroTimeline.repeatLabel(Macro.REPEAT_INFINITE))
         assertEquals("3×", MacroTimeline.repeatLabel("3"))
+        assertEquals("9999×", MacroTimeline.repeatLabel("9999"))
+
+        assertTrue(MacroTimeline.isCustomRepeat("7"))
+        assertTrue(!MacroTimeline.isCustomRepeat(Macro.REPEAT_ONCE))
+        assertTrue(!MacroTimeline.isCustomRepeat(Macro.REPEAT_INFINITE))
+        assertEquals("1", MacroTimeline.customRepeatMode(0))
+        assertEquals(Macro.MAX_CUSTOM_REPEAT.toString(), MacroTimeline.customRepeatMode(99_999))
     }
 
     @Test

@@ -53,6 +53,18 @@ data class Macro(
      */
     val repeatDelayMs: Long? = null,
     val randomOffset: String = "off",
+    /** Keep this macro at the top of the library. */
+    val pinned: Boolean = false,
+    /** Delay before the first gesture, so the user can switch to the game. */
+    val startCountdownMs: Long = 0L,
+    /** Stop playback when Clash is no longer the foreground app. */
+    val stopOnBackground: Boolean = true,
+    /** Stop the whole run after this many minutes; null means no limit. */
+    val stopAfterMinutes: Int? = null,
+    /** Stop after this many completed runs; null means no limit. */
+    val stopAfterAttacks: Int? = null,
+    val lastPlayedAt: Long? = null,
+    val playCount: Int = 0,
     val schemaVersion: Int = CURRENT_SCHEMA_VERSION
 ) {
     val loops: Boolean get() = repeatMode == REPEAT_INFINITE
@@ -61,11 +73,24 @@ data class Macro(
         get() = (repeatDelayMs ?: LEGACY_REPEAT_DELAY_MS)
             .coerceIn(0L, MAX_REPEAT_DELAY_MS)
 
+    val effectiveStartCountdownMs: Long
+        get() = startCountdownMs.coerceIn(0L, MAX_START_COUNTDOWN_MS)
+
+    val effectiveStopAfterMinutes: Int?
+        get() = stopAfterMinutes?.takeIf { it > 0 }?.coerceAtMost(MAX_STOP_AFTER_MINUTES)
+
+    val effectiveStopAfterAttacks: Int?
+        get() = stopAfterAttacks?.takeIf { it > 0 }?.coerceAtMost(MAX_STOP_AFTER_ATTACKS)
+
     companion object {
-        const val CURRENT_SCHEMA_VERSION = 3
+        const val CURRENT_SCHEMA_VERSION = 4
         const val REPEAT_ONCE = "once"
         const val REPEAT_INFINITE = "infinite"
         const val LEGACY_REPEAT_DELAY_MS = 800L
         const val MAX_REPEAT_DELAY_MS = 600_000L
+        const val MAX_CUSTOM_REPEAT = 9999
+        const val MAX_START_COUNTDOWN_MS = 30_000L
+        const val MAX_STOP_AFTER_MINUTES = 1440
+        const val MAX_STOP_AFTER_ATTACKS = 9999
     }
 }
