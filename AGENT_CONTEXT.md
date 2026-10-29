@@ -1434,7 +1434,7 @@ two lines on a 320 dp panel at font 1.3 but never ellipsizes.
 
 ### Verification for the v2 polish
 
-- 181 app unit tests green (was 180): new tests cover empty-session deletion on
+- 184 app unit tests green (was 180): new tests cover empty-session deletion on
   close and on recovery, playback-only sessions being kept, and
   999,999,999,999 totals keeping every digit and formatting with separators.
 - 50 ocrlab tests green; `:ocr` tests green.
