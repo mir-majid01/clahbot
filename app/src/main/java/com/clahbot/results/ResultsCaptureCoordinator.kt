@@ -48,7 +48,7 @@ class ResultsCaptureCoordinator(
     private val hideOverlay: () -> Unit,
     private val showOverlay: () -> Unit,
     private val onStatus: (String) -> Unit,
-    private val onRecordSaved: () -> Unit,
+    private val onRecordSaved: (AttackRecord) -> Unit,
     private val onWatchEnded: () -> Unit
 ) {
 
@@ -592,7 +592,7 @@ class ResultsCaptureCoordinator(
                 "Results screen captured; loot not captured; watching for the next"
             }
         )
-        withContext(Dispatchers.Main) { onRecordSaved() }
+        withContext(Dispatchers.Main) { onRecordSaved(added) }
         return true
     }
 
@@ -649,7 +649,7 @@ class ResultsCaptureCoordinator(
         }
         event("record saved id=${added.id} outcome=unknown lootCaptured=false")
         status("Results screen captured; loot not captured; watching for the next")
-        withContext(Dispatchers.Main) { onRecordSaved() }
+        withContext(Dispatchers.Main) { onRecordSaved(added) }
     }
 
     private fun presence(value: Long?): String = if (value == null) "missing" else "ok"

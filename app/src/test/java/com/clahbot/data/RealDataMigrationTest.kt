@@ -45,6 +45,7 @@ class RealDataMigrationTest {
             val before = sha256(attacksCopy)
             val sessions = SessionRepository.forFile(File(directory, "sessions.json"))
             sessions.ensureActive(1_000L)
+            sessions.addMacroToActive(1L, now = 1_500L)
             sessions.syncWithRecords(emptyList())
             sessions.closeActive(now = 2_000L)
             assertEquals(before, sha256(attacksCopy))

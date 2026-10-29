@@ -47,6 +47,7 @@ class SessionRepositoryTest {
     @Test
     fun recoveryClosesAnUnfinishedSessionAtItsLastUpdate() = runBlocking {
         repository.ensureActive(1_000L)
+        repository.addMacroToActive(7L, now = 2_000L)
         repository.touchActive(9_000L)
         val recovered = repository.recoverOpenSessions(20_000L)
         assertNotNull(recovered)
@@ -57,6 +58,14 @@ class SessionRepositoryTest {
         val reloaded = SessionRepository.forFile(file).refresh().first()
         assertEquals(GameSession.RECOVERED, reloaded.status)
         assertEquals(9_000L, reloaded.endedAt)
+    }
+
+    @Test
+    fun recoveryDropsAnEmptySession() = runBlocking {
+        repository.ensureActive(1_000L)
+        repository.touchActive(9_000L)
+        assertNull(repository.recoverOpenSessions(20_000L))
+        assertTrue(repository.refresh().isEmpty())
     }
 
     @Test
@@ -134,6 +143,21 @@ class SessionRepositoryTest {
     }
 
     @Test
+    fun hugeTotalsKeepEveryDigit() {
+        val big = 999_999_999_999L
+        val totals = SessionAggregator.totals(
+            listOf(record(id = 1, startedAt = 1, gold = big, elixir = big, dark = big))
+        )
+        assertEquals(big, totals.totalGold)
+        assertEquals(big, totals.totalElixir)
+        assertEquals(big, totals.totalDarkElixir)
+        assertEquals(
+            "999,999,999,999",
+            String.format(java.util.Locale.US, "%,d", totals.totalGold)
+        )
+    }
+
+    @Test
     fun editedRecordIsRecomputedInPlace() = runBlocking {
         repository.ensureActive(1_000L)
         repository.syncWithRecords(
@@ -151,12 +175,32 @@ class SessionRepositoryTest {
     @Test
     fun closeActiveRecordsTheEndAndKeepsTheSession() = runBlocking {
         val session = repository.ensureActive(1_000L)
+        repository.syncWithRecords(
+            listOf(record(id = 1, startedAt = 2_000L, gold = 10, elixir = 20, dark = 1))
+        )
         val closed = repository.closeActive(now = 61_000L)
         assertEquals(GameSession.CLOSED, closed?.status)
         assertEquals(61_000L, closed?.endedAt)
         assertEquals(60_000L, closed?.durationMs)
         assertEquals(session.id, repository.refresh().first().id)
         assertNull(repository.active())
+    }
+
+    @Test
+    fun closeActiveDropsAnEmptySessionWithoutPlayback() = runBlocking {
+        repository.ensureActive(1_000L)
+        repository.closeActive(now = 61_000L)
+        assertTrue(repository.refresh().isEmpty())
+        assertTrue(!file.exists() || !file.readText().contains("\"startedAt\""))
+    }
+
+    @Test
+    fun closeActiveKeepsAPlaybackOnlySession() = runBlocking {
+        repository.ensureActive(1_000L)
+        repository.addMacroToActive(42L, now = 2_000L)
+        repository.closeActive(now = 61_000L)
+        assertEquals(1, repository.refresh().size)
+        assertEquals(listOf(42L), repository.refresh().first().macroIds)
     }
 
     @Test

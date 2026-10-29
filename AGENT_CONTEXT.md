@@ -1369,3 +1369,83 @@ the visual source of truth.
 - Device pass for keyboard Activity, stepper settings, countdown/stop, sessions
   grace/recovery, dashboard orientation/font scale, and overlay cleanup.
 - Before-sessions display depends on old attacks predating the first session.
+
+### Batch A device pass 1 (2.6.0, installed)
+
+Installed 2.6.0 (versionCode 20) in place; attacks `d22eb6…` and macros
+`e8115e…` unchanged. Sessions existed from earlier test runs and were recovered
+as designed. Findings, all addressed in the v2-pack polish below:
+
+1. `Repeat count` showed **2147483647** for Loop macros because the old draft
+   used `repeatCount("infinite")`. The field now appears only for Custom,
+   defaults to 10, is clamped to 1–9999, and Loop is always stored as Loop.
+2. The settings panel overflowed the bottom of the screen (Save/Cancel below
+   the edge). It now opens at y=48 dp, hides the controller header, and sizes
+   its scroll from the available 90 % height.
+3. The OEM `Switch` rendered with a barely visible track and the wrong thumb
+   position. Replaced with a token-built 44x26 toggle (green on, outlined off,
+   white 20 dp thumb) inside a 44 dp hit area.
+4. The gear looked like a sun; replaced with the pack's Material settings path.
+5. The macro list cut the second row and a chip wrapped inside its pill. The
+   list now snaps to whole rows, hides its scrollbar, and controller rows use
+   one meta line plus one accent line, neither wrapping.
+6. The game card showed the last **closed** session as if current. The v2 pack
+   instead asks for the latest session with a status dot: green active, grey
+   closed, amber recovered; the pack wins.
+7. Six 0-attack sessions from our tests clutter the Sessions list. Empty
+   sessions are now deleted on close/recovery; existing empty records are
+   hidden in the UI, not deleted.
+
+### Batch A v2 polish (pack reference 2, one rebuild)
+
+Applied the full 17-defect round:
+
+- Overlay header is one 40 dp row (logo + dot, Controller|Stats, minimize,
+  close). A one-line status strip shows only outside READY. Panel widths:
+  320 dp (max 92 %) portrait, 360 dp controller/stats landscape; settings is
+  480 dp landscape (see deviation), all scroll areas capped to 90 % height.
+- Controller rows: name, `n gestures · time`, one accent line
+  `speed · repeat · delay`, 36 dp play circle in a 44 dp hit, plain 24 dp gear
+  in a 44 dp hit. The list snaps to complete rows.
+- Settings: single header (back, name, more, minimize, close); Playback and
+  Stop conditions pages with tabs, swipe and page dots; landscape page 1 is
+  two columns; Duplicate/Reset/Delete live in the more menu (Delete confirms,
+  5 s Undo); one Cancel/Save footer. Rows use 44 dp steppers with 32 dp ± and
+  a tappable tabular value; labels auto-shrink 13→10 rather than wrap.
+- Stats: scope row + Auto-scan chip, one stacked totals card with full
+  `%,d` numbers (autosize 17→11, tnum), `loot X + bonus Y`, meta row, RECENT
+  with a small Scan now link, and See all history. Session scope defaults to
+  All time whenever the current session has no attacks.
+- Dashboard: Statistics header carries Session|All time; amber
+  "N attacks unreadable · Re-scan" row appears only when N>0; stacked totals;
+  recent rows; link-coloured actions for 4.5:1 contrast; status-coloured game
+  card; empty sessions hidden.
+- Sessions lifecycle: a session starts only on a Clash launch from AutoClash,
+  a playback, or a saved results capture (auto or manual). Opening/reopening
+  the controller never starts one. A closed session with 0 attacks and no
+  playback is deleted; recovery behaves the same for interrupted sessions.
+
+**Deliberate deviations** (pack vs no-clipping): landscape settings is 480 dp,
+not the pack's 420 dp. At 420, two 44 dp steppers plus unwrapped labels at font
+scale 1.3 cannot fit (the pack's own 02c render clips its right column). Header
+tabs stay 40 dp high because the header row itself is specified as 40 dp; all
+other interactive controls are at least 44 dp. The totals info line may wrap to
+two lines on a 320 dp panel at font 1.3 but never ellipsizes.
+
+### Verification for the v2 polish
+
+- 181 app unit tests green (was 180): new tests cover empty-session deletion on
+  close and on recovery, playback-only sessions being kept, and
+  999,999,999,999 totals keeping every digit and formatting with separators.
+- 50 ocrlab tests green; `:ocr` tests green.
+- Android lint: 0 errors, 111 warnings (all pre-existing style/hardcoded/
+  old-dependency categories, plus the existing touch/accessibility warnings on
+  the overlay). No new error-level findings.
+- Real-file migration tests ran on copies via `CLAHS_TEST_MACROS` /
+  `CLAHS_TEST_ATTACKS`; the live `attacks.json` and `macros.json` were not
+  touched.
+- Not verified yet: screenshots against the pack and the device pass (font
+  scale 1.0/1.3, widths, landscape, keyboard, 40-char name, max totals,
+  0/1/8 macros, session grace/recovery). That is the pending single device
+  pass for 2.6.1.
+

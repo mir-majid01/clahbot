@@ -243,9 +243,9 @@ class MacroPlayer(
     private fun pauseReason(): String {
         val front = ClahAccessibilityService.foregroundLabel()
         return if (front.startsWith("com.clahbot")) {
-            "Paused — open Clash of Clans, then press Resume"
+            "Paused — open Clash, then Resume"
         } else {
-            "Paused — " + front + " is in front"
+            "Paused — " + front.take(18)
         }
     }
 

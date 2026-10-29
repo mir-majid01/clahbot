@@ -26,9 +26,12 @@ import android.text.Editable
 import android.text.TextWatcher
 import android.util.DisplayMetrics
 import android.util.Log
+import android.util.TypedValue
+import android.view.GestureDetector
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
 import android.view.LayoutInflater
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
@@ -39,12 +42,13 @@ import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.PopupWindow
 import android.widget.ScrollView
-import android.widget.Switch
 import android.widget.TextView
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
+import androidx.core.widget.TextViewCompat
 import com.clahbot.R
 import android.content.res.ColorStateList
 import com.clahbot.data.AppEventLog
@@ -121,7 +125,8 @@ class FloatingMenuService : Service() {
     private lateinit var attackRepository: AttackRepository
     private lateinit var sessionRepository: SessionRepository
     private var statsScope = STATS_SESSION
-    private var scanButton: Button? = null
+    private var autoScanChip: TextView? = null
+    private var scanNowLink: TextView? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val handler = Handler(Looper.getMainLooper())
 
@@ -213,7 +218,7 @@ class FloatingMenuService : Service() {
             hideOverlay = { setCaptureOverlayHidden(true) },
             showOverlay = { setCaptureOverlayHidden(false) },
             onStatus = { message -> BotState.setStatus(message) },
-            onRecordSaved = {
+            onRecordSaved = { record ->
                 AppEventLog.log(
                     "record callback playerRunning=${player?.isRunning() == true} " +
                         "repeat=${captureSession?.repeat ?: "-"} captureId=${captureSession?.id ?: "-"} " +
@@ -221,6 +226,8 @@ class FloatingMenuService : Service() {
                 )
                 scope.launch {
                     attackRepository.refresh()
+                    GameSessionTracker.ensureSession(record.startedAt)
+                    GameSessionTracker.syncNow()
                     renderStats()
                     refreshUi()
                 }
@@ -319,6 +326,7 @@ class FloatingMenuService : Service() {
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
         updateScreenSize()
+        applyPanelWidth(settingsView != null)
         refreshControllerBoundsSnapshot()
         if (!recording) return
         stopRecording()
@@ -407,13 +415,14 @@ class FloatingMenuService : Service() {
         val controllerContext = scaledControllerContext(prefs.controllerScale)
         val view = LayoutInflater.from(controllerContext)
             .inflate(R.layout.overlay_controller, null)
-        // Fit the list to the usable screen and keep the footer anchored below it.
-        val scaledDensity = controllerContext.resources.displayMetrics.density
-        val listDp = (screenHeight / scaledDensity - 340f).coerceIn(56f, 170f)
-        view.findViewById<View>(R.id.macroScroll)?.let { scroll ->
-            scroll.layoutParams = scroll.layoutParams.apply {
-                height = (listDp * scaledDensity).toInt()
-            }
+        view.findViewById<LinearLayout>(R.id.panel)?.let { panel ->
+            panel.layoutParams.width = controllerPanelWidthPx(settings = false)
+        }
+        view.findViewById<ScrollView>(R.id.macroScroll)?.apply {
+            isVerticalScrollBarEnabled = false
+            clipToPadding = false
+            setPadding(0, 0, 0, dp(2))
+            layoutParams = layoutParams.apply { height = dp(192) }
         }
         applyBubbleSize(view, controllerContext, prefs.bubbleScale)
         val params = WindowManager.LayoutParams(
@@ -492,8 +501,8 @@ class FloatingMenuService : Service() {
             haptic()
             startRecording()
         }
-        view.findViewById<Button>(R.id.btnPageController).setOnClickListener { setPage(PAGE_CONTROLLER) }
-        view.findViewById<Button>(R.id.btnPageStats).setOnClickListener { setPage(PAGE_STATS) }
+        view.findViewById<TextView>(R.id.btnPageController).setOnClickListener { setPage(PAGE_CONTROLLER) }
+        view.findViewById<TextView>(R.id.btnPageStats).setOnClickListener { setPage(PAGE_STATS) }
         view.findViewById<Button>(R.id.btnUndo).setOnClickListener {
             haptic()
             undoDelete()
@@ -1578,6 +1587,8 @@ class FloatingMenuService : Service() {
             scope.launch {
                 sessionRepository.refresh()
                 attackRepository.refresh()
+                val active = sessionRepository.sessions.value.firstOrNull { it.active }
+                statsScope = if ((active?.attackCount ?: 0) > 0) STATS_SESSION else STATS_ALL
                 renderStats()
             }
         }
@@ -1623,7 +1634,6 @@ class FloatingMenuService : Service() {
         )
         captureSession = capture
         autoWatch = true
-        scope.launch { GameSessionTracker.ensureSession() }
         resultsCapture.begin(capture)
         AppEventLog.log("auto watch start id=$startedAt")
         BotState.setStatus("Auto watch: waiting for a results screen")
@@ -1743,7 +1753,8 @@ class FloatingMenuService : Service() {
         val all = AttackStats.confirmedOnly(attackRepository.records.value)
             .sortedByDescending { it.startedAt }
         val sessions = sessionRepository.sessions.value
-        val current = sessions.firstOrNull { it.active } ?: sessions.firstOrNull()
+        val current = sessions.firstOrNull { it.active }
+            ?: sessions.firstOrNull { it.attackCount > 0 || it.macroIds.isNotEmpty() }
         val scoped = if (statsScope == STATS_SESSION) {
             if (current == null) emptyList() else all.filter { it.id in current.attackIds }
         } else {
@@ -1751,32 +1762,24 @@ class FloatingMenuService : Service() {
         }
         val totals = SessionAggregator.totals(scoped)
 
-        content.addView(scopeSegment())
-        content.addView(Ds.spacer(this, 8))
-
-        val tiles = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        tiles.addView(
-            resourceTile(R.drawable.ic_gold, "Gold", totals.totalGold, totals.bonusGold),
-            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                marginEnd = dp(6)
-            }
-        )
-        tiles.addView(
-            resourceTile(R.drawable.ic_elixir, "Elixir", totals.totalElixir, totals.bonusElixir),
-            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                marginEnd = dp(6)
-            }
-        )
-        tiles.addView(
-            resourceTile(
-                R.drawable.ic_dark,
-                "Dark elixir",
-                totals.totalDarkElixir,
-                totals.bonusDarkElixir
-            ),
+        val scopeRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        scopeRow.addView(
+            scopeSegment(),
             LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         )
-        content.addView(tiles)
+        scopeRow.addView(
+            watchActionChip(),
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { marginStart = dp(6) }
+        )
+        content.addView(scopeRow)
+        content.addView(Ds.spacer(this, 8))
+        content.addView(lootStackCard(totals))
         content.addView(statsMetaRow(totals))
 
         if (totals.incompleteAttacks > 0) {
@@ -1788,19 +1791,36 @@ class FloatingMenuService : Service() {
             )
         }
 
-        content.addView(
-            Ds.text(this, 11f, Ds.MUTED, caps = true).apply {
-                text = "Recent"
-                setPadding(0, dp(12), 0, dp(4))
-            }
+        val recentHeader = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(10), 0, 0)
+        }
+        recentHeader.addView(
+            Ds.text(this, 11f, Ds.MUTED, caps = true).apply { text = "Recent" },
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         )
+        scanNowLink = Ds.text(this, 12f, Ds.LINK, bold = true).apply {
+            text = "Scan now"
+            minHeight = dp(44)
+            gravity = Gravity.CENTER_VERTICAL
+            setOnClickListener {
+                haptic()
+                if (manualWatch) stopManualWatch() else startManualWatch()
+            }
+        }
+        recentHeader.addView(scanNowLink)
+        content.addView(recentHeader)
+
         if (scoped.isEmpty()) {
             content.addView(
                 Ds.text(this, 11f, Ds.MUTED).apply {
-                    text = if (statsScope == STATS_SESSION) {
-                        "No session yet. Switch to All time or launch Clash."
-                    } else {
-                        "No attacks yet."
+                    text = when {
+                        statsScope == STATS_SESSION && current != null ->
+                            "No attacks in this session yet."
+                        statsScope == STATS_SESSION ->
+                            "No session yet. Switch to All time or launch Clash."
+                        else -> "No attacks yet."
                     }
                     setPadding(0, dp(4), 0, dp(8))
                 }
@@ -1812,38 +1832,38 @@ class FloatingMenuService : Service() {
             }
         }
 
-        val seeAll = Ds.text(this, 12f, Ds.LINK, bold = true).apply {
-            text = "See all history"
-            gravity = Gravity.CENTER
-            minHeight = dp(48)
-            setOnClickListener {
-                startActivity(
-                    Intent(this@FloatingMenuService, MainActivity::class.java)
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                )
+        content.addView(
+            Ds.text(this, 12f, Ds.LINK, bold = true).apply {
+                text = "See all history"
+                gravity = Gravity.CENTER
+                minHeight = dp(48)
+                setOnClickListener {
+                    startActivity(
+                        Intent(this@FloatingMenuService, MainActivity::class.java)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    )
+                }
+            }
+        )
+        updateWatchActions()
+        view.post {
+            val scroll = view.findViewById<ScrollView>(R.id.statsPanel) ?: return@post
+            val header = if (view.findViewById<View>(R.id.tvStatus).visibility == View.VISIBLE) {
+                dp(84)
+            } else {
+                dp(66)
+            }
+            val panelCap = minOf(
+                (screenHeight * 0.90f).toInt(),
+                screenHeight - (controllerParams?.y ?: 0) - dp(8)
+            )
+            val cap = (panelCap - header).coerceAtLeast(dp(120))
+            val natural = content.height
+            val target = if (natural > 0) minOf(natural + dp(4), cap) else cap
+            if (scroll.layoutParams.height != target) {
+                scroll.layoutParams = scroll.layoutParams.apply { height = target }
             }
         }
-        content.addView(seeAll)
-
-        scanButton = Button(this).apply {
-            text = "Scan now"
-            textSize = 11f
-            isAllCaps = false
-            minWidth = 0
-            minimumWidth = 0
-            setTextColor(Ds.TEXT)
-            background = Ds.rounded(Ds.BUTTON, 10, this@FloatingMenuService)
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                dp(40)
-            ).apply { topMargin = dp(4) }
-            setOnClickListener {
-                haptic()
-                toggleManualWatch()
-            }
-        }
-        content.addView(scanButton)
-        updateScanButton()
     }
 
     private fun scopeSegment(): LinearLayout {
@@ -1851,18 +1871,14 @@ class FloatingMenuService : Service() {
             orientation = LinearLayout.HORIZONTAL
             background = Ds.rounded(Ds.INPUT, 10, this@FloatingMenuService)
             setPadding(dp(3), dp(3), dp(3), dp(3))
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            )
         }
         listOf(STATS_SESSION to "Session", STATS_ALL to "All time").forEach { (scope, label) ->
             val selected = statsScope == scope
-            val button = Ds.text(this, 12f, Ds.MUTED, bold = true).apply {
+            val button = Ds.text(this, 11f, Ds.MUTED, bold = true).apply {
                 text = label
                 gravity = Gravity.CENTER
-                minHeight = dp(42)
-                setPadding(dp(16), 0, dp(16), 0)
+                minHeight = dp(44)
+                setPadding(dp(12), 0, dp(12), 0)
                 background = Ds.rounded(
                     if (selected) Ds.ACCENT else android.graphics.Color.TRANSPARENT,
                     8,
@@ -1876,46 +1892,118 @@ class FloatingMenuService : Service() {
                     }
                 }
             }
-            row.addView(button)
+            row.addView(button, LinearLayout.LayoutParams(0, dp(44), 1f))
         }
         return row
     }
 
-    private fun resourceTile(
-        iconRes: Int,
-        label: String,
-        total: Long,
-        bonus: Long
-    ): LinearLayout {
-        val tile = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            background = Ds.rounded(Ds.PANEL, Ds.RADIUS_CARD, this@FloatingMenuService, Ds.PANEL_BORDER)
-            setPadding(dp(10), dp(9), dp(10), dp(9))
-            isClickable = true
+    private fun watchActionChip(): TextView {
+        val chip = Ds.text(this, 11f, Ds.MUTED, bold = true).apply {
+            minHeight = dp(44)
+            gravity = Gravity.CENTER
+            setPadding(dp(10), 0, dp(10), 0)
             setOnClickListener {
-                android.widget.Toast.makeText(
-                    this@FloatingMenuService,
-                    "$label ${String.format(Locale.US, "%,d", total)} " +
-                        "(loot ${String.format(Locale.US, "%,d", total - bonus)} + bonus " +
-                        "${String.format(Locale.US, "%,d", bonus)})",
-                    android.widget.Toast.LENGTH_LONG
-                ).show()
+                haptic()
+                if (autoWatch) {
+                    stopAutoWatch()
+                } else {
+                    autoWatchEnabled = true
+                    startAutoWatch()
+                }
+                renderStats()
             }
         }
-        tile.addView(ImageView(this).apply {
-            setImageResource(iconRes)
-            layoutParams = LinearLayout.LayoutParams(dp(24), dp(24))
-        })
-        tile.addView(Ds.text(this, 20f, Ds.TEXT, bold = true).apply {
-            text = Ds.compactNumber(total)
-            setPadding(0, dp(6), 0, 0)
-            fontFeatureSettings = "tnum"
-        })
-        tile.addView(Ds.text(this, 10f, Ds.MUTED).apply {
-            text = if (bonus > 0L) "+${Ds.compactNumber(bonus)} bonus" else "no bonus"
-        })
-        return tile
+        autoScanChip = chip
+        return chip
     }
+
+    private fun lootStackCard(totals: com.clahbot.data.models.SessionTotals): LinearLayout {
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = Ds.rounded(
+                Ds.PANEL,
+                Ds.RADIUS_CARD,
+                this@FloatingMenuService,
+                Ds.PANEL_BORDER
+            )
+            setPadding(dp(10), dp(4), dp(10), dp(4))
+        }
+        fun addLootRow(
+            iconRes: Int,
+            label: String,
+            total: Long,
+            bonus: Long
+        ) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, dp(8), 0, dp(8))
+            }
+            row.addView(ImageView(this).apply {
+                setImageResource(iconRes)
+                layoutParams = LinearLayout.LayoutParams(dp(24), dp(24))
+            })
+            val text = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(dp(8), 0, dp(6), 0)
+                layoutParams = LinearLayout.LayoutParams(
+                    0,
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    1f
+                )
+            }
+            text.addView(Ds.text(this, 14f, Ds.TEXT, bold = true).apply { this.text = label })
+            text.addView(Ds.text(this, 11f, Ds.MUTED).apply {
+                this.text = "loot " + String.format(Locale.US, "%,d", total - bonus) +
+                    " + bonus " + String.format(Locale.US, "%,d", bonus)
+            })
+            row.addView(text)
+            val value = Ds.text(this, 17f, Ds.TEXT, bold = true).apply {
+                this.text = String.format(Locale.US, "%,d", total)
+                isSingleLine = true
+                maxLines = 1
+                gravity = Gravity.END
+                fontFeatureSettings = "tnum"
+            }
+            TextViewCompat.setAutoSizeTextTypeUniformWithConfiguration(
+                value,
+                11,
+                17,
+                1,
+                TypedValue.COMPLEX_UNIT_SP
+            )
+            row.addView(value)
+            card.addView(row)
+        }
+        addLootRow(R.drawable.ic_gold, "Gold", totals.totalGold, totals.bonusGold)
+        card.addView(Ds.divider(this))
+        addLootRow(R.drawable.ic_elixir, "Elixir", totals.totalElixir, totals.bonusElixir)
+        card.addView(Ds.divider(this))
+        addLootRow(
+            R.drawable.ic_dark,
+            "Dark elixir",
+            totals.totalDarkElixir,
+            totals.bonusDarkElixir
+        )
+        return card
+    }
+
+    private fun updateWatchActions() {
+        autoScanChip?.apply {
+            text = if (autoWatchEnabled) "Auto-scan on" else "Auto-scan off"
+            setTextColor(if (autoWatchEnabled) Ds.SUCCESS else Ds.MUTED)
+            background = Ds.pill(
+                if (autoWatchEnabled) Ds.SUCCESS_BG else Ds.BUTTON,
+                this@FloatingMenuService,
+                if (autoWatchEnabled) null else Ds.SWITCH_OFF_BORDER
+            )
+        }
+        scanNowLink?.apply {
+            text = if (manualWatch) "Stop scan" else "Scan now"
+            setTextColor(if (manualWatch) Ds.WARN else Ds.LINK)
+        }
+    }
+
 
     private fun statsMetaRow(totals: com.clahbot.data.models.SessionTotals): LinearLayout {
         val row = LinearLayout(this).apply {
@@ -1962,13 +2050,18 @@ class FloatingMenuService : Service() {
         title.addView(Ds.text(this, 13f, Ds.TEXT, bold = true).apply {
             text = formatClockOfDay(record.startedAt)
             fontFeatureSettings = "tnum"
+        })
+        left.addView(title)
+        val sub = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        sub.addView(Ds.text(this, 11f, Ds.MUTED).apply {
+            text = formatDuration(record.durationMs)
             setPadding(0, 0, dp(6), 0)
         })
-        statusChip(record)?.let { title.addView(it) }
-        left.addView(title)
-        left.addView(Ds.text(this, 11f, Ds.MUTED).apply {
-            text = formatDuration(record.durationMs)
-        })
+        statusChip(record)?.let { sub.addView(it) }
+        left.addView(sub)
         row.addView(left)
 
         val loot = LinearLayout(this).apply {
@@ -2002,9 +2095,9 @@ class FloatingMenuService : Service() {
             setPadding(dp(5), 0, 0, 0)
             addView(ImageView(this@FloatingMenuService).apply {
                 setImageResource(iconRes)
-                layoutParams = LinearLayout.LayoutParams(dp(16), dp(16))
+                layoutParams = LinearLayout.LayoutParams(dp(14), dp(14))
             })
-            addView(Ds.text(this@FloatingMenuService, 11f, Ds.TEXT, bold = true).apply {
+            addView(Ds.text(this@FloatingMenuService, 10f, Ds.TEXT, bold = true).apply {
                 text = value?.let { Ds.compactNumber(it) } ?: "—"
                 setPadding(dp(3), 0, 0, 0)
                 fontFeatureSettings = "tnum"
@@ -2020,19 +2113,6 @@ class FloatingMenuService : Service() {
         }
     }
 
-    private fun updateScanButton() {
-        scanButton?.apply {
-            val state = BotState.state.value
-            val captureBusy = resultsCapture.isActive() && !manualWatch && !autoWatch
-            text = when {
-                manualWatch -> "Stop scan"
-                autoWatch -> "Stop auto scan"
-                else -> "Scan now"
-            }
-            isEnabled = manualWatch || autoWatch ||
-                (!state.isBusy && !captureBusy)
-        }
-    }
 
     private fun formatClockOfDay(timestamp: Long): String =
         SimpleDateFormat("HH:mm", Locale.US).format(Date(timestamp))
@@ -2082,6 +2162,7 @@ class FloatingMenuService : Service() {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
                 setPadding(dp(10), dp(7), dp(2), dp(7))
+                minimumHeight = dp(62)
                 if (macro.id == selectedId) {
                     background = Ds.rounded(
                         Ds.SELECTED_ROW,
@@ -2104,7 +2185,7 @@ class FloatingMenuService : Service() {
             info.addView(TextView(this).apply {
                 text = if (macro.pinned) "PIN · ${macro.name}" else macro.name
                 setTextColor(Ds.TEXT)
-                textSize = 15f
+                textSize = 14f
                 setTypeface(typeface, android.graphics.Typeface.BOLD)
                 maxLines = 1
                 ellipsize = android.text.TextUtils.TruncateAt.END
@@ -2112,33 +2193,21 @@ class FloatingMenuService : Service() {
             info.addView(TextView(this).apply {
                 text = "${macro.gestures.size} gestures · ${formatDuration(macro.durationMs)}"
                 setTextColor(Ds.MUTED)
-                textSize = 12f
+                textSize = 11f
                 maxLines = 1
-                ellipsize = android.text.TextUtils.TruncateAt.END
-                setPadding(0, dp(1), 0, dp(5))
+                setPadding(0, dp(1), 0, dp(1))
             })
-            val chips = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-            }
-            chips.addView(macroChip(MacroTimeline.formatSpeed(macro.speedMultiplier)))
-            chips.addView(macroChip(MacroTimeline.repeatLabel(macro.repeatMode)))
-            chips.addView(macroChip(macroDelayLabel(macro)))
-            info.addView(chips)
+            info.addView(TextView(this).apply {
+                text = MacroTimeline.formatSpeed(macro.speedMultiplier) + " · " +
+                    MacroTimeline.repeatLabel(macro.repeatMode) + " · " +
+                    macroDelayLabel(macro)
+                setTextColor(Ds.META_ACCENT)
+                textSize = 11f
+                maxLines = 1
+            })
             row.addView(info)
-            val play = ImageButton(this).apply {
-                setImageResource(R.drawable.ic_play)
-                contentDescription = "Play ${macro.name}"
-                background = android.graphics.drawable.GradientDrawable().apply {
-                    shape = android.graphics.drawable.GradientDrawable.OVAL
-                    setColor(Ds.PLAY)
-                }
-                imageTintList = ColorStateList.valueOf(Color.WHITE)
-                scaleType = ImageView.ScaleType.FIT_CENTER
-                setPadding(dp(13), dp(13), dp(13), dp(13))
-                layoutParams = LinearLayout.LayoutParams(dp(48), dp(48)).apply {
-                    marginStart = dp(4)
-                }
+            val play = FrameLayout(this).apply {
+                layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
                 setOnClickListener {
                     haptic()
                     selectedId = macro.id
@@ -2147,25 +2216,56 @@ class FloatingMenuService : Service() {
                     startPlayback(macro)
                 }
             }
+            play.addView(
+                ImageView(this).apply {
+                    setImageResource(R.drawable.ic_play)
+                    imageTintList = ColorStateList.valueOf(Color.WHITE)
+                    background = android.graphics.drawable.GradientDrawable().apply {
+                        shape = android.graphics.drawable.GradientDrawable.OVAL
+                        setColor(Ds.PLAY)
+                    }
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                    setPadding(dp(10), dp(10), dp(10), dp(10))
+                    layoutParams = FrameLayout.LayoutParams(dp(36), dp(36), Gravity.CENTER)
+                }
+            )
             row.addView(play)
-            row.addView(iconButton(R.drawable.ic_gear, "Settings for ${macro.name}") {
+            row.addView(plainIconButton(R.drawable.ic_gear, "Settings for ${macro.name}") {
                 haptic()
                 showMacroSettings(macro)
             })
             container.addView(row)
-            container.addView(Ds.spacer(this, 2))
+        }
+
+        view.post {
+            val scroll = view.findViewById<ScrollView>(R.id.macroScroll) ?: return@post
+            val first = container.getChildAt(0) ?: return@post
+            val rowHeight = first.height.takeIf { it > 0 } ?: return@post
+            val undoVisible = view.findViewById<View>(R.id.undoRow)?.visibility == View.VISIBLE
+            val maxPanel = (screenHeight * 0.90f).toInt()
+            val fixed = dp(if (undoVisible) 244 else 190)
+            val available = (maxPanel - fixed).coerceAtLeast(rowHeight)
+            val rows = (available / rowHeight).coerceIn(1, 4)
+            val target = rows * rowHeight + dp(2)
+            if (scroll.layoutParams.height != target) {
+                scroll.layoutParams = scroll.layoutParams.apply { height = target }
+            }
         }
     }
 
-    private fun macroChip(text: String): TextView =
-        Ds.text(this, 11f, Ds.MUTED, bold = true).apply {
-            this.text = text
-            background = Ds.pill(Ds.BUTTON, this@FloatingMenuService)
-            setPadding(dp(9), dp(3), dp(9), dp(3))
-            layoutParams = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            ).apply { marginEnd = dp(4) }
+    private fun plainIconButton(
+        iconRes: Int,
+        description: String,
+        onClick: () -> Unit
+    ): ImageButton =
+        ImageButton(this).apply {
+            setImageResource(iconRes)
+            contentDescription = description
+            background = null
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            setPadding(dp(10), dp(10), dp(10), dp(10))
+            layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
+            setOnClickListener { onClick() }
         }
 
     private fun iconButton(iconRes: Int, description: String, onClick: () -> Unit): ImageButton =
@@ -2183,7 +2283,7 @@ class FloatingMenuService : Service() {
 
     private fun macroDelayLabel(macro: Macro): String {
         val delay = macro.effectiveRepeatDelayMs
-        return if (delay <= 0L) "no gap" else formatDelaySeconds(delay) + "s gap"
+        return if (delay <= 0L) "no delay" else formatDelaySeconds(delay) + "s delay"
     }
 
     private fun saveRecording() {
@@ -2254,16 +2354,35 @@ class FloatingMenuService : Service() {
         var pinned: Boolean
     )
 
+    private var settingsPage = 0
+
     private fun showMacroSettings(macro: Macro) {
         val view = controllerView ?: return
         val host = view.findViewById<FrameLayout>(R.id.settingsHost) ?: return
         if (settingsView != null) closeMacroSettings()
 
+        controllerParams?.let { params ->
+            params.y = dp(48)
+            try {
+                windowManager.updateViewLayout(view, params)
+            } catch (_: Exception) {
+                // Window detached.
+            }
+        }
+        view.findViewById<View>(R.id.controllerHeader).visibility = View.GONE
+        view.findViewById<View>(R.id.contentFrame).visibility = View.GONE
+        applyPanelWidth(settings = true)
+        setSettingsFocusable(true)
+
         val draft = SettingsDraft(
             name = macro.name,
             speed = MacroTimeline.clampSpeed(macro.speedMultiplier),
             repeat = macro.repeatMode,
-            repeatCount = MacroTimeline.repeatCount(macro.repeatMode),
+            repeatCount = if (MacroTimeline.isCustomRepeat(macro.repeatMode)) {
+                MacroTimeline.repeatCount(macro.repeatMode)
+            } else {
+                10
+            },
             delayMs = macro.effectiveRepeatDelayMs,
             countdownSec = (macro.effectiveStartCountdownMs / 1000L).toInt(),
             stopOnBackground = macro.stopOnBackground,
@@ -2278,10 +2397,10 @@ class FloatingMenuService : Service() {
         settingsView = root
         settingsMacroId = macro.id
         host.visibility = View.VISIBLE
-        view.findViewById<View>(R.id.pageTabs).visibility = View.GONE
-        view.findViewById<View>(R.id.contentFrame).visibility = View.GONE
 
+        settingsPage = 0
         val error = Ds.text(this, 10f, Ds.DANGER_TEXT).apply { visibility = View.GONE }
+        val landscape = screenWidth > screenHeight
 
         fun showError(message: String) {
             error.text = message
@@ -2320,23 +2439,38 @@ class FloatingMenuService : Service() {
             }
         }
 
-        fun actionButton(text: String, danger: Boolean = false, onClick: () -> Unit): Button =
+        fun tabButton(text: String, selected: Boolean, onClick: () -> Unit): TextView =
+            Ds.text(this, 11f, if (selected) android.graphics.Color.WHITE else Ds.MUTED, bold = true).apply {
+                this.text = text
+                gravity = Gravity.CENTER
+                background = Ds.rounded(
+                    if (selected) Ds.ACCENT else android.graphics.Color.TRANSPARENT,
+                    8,
+                    this@FloatingMenuService
+                )
+                layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f)
+                isClickable = true
+                setOnClickListener {
+                    haptic()
+                    onClick()
+                }
+            }
+
+        fun footerButton(text: String, primary: Boolean, onClick: () -> Unit): Button =
             Button(this).apply {
                 this.text = text
-                textSize = 12f
+                textSize = 13f
                 isAllCaps = false
                 minWidth = 0
-                minimumWidth = 0
-                setPadding(dp(10), 0, dp(10), 0)
-                setTextColor(if (danger) Ds.DANGER_TEXT else Ds.TEXT)
+                stateListAnimator = null
+                setTextColor(if (primary) android.graphics.Color.WHITE else Ds.TEXT)
                 background = Ds.rounded(
-                    if (danger) Ds.PANEL else Ds.BUTTON,
+                    if (primary) Ds.ACCENT else Ds.BUTTON,
                     10,
-                    this@FloatingMenuService,
-                    if (danger) Ds.DANGER_OUTLINE else null
+                    this@FloatingMenuService
                 )
                 layoutParams = LinearLayout.LayoutParams(0, dp(48), 1f).apply {
-                    marginEnd = dp(8)
+                    marginStart = if (primary) dp(8) else 0
                 }
                 setOnClickListener {
                     haptic()
@@ -2344,35 +2478,39 @@ class FloatingMenuService : Service() {
                 }
             }
 
-        val header = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, dp(2), 0, dp(2))
-        }
-        header.addView(iconButton(R.drawable.ic_back, "Back to macros") { closeMacroSettings() })
-        header.addView(
-            Ds.text(this, 15f, Ds.TEXT, bold = true).apply {
-                text = macro.name
+        fun autoLabel(text: String, size: Float): TextView {
+            val label = Ds.text(this, size, Ds.MUTED).apply {
+                this.text = text
                 maxLines = 1
-                ellipsize = android.text.TextUtils.TruncateAt.END
-            },
-            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                marginStart = dp(4)
             }
-        )
-        header.addView(Ds.text(this, 12f, Ds.MUTED).apply { text = "Settings" })
+            TextViewCompat.setAutoSizeTextTypeUniformWithConfiguration(
+                label,
+                10,
+                size.toInt().coerceAtLeast(10),
+                1,
+                TypedValue.COMPLEX_UNIT_SP
+            )
+            return label
+        }
 
-        fun labelRow(label: String, control: View): View {
+        fun row(label: String, control: View, labelSize: Float = 13f): View {
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                minimumHeight = dp(52)
+                minimumHeight = dp(44)
                 setPadding(0, dp(2), 0, dp(2))
             }
             row.addView(
-                Ds.text(this, 13f, Ds.MUTED).apply { text = label },
+                autoLabel(label, labelSize),
                 LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             )
+            control.layoutParams = (
+                control.layoutParams as? LinearLayout.LayoutParams
+                    ?: LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    )
+                ).apply { marginStart = dp(6) }
             row.addView(control)
             return row
         }
@@ -2381,7 +2519,8 @@ class FloatingMenuService : Service() {
             valueText: () -> String,
             enabled: Boolean = true,
             onMinus: () -> Unit,
-            onPlus: () -> Unit
+            onPlus: () -> Unit,
+            onTap: () -> Unit
         ): LinearLayout {
             val box = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
@@ -2394,49 +2533,95 @@ class FloatingMenuService : Service() {
                 bold = true
             ).apply {
                 gravity = Gravity.CENTER
-                minWidth = dp(54)
-                minHeight = dp(48)
+                minWidth = dp(44)
+                minHeight = dp(44)
                 text = valueText()
+                fontFeatureSettings = "tnum"
+                setOnClickListener {
+                    if (enabled) {
+                        haptic()
+                        onTap()
+                    }
+                }
             }
             fun refresh() {
                 value.text = valueText()
                 value.setTextColor(if (enabled) Ds.TEXT else 0xFF5B6B8A.toInt())
             }
-            val minus = iconButton(R.drawable.ic_minus, "Decrease") {
-                if (enabled) {
-                    onMinus()
-                    refresh()
-                    clearError()
+            fun stepButton(text: String, onClick: () -> Unit): FrameLayout {
+                val holder = FrameLayout(this).apply {
+                    layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
                 }
+                holder.addView(
+                    TextView(this).apply {
+                        this.text = text
+                        gravity = Gravity.CENTER
+                        textSize = 20f
+                        setTextColor(Ds.TEXT)
+                        background = Ds.pill(Ds.BUTTON, this@FloatingMenuService)
+                        layoutParams = FrameLayout.LayoutParams(dp(32), dp(32), Gravity.CENTER)
+                        setOnClickListener {
+                            if (enabled) {
+                                haptic()
+                                onClick()
+                                refresh()
+                                clearError()
+                            }
+                        }
+                    }
+                )
+                return holder
             }
-            val plus = iconButton(R.drawable.ic_plus, "Increase") {
-                if (enabled) {
-                    onPlus()
-                    refresh()
-                    clearError()
-                }
-            }
-            box.addView(minus)
+            box.addView(stepButton("−", onMinus))
             box.addView(value)
-            box.addView(plus)
+            box.addView(stepButton("+", onPlus))
             return box
         }
 
-        fun enabledSwitch(checked: Boolean, onChange: (Boolean) -> Unit): Switch =
-            Switch(this).apply {
-                isChecked = checked
-                setOnCheckedChangeListener { _, value ->
-                    haptic()
-                    onChange(value)
+        fun toggle(checked: Boolean, onChange: (Boolean) -> Unit): View {
+            var value = checked
+            val container = FrameLayout(this).apply {
+                layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
+            }
+            val track = View(this)
+            val thumb = View(this).apply { elevation = dp(1).toFloat() }
+            fun paint() {
+                track.background = Ds.pill(
+                    if (value) Ds.SWITCH_ON else Ds.SWITCH_OFF_TRACK,
+                    this@FloatingMenuService,
+                    if (value) null else Ds.SWITCH_OFF_BORDER
+                )
+                thumb.background = Ds.pill(Color.WHITE, this@FloatingMenuService)
+                thumb.layoutParams = FrameLayout.LayoutParams(
+                    dp(20),
+                    dp(20),
+                    Gravity.CENTER_VERTICAL or if (value) Gravity.END else Gravity.START
+                ).apply {
+                    marginStart = dp(3)
+                    marginEnd = dp(3)
                 }
             }
+            container.addView(
+                track,
+                FrameLayout.LayoutParams(dp(44), dp(26), Gravity.CENTER)
+            )
+            container.addView(thumb)
+            paint()
+            container.setOnClickListener {
+                haptic()
+                value = !value
+                paint()
+                onChange(value)
+            }
+            return container
+        }
 
         fun segmented(
             options: List<Pair<String, String>>,
             isSelected: (String) -> Boolean,
             onSelect: (String) -> Unit
         ): LinearLayout {
-            val row = LinearLayout(this).apply {
+            val track = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 background = Ds.rounded(Ds.INPUT, 10, this@FloatingMenuService)
                 setPadding(dp(3), dp(3), dp(3), dp(3))
@@ -2456,16 +2641,16 @@ class FloatingMenuService : Service() {
                 }
             }
             options.forEach { (key, label) ->
-                val button = Ds.text(this, 12f, Ds.MUTED, bold = true).apply {
+                val button = Ds.text(this, 11f, Ds.MUTED, bold = true).apply {
                     tag = key
                     text = label
                     gravity = Gravity.CENTER
-                    setPadding(dp(10), 0, dp(10), 0)
-                    minHeight = dp(42)
-                    minWidth = dp(54)
+                    maxLines = 1
+                    minHeight = dp(34)
+                    setPadding(dp(8), 0, dp(8), 0)
                     layoutParams = LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.WRAP_CONTENT,
-                        dp(42)
+                        dp(44)
                     )
                     setOnClickListener {
                         haptic()
@@ -2475,286 +2660,683 @@ class FloatingMenuService : Service() {
                     }
                 }
                 buttons.add(button)
-                row.addView(button)
+                track.addView(button)
             }
             paint()
-            return row
+            return track
         }
 
-        var repeatCountAlpha: TextView? = null
+        var renderPage: () -> Unit = {}
 
-        fun textField(value: String, onEdit: () -> Unit): TextView =
-            Ds.text(this, 14f, Ds.TEXT).apply {
-                text = value
+        fun nameField(): TextView = Ds.text(this, 13f, Ds.TEXT).apply {
+            text = draft.name
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            setPadding(dp(10), 0, dp(10), 0)
+            layoutParams = LinearLayout.LayoutParams(dp(170), dp(40))
+            gravity = Gravity.CENTER_VERTICAL
+            background = Ds.rounded(Ds.INPUT, 10, this@FloatingMenuService, Ds.PANEL_BORDER)
+            isClickable = true
+            setOnClickListener {
+                haptic()
+                openTextEditor("Macro name", draft.name, MacroInputActivity.KIND_NAME) { result ->
+                    val trimmed = result?.trim()?.take(40).orEmpty()
+                    if (trimmed.isNotEmpty()) {
+                        draft.name = trimmed
+                        renderPage()
+                    }
+                }
+            }
+        }
+
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(48)
+            )
+        }
+        header.addView(plainIconButton(R.drawable.ic_back, "Back to macros") {
+            if (settingsPage > 0) {
+                settingsPage = 0
+                renderPage()
+            } else {
+                closeMacroSettings()
+            }
+        })
+        header.addView(
+            Ds.text(this, 14f, Ds.TEXT, bold = true).apply {
+                text = macro.name
                 maxLines = 1
                 ellipsize = android.text.TextUtils.TruncateAt.END
-                setPadding(dp(12), 0, dp(12), 0)
-                minHeight = dp(44)
-                minWidth = dp(150)
-                gravity = Gravity.CENTER_VERTICAL
-                background = Ds.rounded(Ds.INPUT, 10, this@FloatingMenuService, Ds.PANEL_BORDER)
-                isClickable = true
-                contentDescription = "Name: $value"
-                setOnClickListener {
-                    haptic()
-                    onEdit()
-                }
-            }
-
-        fun openNameEditor(current: String) {
-            openTextEditor("Macro name", current, MacroInputActivity.KIND_NAME) { result ->
-                val trimmed = result?.trim()?.take(40).orEmpty()
-                if (trimmed.isNotEmpty()) {
-                    draft.name = trimmed
-                    showMacroSettings(draftMacro())
-                }
-            }
-        }
-
-        val nameField = textField(draft.name) { openNameEditor(draft.name) }
-        val speedStepper = stepper(
-            valueText = { MacroTimeline.formatSpeed(draft.speed) },
-            onMinus = { draft.speed = MacroTimeline.stepSpeed(draft.speed, -1) },
-            onPlus = { draft.speed = MacroTimeline.stepSpeed(draft.speed, 1) }
-        )
-        val repeatSegment = segmented(
-            options = listOf(
-                Macro.REPEAT_ONCE to "Once",
-                Macro.REPEAT_INFINITE to "Loop",
-                "custom" to "Custom"
-            ),
-            isSelected = {
-                if (it == "custom") MacroTimeline.isCustomRepeat(draft.repeat)
-                else draft.repeat == it
             },
-            onSelect = {
-                draft.repeat = if (it == "custom") {
-                    MacroTimeline.customRepeatMode(draft.repeatCount)
-                } else {
-                    it
-                }
-                repeatCountAlpha?.alpha =
-                    if (MacroTimeline.isCustomRepeat(draft.repeat)) 1f else 0.45f
-            }
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         )
-        val repeatCountStepper = stepper(
-            valueText = { draft.repeatCount.toString() },
-            onMinus = {
-                draft.repeatCount = (draft.repeatCount - 1).coerceAtLeast(1)
-                draft.repeat = MacroTimeline.customRepeatMode(draft.repeatCount)
-            },
-            onPlus = {
-                draft.repeatCount = (draft.repeatCount + 1).coerceAtMost(Macro.MAX_CUSTOM_REPEAT)
-                draft.repeat = MacroTimeline.customRepeatMode(draft.repeatCount)
-            }
-        )
-        repeatCountAlpha = repeatCountStepper.getChildAt(1) as? TextView
-        val delayStepper = stepper(
-            valueText = { formatDelaySeconds(draft.delayMs) + " s" },
-            onMinus = { draft.delayMs = (draft.delayMs - 200L).coerceAtLeast(0L) },
-            onPlus = { draft.delayMs = (draft.delayMs + 200L).coerceAtMost(Macro.MAX_REPEAT_DELAY_MS) }
-        )
-        val countdownStepper = stepper(
-            valueText = { "${draft.countdownSec} s" },
-            onMinus = { draft.countdownSec = (draft.countdownSec - 1).coerceAtLeast(0) },
-            onPlus = { draft.countdownSec = (draft.countdownSec + 1).coerceAtMost(30) }
-        )
-
-        val minutesStepper = stepper(
-            valueText = { (draft.stopMinutes ?: 30).toString() },
-            enabled = draft.stopMinutes != null,
-            onMinus = {
-                draft.stopMinutes = ((draft.stopMinutes ?: 30) - 1)
-                    .coerceIn(1, Macro.MAX_STOP_AFTER_MINUTES)
-            },
-            onPlus = {
-                draft.stopMinutes = ((draft.stopMinutes ?: 30) + 1)
-                    .coerceIn(1, Macro.MAX_STOP_AFTER_MINUTES)
-            }
-        )
-        val minutesSwitch = enabledSwitch(draft.stopMinutes != null) { checked ->
-            draft.stopMinutes = if (checked) 30 else null
-            minutesStepper.alpha = if (checked) 1f else 0.45f
+        val moreButton = plainIconButton(R.drawable.ic_more, "More actions") {}
+        moreButton.setOnClickListener {
+            showSettingsMenu(moreButton, macro, draft, onDeleted = { showUndo(macro) })
         }
-        minutesStepper.alpha = if (draft.stopMinutes != null) 1f else 0.45f
+        header.addView(moreButton)
+        header.addView(plainIconButton(R.drawable.ic_minimize, "Minimize controller") {
+            closeMacroSettings()
+            collapseController()
+        })
+        header.addView(plainIconButton(R.drawable.ic_close, "Close controller") {
+            closeMacroSettings()
+            requestClose()
+        })
 
-        val attacksStepper = stepper(
-            valueText = { (draft.stopAttacks ?: 10).toString() },
-            enabled = draft.stopAttacks != null,
-            onMinus = {
-                draft.stopAttacks = ((draft.stopAttacks ?: 10) - 1)
-                    .coerceIn(1, Macro.MAX_STOP_AFTER_ATTACKS)
-            },
-            onPlus = {
-                draft.stopAttacks = ((draft.stopAttacks ?: 10) + 1)
-                    .coerceIn(1, Macro.MAX_STOP_AFTER_ATTACKS)
+        val tabs = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            background = Ds.rounded(Ds.INPUT, 10, this@FloatingMenuService)
+            setPadding(dp(3), dp(3), dp(3), dp(3))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(50)
+            ).apply { topMargin = dp(4) }
+        }
+        var playbackTab: TextView? = null
+        var stopTab: TextView? = null
+        playbackTab = tabButton("Playback", settingsPage == 0) {
+            settingsPage = 0
+            renderPage()
+        }
+        stopTab = tabButton("Stop conditions", settingsPage == 1) {
+            settingsPage = 1
+            renderPage()
+        }
+        tabs.addView(playbackTab)
+        tabs.addView(stopTab)
+
+        val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val scroll = ScrollView(this).apply {
+            isVerticalScrollBarEnabled = false
+            addView(content)
+        }
+        val dots = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            setPadding(0, dp(4), 0, 0)
+        }
+        val dotA = View(this).apply {
+            background = Ds.pill(Ds.ACCENT, this@FloatingMenuService)
+            layoutParams = LinearLayout.LayoutParams(dp(6), dp(6)).apply { marginEnd = dp(4) }
+        }
+        val dotB = View(this).apply {
+            background = Ds.pill(Ds.MUTED, this@FloatingMenuService)
+            layoutParams = LinearLayout.LayoutParams(dp(6), dp(6))
+        }
+        dots.addView(dotA)
+        dots.addView(dotB)
+
+        fun updateTabs() {
+            val selected = 0xFF2563EB.toInt()
+            val clear = android.graphics.Color.TRANSPARENT
+            playbackTab?.apply {
+                background = Ds.rounded(
+                    if (settingsPage == 0) selected else clear,
+                    8,
+                    this@FloatingMenuService
+                )
+                setTextColor(if (settingsPage == 0) android.graphics.Color.WHITE else Ds.MUTED)
             }
-        )
-        val attacksSwitch = enabledSwitch(draft.stopAttacks != null) { checked ->
-            draft.stopAttacks = if (checked) 10 else null
-            attacksStepper.alpha = if (checked) 1f else 0.45f
-        }
-        attacksStepper.alpha = if (draft.stopAttacks != null) 1f else 0.45f
-
-        val pinSwitch = enabledSwitch(draft.pinned) { draft.pinned = it }
-        val stopBackgroundSwitch = enabledSwitch(draft.stopOnBackground) {
-            draft.stopOnBackground = it
-        }
-
-        val landscape = screenWidth > screenHeight
-        val left = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val right = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        val columns = LinearLayout(this).apply {
-            orientation = if (landscape) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
-        }
-        if (landscape) {
-            columns.addView(left, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-            columns.addView(
-                right,
-                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
-                    marginStart = dp(24)
-                }
+            stopTab?.apply {
+                background = Ds.rounded(
+                    if (settingsPage == 1) selected else clear,
+                    8,
+                    this@FloatingMenuService
+                )
+                setTextColor(if (settingsPage == 1) android.graphics.Color.WHITE else Ds.MUTED)
+            }
+            dotA.background = Ds.pill(
+                if (settingsPage == 0) Ds.ACCENT else Ds.MUTED,
+                this@FloatingMenuService
             )
-        } else {
-            columns.addView(left, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
-            columns.addView(right, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            dotB.background = Ds.pill(
+                if (settingsPage == 1) Ds.ACCENT else Ds.MUTED,
+                this@FloatingMenuService
+            )
         }
 
-        fun addRow(column: LinearLayout, label: String, control: View) {
-            column.addView(labelRow(label, control))
+        fun addDivider(column: LinearLayout) {
             column.addView(Ds.divider(this))
         }
 
-        addRow(left, "Name", nameField)
-        addRow(left, "Speed", speedStepper)
-        left.addView(labelRow("Repeat", repeatSegment))
-        left.addView(Ds.divider(this))
-        addRow(left, "Repeat count", repeatCountStepper)
-        addRow(left, "Delay between repeats", delayStepper)
-        addRow(left, "Start countdown", countdownStepper)
-
-        val info = Ds.text(this, 11f, Ds.MUTED).apply {
-            val lastPlayed = macro.lastPlayedAt?.let {
-                SimpleDateFormat("MM/dd HH:mm", Locale.US).format(Date(it))
-            } ?: "never"
-            text = "${macro.gestures.size} gestures · ${formatDuration(macro.durationMs)} · " +
-                "Played ${macro.playCount} time(s)\nCreated " +
-                SimpleDateFormat("MM/dd HH:mm", Locale.US).format(Date(macro.createdAt)) +
-                " · Last played $lastPlayed"
+        fun addRow(column: LinearLayout, label: String, control: View, labelSize: Float = 13f) {
+            column.addView(row(label, control, labelSize))
+            addDivider(column)
         }
-        right.addView(
-            Ds.text(this, 11f, Ds.MUTED, caps = true).apply {
-                text = "Stop conditions"
-                setPadding(0, dp(8), 0, dp(4))
+
+        fun editRepeatCount() {
+            openTextEditor(
+                "Repeat count",
+                draft.repeatCount.toString(),
+                MacroInputActivity.KIND_NUMBER
+            ) { text ->
+                val value = text?.toIntOrNull()
+                if (value != null && value in 1..Macro.MAX_CUSTOM_REPEAT) {
+                    draft.repeatCount = value
+                    draft.repeat = MacroTimeline.customRepeatMode(value)
+                    renderPage()
+                }
             }
-        )
-        right.addView(labelRow("Game leaves foreground", stopBackgroundSwitch))
-        right.addView(Ds.divider(this))
-
-        val minutesRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            minimumHeight = dp(52)
         }
-        minutesRow.addView(
-            Ds.text(this, 13f, Ds.MUTED).apply { text = "After minutes" },
-            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-        )
-        minutesRow.addView(minutesStepper)
-        minutesRow.addView(minutesSwitch)
-        right.addView(minutesRow)
-        right.addView(Ds.divider(this))
 
-        val attacksRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            minimumHeight = dp(52)
-        }
-        attacksRow.addView(
-            Ds.text(this, 13f, Ds.MUTED).apply { text = "After attacks" },
-            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-        )
-        attacksRow.addView(attacksStepper)
-        attacksRow.addView(attacksSwitch)
-        right.addView(attacksRow)
-        right.addView(Ds.divider(this))
-        right.addView(labelRow("Pin to top", pinSwitch))
-        right.addView(Ds.divider(this))
-        right.addView(info)
-        right.addView(Ds.spacer(this, 4))
-
-        val scroll = ScrollView(this).apply {
-            isFillViewport = false
-            addView(columns)
-        }
-        root.addView(header)
-        root.addView(Ds.divider(this))
-        root.addView(
-            scroll,
-            LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                (screenHeight * 0.90f - dp(220)).toInt().coerceAtLeast(dp(120))
-            )
-        )
-        root.addView(Ds.divider(this))
-        root.addView(error)
-
-        val actions = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(0, dp(6), 0, 0)
-        }
-        actions.addView(
-            LinearLayout(this@FloatingMenuService).apply {
-                orientation = LinearLayout.HORIZONTAL
-                addView(actionButton("Duplicate") {
-                    persist { saved ->
-                        scope.launch {
-                            val copy = repository.duplicate(saved.id)
-                            closeMacroSettings()
-                            toast(
-                                if (copy != null) "Duplicated as \"${copy.name}\""
-                                else "Duplicate failed"
-                            )
+        fun playbackPage() {
+            val labelSize = if (landscape) 12f else 13f
+            if (landscape) {
+                val columns = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                val left = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                }
+                val right = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                        marginStart = dp(12)
+                    }
+                }
+                addRow(left, "Name", nameField(), labelSize)
+                addRow(left, "Speed", stepper(
+                    { MacroTimeline.formatSpeed(draft.speed) },
+                    onMinus = { draft.speed = MacroTimeline.stepSpeed(draft.speed, -1) },
+                    onPlus = { draft.speed = MacroTimeline.stepSpeed(draft.speed, 1) },
+                    onTap = {
+                        openTextEditor(
+                            "Speed",
+                            draft.speed.toString(),
+                            MacroInputActivity.KIND_DECIMAL
+                        ) { text ->
+                            text?.toFloatOrNull()?.let {
+                                draft.speed = MacroTimeline.clampSpeed(it)
+                                renderPage()
+                            }
                         }
                     }
-                })
-                addView(actionButton("Reset") {
-                    showMacroSettings(
-                        macro.copy(
-                            speedMultiplier = 1f,
-                            repeatMode = Macro.REPEAT_ONCE,
-                            repeatDelayMs = Macro.LEGACY_REPEAT_DELAY_MS,
-                            startCountdownMs = 0L,
-                            stopOnBackground = true,
-                            stopAfterMinutes = null,
-                            stopAfterAttacks = null,
-                            pinned = false
-                        )
-                    )
-                })
-                addView(actionButton("Delete", danger = true) { deleteMacro(macro) })
-            }
-        )
-        actions.addView(
-            LinearLayout(this@FloatingMenuService).apply {
-                orientation = LinearLayout.HORIZONTAL
-                setPadding(0, dp(8), 0, 0)
-                addView(actionButton("Cancel") { closeMacroSettings() })
-                addView(actionButton("Save") {
-                    persist { saved ->
-                        closeMacroSettings()
-                        BotState.setStatus("Settings saved for \"${saved.name}\"")
-                        toast("Saved")
+                ), labelSize)
+                addRow(left, "Repeat", segmented(
+                    options = listOf(
+                        Macro.REPEAT_ONCE to "Once",
+                        Macro.REPEAT_INFINITE to "Loop",
+                        "custom" to "Custom"
+                    ),
+                    isSelected = {
+                        if (it == "custom") MacroTimeline.isCustomRepeat(draft.repeat)
+                        else draft.repeat == it
+                    },
+                    onSelect = {
+                        draft.repeat = if (it == "custom") {
+                            MacroTimeline.customRepeatMode(draft.repeatCount)
+                        } else {
+                            it
+                        }
+                        renderPage()
                     }
-                })
+                ), labelSize)
+                if (MacroTimeline.isCustomRepeat(draft.repeat)) {
+                    addRow(right, "Repeat count", stepper(
+                        { draft.repeatCount.toString() },
+                        onMinus = {
+                            draft.repeatCount = (draft.repeatCount - 1).coerceAtLeast(1)
+                        },
+                        onPlus = {
+                            draft.repeatCount = (draft.repeatCount + 1)
+                                .coerceAtMost(Macro.MAX_CUSTOM_REPEAT)
+                        },
+                        onTap = { editRepeatCount() }
+                    ), labelSize)
+                }
+                addRow(right, "Repeat delay", stepper(
+                    { formatDelaySeconds(draft.delayMs) + " s" },
+                    onMinus = { draft.delayMs = (draft.delayMs - 200L).coerceAtLeast(0L) },
+                    onPlus = { draft.delayMs = (draft.delayMs + 200L).coerceAtMost(Macro.MAX_REPEAT_DELAY_MS) },
+                    onTap = {
+                        openTextEditor(
+                            "Repeat delay (seconds)",
+                            formatDelaySeconds(draft.delayMs),
+                            MacroInputActivity.KIND_DECIMAL
+                        ) { text ->
+                            val seconds = text?.toDoubleOrNull()
+                            if (seconds != null && seconds.isFinite() && seconds in 0.0..600.0) {
+                                draft.delayMs = (seconds * 1000.0).roundToLong()
+                                renderPage()
+                            }
+                        }
+                    }
+                ), labelSize)
+                addRow(right, "Countdown", stepper(
+                    { "${draft.countdownSec} s" },
+                    onMinus = { draft.countdownSec = (draft.countdownSec - 1).coerceAtLeast(0) },
+                    onPlus = { draft.countdownSec = (draft.countdownSec + 1).coerceAtMost(30) },
+                    onTap = {
+                        openTextEditor(
+                            "Countdown (seconds)",
+                            draft.countdownSec.toString(),
+                            MacroInputActivity.KIND_NUMBER
+                        ) { text ->
+                            val value = text?.toIntOrNull()
+                            if (value != null && value in 0..30) {
+                                draft.countdownSec = value
+                                renderPage()
+                            }
+                        }
+                    }
+                ), labelSize)
+                columns.addView(left)
+                columns.addView(right)
+                content.addView(columns)
+            } else {
+                addRow(content, "Name", nameField())
+                addRow(content, "Speed", stepper(
+                    { MacroTimeline.formatSpeed(draft.speed) },
+                    onMinus = { draft.speed = MacroTimeline.stepSpeed(draft.speed, -1) },
+                    onPlus = { draft.speed = MacroTimeline.stepSpeed(draft.speed, 1) },
+                    onTap = {
+                        openTextEditor(
+                            "Speed",
+                            draft.speed.toString(),
+                            MacroInputActivity.KIND_DECIMAL
+                        ) { text ->
+                            text?.toFloatOrNull()?.let {
+                                draft.speed = MacroTimeline.clampSpeed(it)
+                                renderPage()
+                            }
+                        }
+                    }
+                ))
+                addRow(content, "Repeat", segmented(
+                    options = listOf(
+                        Macro.REPEAT_ONCE to "Once",
+                        Macro.REPEAT_INFINITE to "Loop",
+                        "custom" to "Custom"
+                    ),
+                    isSelected = {
+                        if (it == "custom") MacroTimeline.isCustomRepeat(draft.repeat)
+                        else draft.repeat == it
+                    },
+                    onSelect = {
+                        draft.repeat = if (it == "custom") {
+                            MacroTimeline.customRepeatMode(draft.repeatCount)
+                        } else {
+                            it
+                        }
+                        renderPage()
+                    }
+                ))
+                if (MacroTimeline.isCustomRepeat(draft.repeat)) {
+                    addRow(content, "Repeat count", stepper(
+                        { draft.repeatCount.toString() },
+                        onMinus = {
+                            draft.repeatCount = (draft.repeatCount - 1).coerceAtLeast(1)
+                        },
+                        onPlus = {
+                            draft.repeatCount = (draft.repeatCount + 1)
+                                .coerceAtMost(Macro.MAX_CUSTOM_REPEAT)
+                        },
+                        onTap = { editRepeatCount() }
+                    ))
+                }
+                addRow(content, "Repeat delay", stepper(
+                    { formatDelaySeconds(draft.delayMs) + " s" },
+                    onMinus = { draft.delayMs = (draft.delayMs - 200L).coerceAtLeast(0L) },
+                    onPlus = { draft.delayMs = (draft.delayMs + 200L).coerceAtMost(Macro.MAX_REPEAT_DELAY_MS) },
+                    onTap = {
+                        openTextEditor(
+                            "Repeat delay (seconds)",
+                            formatDelaySeconds(draft.delayMs),
+                            MacroInputActivity.KIND_DECIMAL
+                        ) { text ->
+                            val seconds = text?.toDoubleOrNull()
+                            if (seconds != null && seconds.isFinite() && seconds in 0.0..600.0) {
+                                draft.delayMs = (seconds * 1000.0).roundToLong()
+                                renderPage()
+                            }
+                        }
+                    }
+                ))
+                addRow(content, "Countdown", stepper(
+                    { "${draft.countdownSec} s" },
+                    onMinus = { draft.countdownSec = (draft.countdownSec - 1).coerceAtLeast(0) },
+                    onPlus = { draft.countdownSec = (draft.countdownSec + 1).coerceAtMost(30) },
+                    onTap = {
+                        openTextEditor(
+                            "Countdown (seconds)",
+                            draft.countdownSec.toString(),
+                            MacroInputActivity.KIND_NUMBER
+                        ) { text ->
+                            val value = text?.toIntOrNull()
+                            if (value != null && value in 0..30) {
+                                draft.countdownSec = value
+                                renderPage()
+                            }
+                        }
+                    }
+                ))
             }
-        )
-        root.addView(actions)
+        }
 
+        fun stopPage() {
+            addRow(content, "Game leaves foreground", toggle(draft.stopOnBackground) {
+                draft.stopOnBackground = it
+            })
+            val minutesStepper = stepper(
+                { (draft.stopMinutes ?: 30).toString() },
+                enabled = draft.stopMinutes != null,
+                onMinus = {
+                    draft.stopMinutes = ((draft.stopMinutes ?: 30) - 1)
+                        .coerceIn(1, Macro.MAX_STOP_AFTER_MINUTES)
+                },
+                onPlus = {
+                    draft.stopMinutes = ((draft.stopMinutes ?: 30) + 1)
+                        .coerceIn(1, Macro.MAX_STOP_AFTER_MINUTES)
+                },
+                onTap = {
+                    openTextEditor(
+                        "After minutes",
+                        (draft.stopMinutes ?: 30).toString(),
+                        MacroInputActivity.KIND_NUMBER
+                    ) { text ->
+                        val value = text?.toIntOrNull()
+                        if (value != null && value in 1..Macro.MAX_STOP_AFTER_MINUTES) {
+                            draft.stopMinutes = value
+                            renderPage()
+                        }
+                    }
+                }
+            )
+            val minutesSwitch = toggle(draft.stopMinutes != null) { checked ->
+                draft.stopMinutes = if (checked) 30 else null
+                minutesStepper.alpha = if (checked) 1f else 0.45f
+                renderPage()
+            }
+            minutesStepper.alpha = if (draft.stopMinutes != null) 1f else 0.45f
+            val minutesRow = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                minimumHeight = dp(44)
+            }
+            minutesRow.addView(
+                autoLabel("After minutes", 13f),
+                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            )
+            minutesRow.addView(minutesStepper)
+            minutesRow.addView(minutesSwitch, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { marginStart = dp(4) })
+            content.addView(minutesRow)
+            addDivider(content)
+
+            val attacksStepper = stepper(
+                { (draft.stopAttacks ?: 10).toString() },
+                enabled = draft.stopAttacks != null,
+                onMinus = {
+                    draft.stopAttacks = ((draft.stopAttacks ?: 10) - 1)
+                        .coerceIn(1, Macro.MAX_STOP_AFTER_ATTACKS)
+                },
+                onPlus = {
+                    draft.stopAttacks = ((draft.stopAttacks ?: 10) + 1)
+                        .coerceIn(1, Macro.MAX_STOP_AFTER_ATTACKS)
+                },
+                onTap = {
+                    openTextEditor(
+                        "After attacks",
+                        (draft.stopAttacks ?: 10).toString(),
+                        MacroInputActivity.KIND_NUMBER
+                    ) { text ->
+                        val value = text?.toIntOrNull()
+                        if (value != null && value in 1..Macro.MAX_STOP_AFTER_ATTACKS) {
+                            draft.stopAttacks = value
+                            renderPage()
+                        }
+                    }
+                }
+            )
+            val attacksSwitch = toggle(draft.stopAttacks != null) { checked ->
+                draft.stopAttacks = if (checked) 10 else null
+                attacksStepper.alpha = if (checked) 1f else 0.45f
+                renderPage()
+            }
+            attacksStepper.alpha = if (draft.stopAttacks != null) 1f else 0.45f
+            val attacksRow = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                minimumHeight = dp(44)
+            }
+            attacksRow.addView(
+                autoLabel("After attacks", 13f),
+                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            )
+            attacksRow.addView(attacksStepper)
+            attacksRow.addView(attacksSwitch, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { marginStart = dp(4) })
+            content.addView(attacksRow)
+            addDivider(content)
+
+            addRow(content, "Pin to top", toggle(draft.pinned) { draft.pinned = it })
+            val info = Ds.text(this, 11f, Ds.MUTED).apply {
+                val lastPlayed = macro.lastPlayedAt?.let {
+                    SimpleDateFormat("MM/dd HH:mm", Locale.US).format(Date(it))
+                } ?: "never"
+                text = "${macro.gestures.size} gestures · ${formatDuration(macro.durationMs)} · " +
+                    "Played ${macro.playCount} time(s)\nCreated " +
+                    SimpleDateFormat("MM/dd HH:mm", Locale.US).format(Date(macro.createdAt)) +
+                    " · Last played $lastPlayed"
+                setPadding(0, dp(8), 0, dp(8))
+            }
+            content.addView(info)
+        }
+
+        renderPage = {
+            content.removeAllViews()
+            if (settingsPage == 0) playbackPage() else stopPage()
+            updateTabs()
+            content.requestLayout()
+        }
+
+        val swipeDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onFling(
+                e1: MotionEvent?,
+                e2: MotionEvent,
+                velocityX: Float,
+                velocityY: Float
+            ): Boolean {
+                if (e1 == null) return false
+                val dx = e2.x - e1.x
+                val dy = e2.y - e1.y
+                if (abs(dx) > abs(dy) && abs(dx) > dp(40).toFloat() && abs(velocityX) > dp(120).toFloat()) {
+                    val next = if (dx < 0) 1 else 0
+                    if (next != settingsPage) {
+                        settingsPage = next
+                        renderPage()
+                    }
+                    return true
+                }
+                return false
+            }
+        })
+        scroll.setOnTouchListener { _, event ->
+            swipeDetector.onTouchEvent(event)
+            false
+        }
+
+        val footer = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(6), 0, 0)
+            addView(footerButton("Cancel", primary = false) { closeMacroSettings() })
+            addView(footerButton("Save", primary = true) {
+                persist { saved ->
+                    closeMacroSettings()
+                    BotState.setStatus("Settings saved for \"${saved.name}\"")
+                    toast("Saved")
+                }
+            })
+        }
+
+        root.addView(header)
+        root.addView(Ds.divider(this))
+        root.addView(tabs)
+        root.addView(
+            scroll,
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(160))
+        )
+        root.addView(dots)
+        root.addView(error)
+        root.addView(footer)
+
+        renderPage()
+
+        val yPx = controllerParams?.y ?: dp(48)
+        val maxPanelPx = minOf((screenHeight * 0.90f).toInt(), screenHeight - yPx - dp(8))
+        val scrollPx = (maxPanelPx - dp(198)).coerceAtLeast(dp(96))
+        scroll.layoutParams = scroll.layoutParams.apply { height = scrollPx }
+
+        root.isFocusableInTouchMode = true
+        root.requestFocus()
+        root.setOnKeyListener { _, keyCode, event ->
+            if (keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP) {
+                if (settingsPage > 0) {
+                    settingsPage = 0
+                    renderPage()
+                } else {
+                    closeMacroSettings()
+                }
+                true
+            } else {
+                false
+            }
+        }
         view.post { clampControllerToScreen() }
-        repeatCountAlpha?.alpha =
-            if (MacroTimeline.isCustomRepeat(draft.repeat)) 1f else 0.45f
     }
+
+    private fun setSettingsFocusable(focusable: Boolean) {
+        val view = controllerView ?: return
+        val params = controllerParams ?: return
+        val base = WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+        params.flags = if (focusable) {
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+        } else {
+            base or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+        }
+        try {
+            windowManager.updateViewLayout(view, params)
+        } catch (_: Exception) {
+            // Window detached.
+        }
+    }
+
+    private fun showSettingsMenu(
+        anchor: View,
+        macro: Macro,
+        draft: SettingsDraft,
+        onDeleted: () -> Unit
+    ) {
+        val menu = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = Ds.rounded(
+                Ds.PANEL,
+                Ds.RADIUS_CARD,
+                this@FloatingMenuService,
+                Ds.PANEL_BORDER
+            )
+            setPadding(dp(4), dp(4), dp(4), dp(4))
+        }
+        val popup = PopupWindow(
+            menu,
+            dp(196),
+            LinearLayout.LayoutParams.WRAP_CONTENT,
+            true
+        ).apply {
+            isOutsideTouchable = true
+            elevation = dp(8).toFloat()
+        }
+        fun item(label: String, danger: Boolean = false, action: () -> Unit) {
+            menu.addView(
+                TextView(this).apply {
+                    text = label
+                    textSize = 13f
+                    setTextColor(if (danger) Ds.DANGER_TEXT else Ds.TEXT)
+                    gravity = Gravity.CENTER_VERTICAL
+                    setPadding(dp(12), 0, dp(12), 0)
+                    minHeight = dp(44)
+                    isClickable = true
+                    setOnClickListener {
+                        haptic()
+                        popup.dismiss()
+                        action()
+                    }
+                },
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    dp(44)
+                )
+            )
+        }
+        item("Duplicate") {
+            val saved = draft.name.trim().take(40).ifBlank { macro.name }
+            scope.launch {
+                val updated = repository.save(
+                    macro.copy(
+                        name = saved,
+                        speedMultiplier = draft.speed,
+                        repeatMode = if (MacroTimeline.isCustomRepeat(draft.repeat)) {
+                            MacroTimeline.customRepeatMode(draft.repeatCount)
+                        } else {
+                            draft.repeat
+                        },
+                        repeatDelayMs = draft.delayMs,
+                        startCountdownMs = draft.countdownSec * 1000L,
+                        stopOnBackground = draft.stopOnBackground,
+                        stopAfterMinutes = draft.stopMinutes,
+                        stopAfterAttacks = draft.stopAttacks,
+                        pinned = draft.pinned
+                    )
+                )
+                if (updated != null) {
+                    val copy = repository.duplicate(updated.id)
+                    closeMacroSettings()
+                    toast(if (copy != null) "Duplicated as \"${copy.name}\"" else "Duplicate failed")
+                }
+            }
+        }
+        item("Reset to defaults") {
+            showMacroSettings(
+                macro.copy(
+                    speedMultiplier = 1f,
+                    repeatMode = Macro.REPEAT_ONCE,
+                    repeatDelayMs = Macro.LEGACY_REPEAT_DELAY_MS,
+                    startCountdownMs = 0L,
+                    stopOnBackground = true,
+                    stopAfterMinutes = null,
+                    stopAfterAttacks = null,
+                    pinned = false
+                )
+            )
+        }
+        item("Delete", danger = true) {
+            showConfirmDialog(
+                title = "Delete macro?",
+                message = "\"${macro.name}\" will be removed. You can undo for 5 seconds.",
+                positive = "Delete"
+            ) {
+                scope.launch {
+                    if (repository.delete(macro.id)) {
+                        closeMacroSettings()
+                        BotState.setStatus("Deleted \"${macro.name}\"")
+                        onDeleted()
+                    } else {
+                        toast("Delete failed")
+                    }
+                }
+            }
+        }
+        popup.showAsDropDown(anchor, -dp(110), dp(4))
+    }
+
 
     private fun openTextEditor(
         title: String,
@@ -2792,8 +3374,12 @@ class FloatingMenuService : Service() {
         val host = view.findViewById<FrameLayout>(R.id.settingsHost) ?: return
         settingsView = null
         settingsMacroId = -1L
+        setSettingsFocusable(false)
+        controllerView?.setOnKeyListener(null)
         host.removeAllViews()
         host.visibility = View.GONE
+        view.findViewById<View>(R.id.controllerHeader).visibility = View.VISIBLE
+        applyPanelWidth(settings = false)
         view.findViewById<View>(R.id.pageTabs).visibility = View.VISIBLE
         view.findViewById<View>(R.id.contentFrame).visibility = View.VISIBLE
         view.post { clampControllerToScreen() }
@@ -2833,9 +3419,11 @@ class FloatingMenuService : Service() {
         val ticker = Runnable {
             pendingDelete = null
             undoRow.visibility = View.GONE
+            renderMacroList()
         }
         undoTicker = ticker
         handler.postDelayed(ticker, UNDO_WINDOW_MS)
+        renderMacroList()
     }
 
     private fun undoDelete() {
@@ -2909,15 +3497,40 @@ class FloatingMenuService : Service() {
             if (countdownVisible) View.VISIBLE else View.GONE
         view.findViewById<TextView>(R.id.tvStartCountdown).text =
             startCountdown?.toString() ?: ""
-        val tabActive = 0xFF3B82F6.toInt()
-        val tabIdle = 0xFF1E293B.toInt()
-        view.findViewById<Button>(R.id.btnPageController).backgroundTintList =
-            ColorStateList.valueOf(if (statsVisible) tabIdle else tabActive)
-        view.findViewById<Button>(R.id.btnPageStats).backgroundTintList =
-            ColorStateList.valueOf(if (statsVisible) tabActive else tabIdle)
+        view.findViewById<TextView>(R.id.btnPageController).apply {
+            background = Ds.rounded(
+                if (statsVisible) android.graphics.Color.TRANSPARENT else Ds.ACCENT,
+                8,
+                this@FloatingMenuService
+            )
+            setTextColor(if (statsVisible) Ds.MUTED else android.graphics.Color.WHITE)
+        }
+        view.findViewById<TextView>(R.id.btnPageStats).apply {
+            background = Ds.rounded(
+                if (statsVisible) Ds.ACCENT else android.graphics.Color.TRANSPARENT,
+                8,
+                this@FloatingMenuService
+            )
+            setTextColor(if (statsVisible) android.graphics.Color.WHITE else Ds.MUTED)
+        }
+        val dotColor = when {
+            state == ControllerState.RECORDING || state == ControllerState.RECORDING_PAUSED ->
+                Ds.RECORD
+            state == ControllerState.PLAYBACK_PAUSED -> Ds.WARN
+            else -> Ds.PLAY
+        }
+        view.findViewById<View>(R.id.statusDot)?.backgroundTintList =
+            ColorStateList.valueOf(dotColor)
+        val statusStripVisible = state != ControllerState.READY &&
+            state != ControllerState.INACTIVE &&
+            state != ControllerState.STOPPING
+        view.findViewById<TextView>(R.id.tvStatus)?.apply {
+            visibility = if (statusStripVisible) View.VISIBLE else View.GONE
+            text = BotState.status.value
+        }
 
         view.findViewById<Button>(R.id.btnRecord).isEnabled = !startingPassive
-        updateScanButton()
+        updateWatchActions()
 
         val recordMode = activeRecordingMode ?: settingsStore.settings.value.recordingMode
         val passiveMode = recordMode == RecordingMode.PASSIVE
@@ -3248,6 +3861,32 @@ class FloatingMenuService : Service() {
         val seconds = totalSeconds % 60
         val minutes = totalSeconds / 60
         return String.format(Locale.US, "%02d:%02d", minutes, seconds)
+    }
+
+    private fun controllerPanelWidthPx(settings: Boolean): Int {
+        val density = resources.displayMetrics.density
+        val widthDp = screenWidth / density
+        val landscape = screenWidth > screenHeight
+        val caps = (widthDp * 0.92f).toInt()
+        // Landscape settings needs more than the pack's 420: two 44dp steppers
+        // and unwrapped labels do not fit side by side at 420.
+        val targetDp = when {
+            settings && landscape -> minOf(480, caps)
+            settings -> minOf(320, caps)
+            landscape -> minOf(360, caps)
+            else -> minOf(320, caps)
+        }
+        return dp(targetDp)
+    }
+
+    private fun applyPanelWidth(settings: Boolean) {
+        val view = controllerView ?: return
+        val panel = view.findViewById<LinearLayout>(R.id.panel) ?: return
+        val target = controllerPanelWidthPx(settings)
+        if (panel.layoutParams.width != target) {
+            panel.layoutParams = panel.layoutParams.apply { width = target }
+            view.post { clampControllerToScreen() }
+        }
     }
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()

@@ -40,9 +40,19 @@ class SessionRepository(private val file: File) {
             mutex.withLock {
                 val all = readLocked().toMutableList()
                 var recovered: GameSession? = null
-                for (index in all.indices) {
+                var changed = false
+                var index = 0
+                while (index < all.size) {
                     val session = all[index]
-                    if (!session.active) continue
+                    if (!session.active) {
+                        index++
+                        continue
+                    }
+                    changed = true
+                    if (session.attackCount == 0 && session.macroIds.isEmpty()) {
+                        all.removeAt(index)
+                        continue
+                    }
                     val updated = session.copy(
                         status = GameSession.RECOVERED,
                         endedAt = session.lastUpdatedAt.coerceAtLeast(session.startedAt),
@@ -50,8 +60,9 @@ class SessionRepository(private val file: File) {
                     )
                     all[index] = updated
                     recovered = updated
+                    index++
                 }
-                if (recovered != null) {
+                if (changed) {
                     writeLocked(all)
                     publish(all)
                 }
@@ -178,11 +189,18 @@ class SessionRepository(private val file: File) {
             val all = readLocked().toMutableList()
             val index = all.indexOfFirst { it.active }
             if (index < 0) return@withLock null
-            val closed = all[index].copy(
+            val current = all[index]
+            val closed = current.copy(
                 status = status,
-                endedAt = now.coerceAtLeast(all[index].startedAt),
+                endedAt = now.coerceAtLeast(current.startedAt),
                 lastUpdatedAt = now
             )
+            if (closed.attackCount == 0 && closed.macroIds.isEmpty()) {
+                all.removeAt(index)
+                writeLocked(all)
+                publish(all)
+                return@withLock closed
+            }
             all[index] = closed
             writeLocked(all)
             publish(all)

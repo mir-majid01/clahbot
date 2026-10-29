@@ -15,6 +15,12 @@ object ResultsRescan {
 
     data class Summary(val scanned: Int, val updated: Int)
 
+    fun candidates(records: List<AttackRecord>): List<AttackRecord> = records.filter { record ->
+        record.confirmed &&
+            record.resultsScreenshot != null &&
+            (!record.hasLoot || !record.complete || record.needsReview)
+    }
+
     /**
      * Re-reads saved screenshots of confirmed records that have no complete
      * loot. A record is updated only when the current consensus supplies all
@@ -22,11 +28,7 @@ object ResultsRescan {
      */
     suspend fun run(context: Context, repository: AttackRepository): Summary =
         withContext(Dispatchers.IO) {
-            val candidates = repository.refresh().filter { record ->
-                record.confirmed &&
-                    record.resultsScreenshot != null &&
-                    (!record.hasLoot || !record.complete || record.needsReview)
-            }
+            val candidates = candidates(repository.refresh())
             if (candidates.isEmpty()) return@withContext Summary(0, 0)
 
             val reader = AppResultsReader(context)
