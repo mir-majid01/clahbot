@@ -1,0 +1,110 @@
+package com.clahbot.session
+
+import android.content.Context
+import com.clahbot.data.AttackRepository
+import com.clahbot.data.SessionRepository
+import com.clahbot.data.models.GameSession
+import com.clahbot.service.ClahAccessibilityService
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+
+/**
+ * Owns the live game session: starts it on a Clash launch or playback, keeps
+ * its totals in step with saved attacks, and closes it after 60 s away from
+ * the game or when the controller closes.
+ */
+object GameSessionTracker {
+
+    private const val POLL_MS = 5_000L
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    @Volatile
+    private var started = false
+
+    @Volatile
+    private var leftForegroundAt: Long? = null
+
+    private lateinit var sessionRepository: SessionRepository
+    private lateinit var attackRepository: AttackRepository
+
+    fun start(context: Context) {
+        if (started) return
+        synchronized(this) {
+            if (started) return
+            started = true
+            sessionRepository = SessionRepository.get(context.applicationContext)
+            attackRepository = AttackRepository.get(context.applicationContext)
+            scope.launch {
+                sessionRepository.recoverOpenSessions()
+                sessionRepository.refresh()
+            }
+            scope.launch {
+                attackRepository.records.collect { records ->
+                    sessionRepository.syncWithRecords(records)
+                }
+            }
+            scope.launch {
+                while (isActive) {
+                    tick()
+                    delay(POLL_MS)
+                }
+            }
+        }
+    }
+
+    suspend fun ensureSession(): GameSession {
+        val session = sessionRepository.ensureActive()
+        sessionRepository.refresh()
+        return session
+    }
+
+    suspend fun noteMacro(macroId: Long) {
+        if (macroId <= 0L) return
+        sessionRepository.addMacroToActive(macroId)
+        sessionRepository.refresh()
+    }
+
+    suspend fun syncNow() {
+        sessionRepository.syncWithRecords(attackRepository.records.value)
+    }
+
+    fun closeSessionAsync(status: String = GameSession.CLOSED) {
+        scope.launch { closeSession(status) }
+    }
+
+    suspend fun closeSession(status: String = GameSession.CLOSED) {
+        sessionRepository.syncWithRecords(attackRepository.records.value)
+        sessionRepository.closeActive(status)
+        sessionRepository.refresh()
+        leftForegroundAt = null
+    }
+
+    private suspend fun tick() {
+        val active = sessionRepository.active() ?: run {
+            leftForegroundAt = null
+            return
+        }
+        val now = System.currentTimeMillis()
+        val foreground = ClahAccessibilityService.isGameForeground()
+        leftForegroundAt = SessionPolicy.nextLeftAt(now, leftForegroundAt, foreground)
+        if (foreground) {
+            sessionRepository.touchActive(now)
+            return
+        }
+        val leftAt = leftForegroundAt
+        if (SessionPolicy.shouldClose(now, leftAt)) {
+            sessionRepository.syncWithRecords(attackRepository.records.value)
+            sessionRepository.closeActive(GameSession.CLOSED, now)
+            sessionRepository.refresh()
+            leftForegroundAt = null
+        } else if (now - active.lastUpdatedAt >= POLL_MS) {
+            sessionRepository.touchActive(now)
+        }
+    }
+}

@@ -1,3 +1,5 @@
+import org.gradle.api.tasks.testing.Test
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -11,8 +13,8 @@ android {
         applicationId = "com.clahbot"
         minSdk = 26
         targetSdk = 34
-        versionCode = 19
-        versionName = "2.5.0"
+        versionCode = 20
+        versionName = "2.6.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         // The current build is for the arm64 test phone; the OCR stack's
@@ -102,4 +104,11 @@ dependencies {
     androidTestImplementation("androidx.test:runner:1.5.2")
     androidTestImplementation("androidx.test:rules:1.5.0")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")
+}
+
+// Optional local migration checks on copies of the user's live files.
+tasks.withType<Test>().configureEach {
+    listOf("CLAHS_TEST_MACROS", "CLAHS_TEST_ATTACKS").forEach { key ->
+        System.getenv(key)?.let { environment(key, it) }
+    }
 }
