@@ -641,8 +641,8 @@ fun AcStatisticsSection(
 ) {
     val confirmed = remember(attacks) { AttackStats.confirmedOnly(attacks) }
     val current = sessions.firstOrNull { it.active } ?: sessions.firstOrNull()
-    val scoped = if (scope == 0 && current != null) {
-        scopedAttacks(current, confirmed)
+    val scoped = if (scope == 0) {
+        current?.let { scopedAttacks(it, confirmed) } ?: emptyList()
     } else {
         confirmed
     }

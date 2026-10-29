@@ -153,6 +153,7 @@ class FloatingMenuService : Service() {
     private var selectedId: Long = -1L
     private var settingsView: View? = null
     private var settingsMacroId: Long = -1L
+    private var settingsDraft: SettingsDraft? = null
     private var pendingDelete: Macro? = null
     private var undoTicker: Runnable? = null
 
@@ -328,6 +329,15 @@ class FloatingMenuService : Service() {
         updateScreenSize()
         applyPanelWidth(settingsView != null)
         refreshControllerBoundsSnapshot()
+        val openDraft = settingsDraft
+        if (settingsView != null) {
+            val macro = macros.firstOrNull { it.id == settingsMacroId }
+            if (macro != null) showMacroSettings(macro, openDraft) else closeMacroSettings()
+        } else if (page == PAGE_STATS) {
+            renderStats()
+        } else {
+            renderMacroList()
+        }
         if (!recording) return
         stopRecording()
         BotState.setStatus("Screen changed — recording stopped")
@@ -1696,7 +1706,7 @@ class FloatingMenuService : Service() {
         )
         captureSession = capture
         manualWatch = true
-        scope.launch { GameSessionTracker.ensureSession() }
+        scope.launch { GameSessionTracker.ensureSession(startedAt) }
         resultsCapture.begin(capture)
         AppEventLog.log("manual watch start id=$startedAt")
         BotState.setStatus("Watching for results — play your attack")
@@ -2154,6 +2164,10 @@ class FloatingMenuService : Service() {
                 textSize = 11f
                 setPadding(dp(6), dp(12), dp(6), dp(12))
             })
+            view.findViewById<ScrollView>(R.id.macroScroll)?.layoutParams =
+                view.findViewById<ScrollView>(R.id.macroScroll)?.layoutParams?.apply {
+                    height = dp(72)
+                }
             return
         }
 
@@ -2245,7 +2259,7 @@ class FloatingMenuService : Service() {
             val maxPanel = (screenHeight * 0.90f).toInt()
             val fixed = dp(if (undoVisible) 244 else 190)
             val available = (maxPanel - fixed).coerceAtLeast(rowHeight)
-            val rows = (available / rowHeight).coerceIn(1, 4)
+            val rows = (available / rowHeight).coerceIn(1, 4).coerceAtMost(macros.size)
             val target = rows * rowHeight + dp(2)
             if (scroll.layoutParams.height != target) {
                 scroll.layoutParams = scroll.layoutParams.apply { height = target }
@@ -2356,7 +2370,7 @@ class FloatingMenuService : Service() {
 
     private var settingsPage = 0
 
-    private fun showMacroSettings(macro: Macro) {
+    private fun showMacroSettings(macro: Macro, initialDraft: SettingsDraft? = null) {
         val view = controllerView ?: return
         val host = view.findViewById<FrameLayout>(R.id.settingsHost) ?: return
         if (settingsView != null) closeMacroSettings()
@@ -2374,7 +2388,7 @@ class FloatingMenuService : Service() {
         applyPanelWidth(settings = true)
         setSettingsFocusable(true)
 
-        val draft = SettingsDraft(
+        val draft = initialDraft ?: SettingsDraft(
             name = macro.name,
             speed = MacroTimeline.clampSpeed(macro.speedMultiplier),
             repeat = macro.repeatMode,
@@ -2396,6 +2410,7 @@ class FloatingMenuService : Service() {
         host.addView(root)
         settingsView = root
         settingsMacroId = macro.id
+        settingsDraft = draft
         host.visibility = View.VISIBLE
 
         settingsPage = 0
@@ -3277,30 +3292,33 @@ class FloatingMenuService : Service() {
             )
         }
         item("Duplicate") {
-            val saved = draft.name.trim().take(40).ifBlank { macro.name }
             scope.launch {
+                val copy = repository.duplicate(macro.id)
+                if (copy == null) {
+                    toast("Duplicate failed")
+                    return@launch
+                }
                 val updated = repository.save(
-                    macro.copy(
-                        name = saved,
-                        speedMultiplier = draft.speed,
+                    copy.copy(
+                        speedMultiplier = MacroTimeline.clampSpeed(draft.speed),
                         repeatMode = if (MacroTimeline.isCustomRepeat(draft.repeat)) {
                             MacroTimeline.customRepeatMode(draft.repeatCount)
                         } else {
                             draft.repeat
                         },
-                        repeatDelayMs = draft.delayMs,
-                        startCountdownMs = draft.countdownSec * 1000L,
+                        repeatDelayMs = draft.delayMs.coerceIn(0L, Macro.MAX_REPEAT_DELAY_MS),
+                        startCountdownMs = draft.countdownSec.coerceIn(0, 30) * 1000L,
                         stopOnBackground = draft.stopOnBackground,
                         stopAfterMinutes = draft.stopMinutes,
                         stopAfterAttacks = draft.stopAttacks,
                         pinned = draft.pinned
                     )
                 )
-                if (updated != null) {
-                    val copy = repository.duplicate(updated.id)
-                    closeMacroSettings()
-                    toast(if (copy != null) "Duplicated as \"${copy.name}\"" else "Duplicate failed")
-                }
+                closeMacroSettings()
+                toast(
+                    if (updated != null) "Duplicated as \"${updated.name}\""
+                    else "Duplicate failed"
+                )
             }
         }
         item("Reset to defaults") {
@@ -3374,6 +3392,7 @@ class FloatingMenuService : Service() {
         val host = view.findViewById<FrameLayout>(R.id.settingsHost) ?: return
         settingsView = null
         settingsMacroId = -1L
+        settingsDraft = null
         setSettingsFocusable(false)
         controllerView?.setOnKeyListener(null)
         host.removeAllViews()
