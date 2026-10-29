@@ -1440,7 +1440,8 @@ two lines on a 320 dp panel at font 1.3 but never ellipsizes.
 - 50 ocrlab tests green; `:ocr` tests green.
 - Android lint: 0 errors, 111 warnings (all pre-existing style/hardcoded/
   old-dependency categories, plus the existing touch/accessibility warnings on
-  the overlay). No new error-level findings.
+  the overlay). No new error-level findings. Tests and lint were re-run after
+  the self-review fixes, and the APK was built last.
 - Real-file migration tests ran on copies via `CLAHS_TEST_MACROS` /
   `CLAHS_TEST_ATTACKS`; the live `attacks.json` and `macros.json` were not
   touched.
@@ -1451,9 +1452,15 @@ two lines on a 320 dp panel at font 1.3 but never ellipsizes.
 
 ### 2.6.1 build and device-pass status
 
-- Built one debug APK from commit `06e743f`, signed with the stable release
-  keystore (`keystore/autoclash-release.jks`), versionCode 21 / 2.6.1.
-  SHA-256 `b1f02b6cf936e2fa45c1b56ba0496e47e785f7ba6754e22fbdd5281b97457cc8`.
+- Built one debug APK from commit `10c612f` (after the self-review fixes),
+  signed with the stable release keystore
+  (`keystore/autoclash-release.jks`), versionCode 21 / 2.6.1.
+  SHA-256 `cfa2e9663face333acdb148fe7bdf2b7eac46bc2aae81c57cc060546f4367fa1`.
+- Self-review caught and fixed: macro list height now follows the actual row
+  count; Duplicate no longer commits the draft to the source macro; rotation
+  rebuilds list/stats/settings and preserves the open settings draft; manual
+  watch starts its session at the capture timestamp; an empty Session scope
+  no longer falls back to all-time totals.
 - No install was attempted: at build time `adb devices` was empty and Windows
   PnP showed no Android/ADB/Infinix device, so the phone was not connected to
   this machine. Live `attacks.json`, `macros.json` and `sessions.json` were
