@@ -8,6 +8,8 @@ import android.util.Log
 import android.view.Display
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityWindowInfo
+import androidx.annotation.RequiresApi
+import com.clahbot.session.GameSessionTracker
 import kotlin.coroutines.resume
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -21,6 +23,7 @@ class ClahAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         instance = this
         clearTouchExploration()
+        GameSessionTracker.start(this)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -38,8 +41,8 @@ class ClahAccessibilityService : AccessibilityService() {
         super.onDestroy()
     }
 
+    @RequiresApi(Build.VERSION_CODES.R)
     private suspend fun captureDisplayScreenshot(): Bitmap? {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
         return withContext(Dispatchers.Main.immediate) {
             withTimeoutOrNull(SCREENSHOT_TIMEOUT_MS) {
                 suspendCancellableCoroutine { continuation ->
@@ -145,6 +148,7 @@ class ClahAccessibilityService : AccessibilityService() {
             currentForegroundPackage() ?: foregroundPackage ?: "another app"
 
         suspend fun captureScreenshot(): Bitmap? {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
             return try {
                 instance?.captureDisplayScreenshot()
             } catch (cancelled: CancellationException) {

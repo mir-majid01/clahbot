@@ -125,6 +125,9 @@ updates from this repository's Releases. See
 | `MacroPlayer` | Replays macros with `AccessibilityService.dispatchGesture`, including simultaneous paths. |
 | `MacroRepository` | Single authoritative macro list exposed as `StateFlow`, persisted as versioned JSON. |
 | `MacroShare` | Versioned single-macro export/import codec; imports are re-sanitized and always receive a new local id. |
+| `SessionRepository` | Additive `sessions.json` store; never rewrites attacks or macros. |
+| `GameSessionTracker` | Starts sessions on launch/playback, keeps totals synced, and closes after 60 s away from Clash. |
+| `Ds` | One design-token layer shared by the floating overlay and the Compose dashboard. |
 | `MacroTimeline` | Pure timing and geometry: speed scaling, classification, decimation, repeat modes. |
 | `BotState` | One state machine shared by the dashboard and controller. |
 | `SettingsStore` | Shared preferences as a `StateFlow`. |
@@ -133,6 +136,26 @@ updates from this repository's Releases. See
 | `ResultsCaptureCoordinator` | Watches continuously from playback start (or a manual watch) and records every new result screen; a manual watch can capture an already-open screen if it was not recorded before. |
 | `ResultCaptureGate` | Holds a late macro tap (up to 10 s) while a detected result screen is captured and read, so Return Home cannot dismiss it first. |
 | `AppEventLog` | Rolling private diagnostic log (256 KB + one rotation) of playback, polls, reads and records; no screenshots or loot values. |
+
+## Game sessions
+
+A session starts when Clash of Clans is launched from AutoClash, or when a
+playback or results capture starts without one. It ends when the controller is
+closed, or after Clash has been out of the foreground for 60 seconds; a short
+call or app switch keeps the same session. An unfinished session found on the
+next start is closed as **recovered** at its last saved update. Sessions live in
+their own `sessions.json`; `attacks.json` is never rewritten. The dashboard
+shows the live session, recent sessions, details, and a **Before sessions**
+count for older attacks.
+
+## Statistics
+
+Resource totals shown in the floating Stats and on the dashboard are
+**loot + bonus** for each resource; the two amounts stay separate in storage
+and the tile shows the bonus line. A record with missing main loot, or a bonus
+panel that was present but could not be read, is excluded from the totals and
+counted as incomplete. A screen with no bonus panel counts as zero bonus.
+Session and All-time scopes use the same rules.
 
 ## Attack history
 
@@ -144,7 +167,7 @@ Deleting a macro never deletes its past attack records.
 
 While the floating controller is running, an **Auto watch** session starts by
 itself; no press is needed. It keeps watching for result screens and records
-each one once. The Stats **Watch results** button remains available for an
+each one once. The Stats **Scan now** action remains available for an
 explicit hand-played watch ("Manual watch"), and macro playback uses the macro
 name; these labels now show the real source. A watch stays armed for up to 60
 minutes and keeps watching after each capture, so every new result in that
@@ -194,7 +217,7 @@ the pause. Delays below one second still apply but do not show a countdown.
 - Coordinates are normalized to the recording display; a very different aspect
   ratio can shift touch positions.
 - Speed changes apply at the next playback run.
-- The v2.5.0 build is **arm64-only** because the bundled OCR native libraries
+- The v2.6.0 build is **arm64-only** because the bundled OCR native libraries
   made the universal APK about 151 MB. The lab and app are verified on the
   arm64 test phone; other ABIs are not packaged in this build.
 - Result-screen OCR needs the accessibility screenshot permission (Android 11+)

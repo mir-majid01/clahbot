@@ -8,6 +8,7 @@ import com.clahbot.service.ClahAccessibilityService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.isActive
@@ -21,6 +22,7 @@ import kotlinx.coroutines.launch
 object GameSessionTracker {
 
     private const val POLL_MS = 5_000L
+    private const val TOUCH_MS = 30_000L
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -30,6 +32,8 @@ object GameSessionTracker {
     @Volatile
     private var leftForegroundAt: Long? = null
 
+    @Volatile
+    private var setupJob: Job? = null
     private lateinit var sessionRepository: SessionRepository
     private lateinit var attackRepository: AttackRepository
 
@@ -40,7 +44,7 @@ object GameSessionTracker {
             started = true
             sessionRepository = SessionRepository.get(context.applicationContext)
             attackRepository = AttackRepository.get(context.applicationContext)
-            scope.launch {
+            setupJob = scope.launch {
                 sessionRepository.recoverOpenSessions()
                 sessionRepository.refresh()
             }
@@ -59,6 +63,7 @@ object GameSessionTracker {
     }
 
     suspend fun ensureSession(): GameSession {
+        setupJob?.join()
         val session = sessionRepository.ensureActive()
         sessionRepository.refresh()
         return session
@@ -66,11 +71,13 @@ object GameSessionTracker {
 
     suspend fun noteMacro(macroId: Long) {
         if (macroId <= 0L) return
+        setupJob?.join()
         sessionRepository.addMacroToActive(macroId)
         sessionRepository.refresh()
     }
 
     suspend fun syncNow() {
+        setupJob?.join()
         sessionRepository.syncWithRecords(attackRepository.records.value)
     }
 
@@ -79,6 +86,7 @@ object GameSessionTracker {
     }
 
     suspend fun closeSession(status: String = GameSession.CLOSED) {
+        setupJob?.join()
         sessionRepository.syncWithRecords(attackRepository.records.value)
         sessionRepository.closeActive(status)
         sessionRepository.refresh()
@@ -94,17 +102,17 @@ object GameSessionTracker {
         val foreground = ClahAccessibilityService.isGameForeground()
         leftForegroundAt = SessionPolicy.nextLeftAt(now, leftForegroundAt, foreground)
         if (foreground) {
-            sessionRepository.touchActive(now)
+            if (now - active.lastUpdatedAt >= TOUCH_MS) {
+                sessionRepository.touchActive(now)
+            }
             return
         }
         val leftAt = leftForegroundAt
         if (SessionPolicy.shouldClose(now, leftAt)) {
             sessionRepository.syncWithRecords(attackRepository.records.value)
-            sessionRepository.closeActive(GameSession.CLOSED, now)
+            sessionRepository.closeActive(GameSession.CLOSED, leftAt ?: now)
             sessionRepository.refresh()
             leftForegroundAt = null
-        } else if (now - active.lastUpdatedAt >= POLL_MS) {
-            sessionRepository.touchActive(now)
         }
     }
 }

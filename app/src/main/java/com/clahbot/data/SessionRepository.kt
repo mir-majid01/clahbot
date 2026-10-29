@@ -211,7 +211,18 @@ class SessionRepository(private val file: File) {
         } catch (_: RuntimeException) {
             return emptyList()
         }
-        return parsed.sessions.orEmpty().filter { it.startedAt > 0L }
+        return parsed.sessions.orEmpty()
+            .filter { it.startedAt > 0L }
+            .map { session ->
+                val status = when (session.status) {
+                    GameSession.CLOSED, GameSession.RECOVERED -> session.status
+                    else -> GameSession.ACTIVE
+                }
+                session.copy(
+                    status = status,
+                    lastUpdatedAt = session.lastUpdatedAt.coerceAtLeast(session.startedAt)
+                )
+            }
     }
 
     private fun writeLocked(sessions: List<GameSession>) {
