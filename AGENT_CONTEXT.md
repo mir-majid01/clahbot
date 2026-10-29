@@ -1449,3 +1449,17 @@ two lines on a 320 dp panel at font 1.3 but never ellipsizes.
   0/1/8 macros, session grace/recovery). That is the pending single device
   pass for 2.6.1.
 
+### 2.6.1 build and device-pass status
+
+- Built one debug APK from commit `06e743f`, signed with the stable release
+  keystore (`keystore/autoclash-release.jks`), versionCode 21 / 2.6.1.
+  SHA-256 `b1f02b6cf936e2fa45c1b56ba0496e47e785f7ba6754e22fbdd5281b97457cc8`.
+- No install was attempted: at build time `adb devices` was empty and Windows
+  PnP showed no Android/ADB/Infinix device, so the phone was not connected to
+  this machine. Live `attacks.json`, `macros.json` and `sessions.json` were
+  therefore untouched in this round; the pre-install backup rule still applies
+  when the phone is reconnected.
+- The one device pass remains outstanding and must be run before Batch A is
+  called verified on hardware. Do not build another APK unless that pass
+  produces a real defect.
+
