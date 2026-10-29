@@ -13,6 +13,7 @@ object Ds {
     const val PANEL_BORDER = 0xFF22304D.toInt()
     const val TEXT = 0xFFE6EBF5.toInt()
     const val MUTED = 0xFF9FB0CF.toInt()
+    const val META_ACCENT = 0xFF7FA6F5.toInt()
     const val ACCENT = 0xFF2563EB.toInt()
     const val LINK = 0xFF60A5FA.toInt()
     const val RECORD = 0xFFDC2626.toInt()

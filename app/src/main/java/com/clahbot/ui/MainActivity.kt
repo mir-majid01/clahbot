@@ -320,6 +320,8 @@ fun DashboardScreen(
         attackRepository.refresh()
         sessionRepository.refresh()
         viewModel.refresh()
+        val active = sessionRepository.sessions.value.firstOrNull { it.active }
+        statsScope = if ((active?.attackCount ?: 0) > 0) 0 else 1
     }
 
     val hasActiveSession = sessions.any { it.active }
@@ -367,8 +369,8 @@ fun DashboardScreen(
                 PermissionHelper.showToast(context, "Installed but no launch intent — open it from your launcher")
             } else {
                 try {
-                    scope.launch { GameSessionTracker.ensureSession() }
                     context.startActivity(intent)
+                    scope.launch { GameSessionTracker.ensureSession() }
                 } catch (_: Exception) {
                     PermissionHelper.showToast(context, "Could not launch Clash of Clans")
                 }
@@ -428,7 +430,23 @@ fun DashboardScreen(
 
     val now = remember(tick) { System.currentTimeMillis() }
     val activeSession = sessions.firstOrNull { it.active }
+    val visibleSessions = remember(sessions) {
+        sessions.filter { it.active || it.attackCount > 0 || it.macroIds.isNotEmpty() }
+    }
+    val unreadableCount = remember(confirmedAttacks) {
+        ResultsRescan.candidates(confirmedAttacks).size
+    }
     val needsAttention = !(overlayOk && accessibilityOk && notificationsOk)
+
+    var hadActiveSession by remember { mutableStateOf(false) }
+    LaunchedEffect(activeSession?.id) {
+        if (activeSession != null) {
+            hadActiveSession = true
+        } else if (hadActiveSession) {
+            hadActiveSession = false
+            statsScope = 1
+        }
+    }
 
     Scaffold(containerColor = Color(com.clahbot.ui.design.Ds.BACKDROP)) { padding ->
         Box(
@@ -456,7 +474,7 @@ fun DashboardScreen(
                     gameLabel = "Clash of Clans",
                     gameStatus = if (gamePackage != null) "Installed · ready" else "Not installed",
                     gameIcon = gameIcon,
-                    session = activeSession ?: sessions.firstOrNull(),
+                    session = activeSession ?: visibleSessions.firstOrNull(),
                     now = now,
                     onLaunch = launchGame
                 )
@@ -520,33 +538,23 @@ fun DashboardScreen(
             }
             item {
                 AcSessionsSection(
-                    sessions = sessions,
+                    sessions = visibleSessions,
                     attacks = confirmedAttacks,
                     now = now,
                     onOpen = { sessionDetail = it }
                 )
             }
             item {
-                AcSectionHeader(title = "Statistics")
-            }
-            item {
                 AcStatisticsSection(
                     scope = statsScope,
                     onScope = { statsScope = it },
                     attacks = confirmedAttacks,
-                    sessions = sessions,
-                    onSeeAll = { showHistory = true }
-                )
-            }
-            item {
-                Row(
-                    modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    TextButton(
-                        enabled = !rescanning,
-                        onClick = {
+                    sessions = visibleSessions,
+                    unreadable = unreadableCount,
+                    rescanning = rescanning,
+                    rescanStatus = rescanStatus,
+                    onRescan = {
+                        if (!rescanning) {
                             rescanning = true
                             rescanStatus = null
                             scope.launch {
@@ -556,16 +564,9 @@ fun DashboardScreen(
                                 rescanning = false
                             }
                         }
-                    ) {
-                        Text(
-                            if (rescanning) "Re-scanning…" else "Re-scan unreadable",
-                            fontSize = 12.sp
-                        )
-                    }
-                    rescanStatus?.let {
-                        Text(it, fontSize = 11.sp, color = Color(com.clahbot.ui.design.Ds.MUTED))
-                    }
-                }
+                    },
+                    onSeeAll = { showHistory = true }
+                )
             }
             item { Spacer(Modifier.height(8.dp)) }
         }
@@ -574,7 +575,7 @@ fun DashboardScreen(
 
     if (showSessions) {
         AcSessionsDialog(
-            sessions = sessions,
+            sessions = visibleSessions,
             attacks = confirmedAttacks,
             onDismiss = { showSessions = false },
             onOpen = { sessionDetail = it }

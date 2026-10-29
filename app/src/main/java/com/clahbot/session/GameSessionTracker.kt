@@ -62,9 +62,9 @@ object GameSessionTracker {
         }
     }
 
-    suspend fun ensureSession(): GameSession {
+    suspend fun ensureSession(startedAt: Long = System.currentTimeMillis()): GameSession {
         setupJob?.join()
-        val session = sessionRepository.ensureActive()
+        val session = sessionRepository.ensureActive(startedAt)
         sessionRepository.refresh()
         return session
     }

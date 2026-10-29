@@ -15,46 +15,72 @@
         <LinearLayout
             android:id="@+id/controllerHeader"
             android:layout_width="match_parent"
-            android:layout_height="52dp"
+            android:layout_height="40dp"
             android:gravity="center_vertical"
             android:orientation="horizontal">
 
-            <ImageView
-                android:layout_width="28dp"
-                android:layout_height="28dp"
-                android:contentDescription="@string/app_name"
-                android:src="@drawable/ic_autoclash_mark" />
+            <FrameLayout
+                android:layout_width="40dp"
+                android:layout_height="40dp">
+
+                <ImageView
+                    android:layout_width="36dp"
+                    android:layout_height="36dp"
+                    android:layout_gravity="center"
+                    android:contentDescription="@string/app_name"
+                    android:src="@drawable/ic_autoclash_mark" />
+
+                <View
+                    android:id="@+id/statusDot"
+                    android:layout_width="9dp"
+                    android:layout_height="9dp"
+                    android:layout_gravity="bottom|end"
+                    android:background="@drawable/bg_status_dot" />
+            </FrameLayout>
 
             <LinearLayout
+                android:id="@+id/pageTabs"
                 android:layout_width="0dp"
-                android:layout_height="wrap_content"
+                android:layout_height="40dp"
                 android:layout_marginStart="8dp"
                 android:layout_weight="1"
-                android:orientation="vertical">
+                android:background="@drawable/bg_segment_track"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:padding="3dp">
 
                 <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="@string/app_name"
-                    android:textColor="#E6EBF5"
-                    android:textSize="22sp"
+                    android:id="@+id/btnPageController"
+                    android:layout_width="0dp"
+                    android:layout_height="34dp"
+                    android:layout_weight="1"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:gravity="center"
+                    android:text="Controller"
+                    android:textColor="#FFFFFF"
+                    android:textSize="11sp"
                     android:textStyle="bold" />
 
                 <TextView
-                    android:id="@+id/tvStatus"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:ellipsize="end"
-                    android:maxLines="1"
-                    android:text="Ready"
+                    android:id="@+id/btnPageStats"
+                    android:layout_width="0dp"
+                    android:layout_height="34dp"
+                    android:layout_marginStart="2dp"
+                    android:layout_weight="1"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:gravity="center"
+                    android:text="Stats"
                     android:textColor="#9FB0CF"
-                    android:textSize="12sp" />
+                    android:textSize="11sp"
+                    android:textStyle="bold" />
             </LinearLayout>
 
             <ImageButton
                 android:id="@+id/btnMinimize"
-                android:layout_width="48dp"
-                android:layout_height="48dp"
+                android:layout_width="44dp"
+                android:layout_height="40dp"
                 android:background="?android:attr/selectableItemBackground"
                 android:contentDescription="Minimize controller"
                 android:padding="10dp"
@@ -63,8 +89,8 @@
 
             <ImageButton
                 android:id="@+id/btnClose"
-                android:layout_width="48dp"
-                android:layout_height="48dp"
+                android:layout_width="44dp"
+                android:layout_height="40dp"
                 android:background="?android:attr/selectableItemBackground"
                 android:contentDescription="Close controller"
                 android:padding="10dp"
@@ -72,40 +98,19 @@
                 android:src="@drawable/ic_close" />
         </LinearLayout>
 
-
-        <LinearLayout
-            android:id="@+id/pageTabs"
+        <TextView
+            android:id="@+id/tvStatus"
             android:layout_width="match_parent"
-            android:layout_height="48dp"
-            android:layout_marginTop="6dp"
-            android:orientation="horizontal">
-
-            <Button
-                android:id="@+id/btnPageController"
-                android:layout_width="0dp"
-                android:layout_height="48dp"
-                android:layout_weight="1"
-                android:backgroundTint="#1E293B"
-                android:text="Controller"
-                android:textColor="#E2E8F0"
-                android:textSize="13sp" />
-
-            <Button
-                android:id="@+id/btnPageStats"
-                android:layout_width="0dp"
-                android:layout_height="48dp"
-                android:layout_marginStart="6dp"
-                android:layout_weight="1"
-                android:backgroundTint="#1E293B"
-                android:text="Stats"
-                android:textColor="#E2E8F0"
-                android:textSize="13sp" />
-        </LinearLayout>
+            android:layout_height="wrap_content"
+            android:maxLines="1"
+            android:textColor="#9FB0CF"
+            android:textSize="10sp"
+            android:visibility="gone" />
         <FrameLayout
             android:id="@+id/contentFrame"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp">
+            android:layout_marginTop="6dp">
 
             <!-- READY -->
             <LinearLayout
@@ -117,9 +122,12 @@
                 <Button
                     android:id="@+id/btnRecord"
                     android:layout_width="match_parent"
-                    android:layout_height="48dp"
+                    android:layout_height="40dp"
                     android:backgroundTint="#DC2626"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
                     android:text="●  Record"
+                    android:textColor="#FFFFFF"
                     android:textSize="15sp"
                     android:textStyle="bold" />
 
@@ -179,8 +187,7 @@
                     android:layout_width="match_parent"
                     android:layout_height="120dp"
                     android:layout_marginTop="3dp"
-                    android:fadeScrollbars="false"
-                    android:scrollbars="vertical">
+                    android:scrollbars="none">
 
                     <LinearLayout
                         android:id="@+id/macroList"
@@ -326,7 +333,6 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:layout_marginTop="2dp"
-                    android:ellipsize="end"
                     android:maxLines="1"
                     android:text="Playing"
                     android:textColor="#94A3B8"
@@ -387,6 +393,7 @@
                 android:id="@+id/statsPanel"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
+                android:scrollbars="none"
                 android:visibility="gone">
 
                 <LinearLayout

@@ -9,6 +9,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -46,7 +47,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -69,6 +72,7 @@ import java.util.Locale
 private val TextColor = Color(Ds.TEXT)
 private val Muted = Color(Ds.MUTED)
 private val Accent = Color(Ds.ACCENT)
+private val Link = Color(Ds.LINK)
 private val Panel = Color(Ds.PANEL)
 private val PanelBorder = Color(Ds.PANEL_BORDER)
 private val Success = Color(Ds.SUCCESS)
@@ -194,6 +198,7 @@ fun AcGameCard(
             }
             Button(
                 onClick = onLaunch,
+                modifier = Modifier.heightIn(min = 44.dp),
                 shape = RoundedCornerShape(10.dp),
                 colors = ButtonDefaults.buttonColors(containerColor = Accent),
                 contentPadding = PaddingValues(horizontal = 18.dp, vertical = 10.dp)
@@ -207,17 +212,22 @@ fun AcGameCard(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Box(Modifier.size(7.dp).clip(CircleShape).background(Success))
-                Spacer(Modifier.width(7.dp))
-                val count = if (session.active) {
-                    session.attackCount
-                } else {
-                    session.attackCount
+                val statusColor = when (session.status) {
+                    GameSession.ACTIVE -> Success
+                    GameSession.RECOVERED -> Warn
+                    else -> Muted
                 }
+                val statusLabel = when (session.status) {
+                    GameSession.ACTIVE -> "active"
+                    GameSession.RECOVERED -> "recovered"
+                    else -> "closed"
+                }
+                Box(Modifier.size(7.dp).clip(CircleShape).background(statusColor))
+                Spacer(Modifier.width(7.dp))
                 Text(
-                    "Session ${if (session.active) "active" else session.status} · " +
+                    "Session $statusLabel · " +
                         acSpan((session.endedAt ?: now) - session.startedAt) +
-                        " · $count attacks",
+                        " · ${session.attackCount} attacks",
                     fontSize = 12.sp,
                     color = Muted
                 )
@@ -282,7 +292,7 @@ fun AcSetupCard(
                     )
                 }
                 TextButton(onClick = { expanded = !expanded }) {
-                    Text(if (expanded) "Hide" else "Details", fontSize = 12.sp, color = Accent)
+                    Text(if (expanded) "Hide" else "Details", fontSize = 12.sp, color = Link)
                     Image(
                         painterResource(R.drawable.ic_chevron),
                         contentDescription = null,
@@ -335,7 +345,7 @@ private fun PermissionLine(
             Text("Granted", fontSize = 11.sp, color = Success)
         } else {
             TextButton(onClick = onAction) {
-                Text(action, fontSize = 11.sp, color = Accent)
+                Text(action, fontSize = 11.sp, color = Link)
             }
         }
     }
@@ -364,16 +374,21 @@ fun AcSectionHeader(
             Spacer(Modifier.width(8.dp))
         }
         if (action != null && onAction != null) {
-            Text(
-                action,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = Accent,
+            Box(
                 modifier = Modifier
+                    .heightIn(min = 44.dp)
                     .clip(RoundedCornerShape(8.dp))
                     .clickable(onClick = onAction)
-                    .padding(horizontal = 6.dp, vertical = 8.dp)
-            )
+                    .padding(horizontal = 6.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    action,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Link
+                )
+            }
         }
     }
 }
@@ -502,7 +517,7 @@ fun AcSessionsSection(
     if (active == null && recent.isEmpty()) {
         AcEmptyCard(
             "No sessions yet",
-            "Launch Clash of Clans or start the controller to open a session."
+            "Launch Clash of Clans or play a macro to open a session."
         )
         return
     }
@@ -618,6 +633,10 @@ fun AcStatisticsSection(
     onScope: (Int) -> Unit,
     attacks: List<AttackRecord>,
     sessions: List<GameSession>,
+    unreadable: Int,
+    rescanning: Boolean,
+    rescanStatus: String?,
+    onRescan: () -> Unit,
     onSeeAll: () -> Unit
 ) {
     val confirmed = remember(attacks) { AttackStats.confirmedOnly(attacks) }
@@ -628,16 +647,55 @@ fun AcStatisticsSection(
         confirmed
     }
     val totals = remember(scoped) { SessionAggregator.totals(scoped) }
-    Row(verticalAlignment = Alignment.CenterVertically) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(top = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            "Statistics",
+            fontSize = 20.sp,
+            fontWeight = FontWeight.Bold,
+            color = TextColor,
+            modifier = Modifier.weight(1f)
+        )
         AcSegmented(
             options = listOf("Session", "All time"),
             selected = scope,
             onSelect = onScope,
-            modifier = Modifier.weight(1f)
+            modifier = Modifier.width(160.dp)
         )
     }
+    if (unreadable > 0) {
+        Spacer(Modifier.height(10.dp))
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .background(Color(Ds.WARN_BG))
+                .clickable(enabled = !rescanning, onClick = onRescan),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                "$unreadable attack${if (unreadable == 1) "" else "s"} unreadable",
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = Warn,
+                modifier = Modifier.weight(1f).padding(horizontal = 12.dp, vertical = 14.dp)
+            )
+            Text(
+                if (rescanning) "Re-scanning…" else "Re-scan",
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                color = Warn,
+                modifier = Modifier.padding(start = 8.dp, end = 14.dp, top = 14.dp, bottom = 14.dp)
+            )
+        }
+        rescanStatus?.let {
+            Text(it, fontSize = 11.sp, color = Muted, modifier = Modifier.padding(top = 6.dp))
+        }
+    }
     Spacer(Modifier.height(10.dp))
-    AcResourceTiles(totals)
+    AcTotalsCard(totals)
     Spacer(Modifier.height(10.dp))
     AcTotalsMeta(totals)
     if (totals.incompleteAttacks > 0) {
@@ -648,7 +706,7 @@ fun AcStatisticsSection(
             modifier = Modifier.padding(top = 8.dp)
         )
     }
-    Spacer(Modifier.height(10.dp))
+    Spacer(Modifier.height(12.dp))
     if (scoped.isEmpty()) {
         AcEmptyCard(
             if (scope == 0) "No session data" else "No attacks yet",
@@ -662,14 +720,86 @@ fun AcStatisticsSection(
         "See all history",
         fontSize = 13.sp,
         fontWeight = FontWeight.SemiBold,
-        color = Accent,
+        color = Link,
         textAlign = TextAlign.Center,
         modifier = Modifier
             .fillMaxWidth()
+            .heightIn(min = 44.dp)
             .clip(RoundedCornerShape(8.dp))
             .clickable(onClick = onSeeAll)
-            .padding(vertical = 10.dp)
+            .padding(vertical = 12.dp)
     )
+}
+
+@Composable
+fun AcTotalsCard(totals: SessionTotals) {
+    AcCard {
+        Column {
+            AcTotalRow(R.drawable.ic_gold, "Gold", totals.totalGold, totals.bonusGold)
+            Box(Modifier.fillMaxWidth().padding(horizontal = 14.dp).height(1.dp).background(PanelBorder))
+            AcTotalRow(R.drawable.ic_elixir, "Elixir", totals.totalElixir, totals.bonusElixir)
+            Box(Modifier.fillMaxWidth().padding(horizontal = 14.dp).height(1.dp).background(PanelBorder))
+            AcTotalRow(R.drawable.ic_dark, "Dark elixir", totals.totalDarkElixir, totals.bonusDarkElixir)
+        }
+    }
+}
+
+@Composable
+private fun AcTotalRow(iconRes: Int, label: String, total: Long, bonus: Long) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Image(
+            painterResource(iconRes),
+            contentDescription = label,
+            modifier = Modifier.size(22.dp)
+        )
+        Spacer(Modifier.width(10.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(label, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = TextColor)
+            Text(
+                String.format(
+                    Locale.US,
+                    "loot %,d + bonus %,d",
+                    (total - bonus).coerceAtLeast(0L),
+                    bonus
+                ),
+                fontSize = 11.sp,
+                color = Muted,
+                maxLines = 3,
+                overflow = TextOverflow.Visible
+            )
+        }
+        Spacer(Modifier.width(8.dp))
+        AcAutoSizeTotal(total)
+    }
+}
+
+@Composable
+private fun AcAutoSizeTotal(value: Long) {
+    val text = remember(value) { String.format(Locale.US, "%,d", value) }
+    val measurer = rememberTextMeasurer()
+    val base = TextStyle(fontWeight = FontWeight.Bold, fontFeatureSettings = "tnum")
+    BoxWithConstraints(contentAlignment = Alignment.CenterEnd) {
+        var size = 17
+        while (size > 11) {
+            val width = measurer.measure(
+                text = text,
+                style = base.copy(fontSize = size.sp)
+            ).size.width
+            if (width <= constraints.maxWidth) break
+            size--
+        }
+        Text(
+            text,
+            style = base.copy(fontSize = size.sp),
+            color = TextColor,
+            maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Visible
+        )
+    }
 }
 
 @Composable
@@ -693,6 +823,7 @@ fun AcSegmented(
                     .clip(RoundedCornerShape(8.dp))
                     .background(if (active) Accent else Color.Transparent)
                     .clickable { onSelect(index) }
+                    .heightIn(min = 44.dp)
                     .padding(vertical = 9.dp),
                 contentAlignment = Alignment.Center
             ) {

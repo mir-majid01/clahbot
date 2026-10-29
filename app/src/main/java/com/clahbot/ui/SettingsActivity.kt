@@ -472,7 +472,7 @@ fun SettingsScreen(
                                 if (!custom) {
                                     onUpdate {
                                         it.copy(
-                                            defaultRepeat = MacroTimeline.customRepeatMode(3)
+                                            defaultRepeat = MacroTimeline.customRepeatMode(10)
                                         )
                                     }
                                 }
@@ -1050,8 +1050,8 @@ private fun LinkRow(label: String, url: String?) {
                     url.removePrefix("https://").removePrefix("http://"),
                     fontSize = 9.sp,
                     color = TextMuted,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    maxLines = 2,
+                    overflow = TextOverflow.Visible
                 )
             }
         }
