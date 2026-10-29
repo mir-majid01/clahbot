@@ -78,8 +78,11 @@ import com.clahbot.results.AppResultsReader
 import com.clahbot.results.CaptureSession
 import com.clahbot.results.ResultCaptureGate
 import com.clahbot.results.ResultsCaptureCoordinator
+import com.clahbot.ui.MacroInputActivity
+import com.clahbot.ui.MacroInputRelay
 import com.clahbot.ui.MainActivity
 import com.clahbot.ui.SettingsActivity
+import com.clahbot.ui.design.Ds
 import com.clahbot.util.PermissionHelper
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -1805,15 +1808,20 @@ class FloatingMenuService : Service() {
         container.removeAllViews()
         Log.i(TAG, "Rendering ${macros.size} macro(s) in the controller")
 
-        view.findViewById<TextView>(R.id.tvLibraryLabel)?.text =
-            if (macros.isEmpty()) "Macros" else "Macros · ${macros.size}"
+        view.findViewById<TextView>(R.id.tvLibraryLabel)?.apply {
+            text = if (macros.isEmpty()) "Macros" else "Macros · ${macros.size}"
+            isAllCaps = true
+            letterSpacing = 0.08f
+            setTextColor(Ds.MUTED)
+            textSize = 11f
+        }
 
         if (macros.isEmpty()) {
             container.addView(TextView(this).apply {
                 text = "No macros yet. Record one to get started."
-                setTextColor(0xFF94A3B8.toInt())
-                textSize = 10f
-                setPadding(dp(6), dp(8), dp(6), dp(8))
+                setTextColor(Ds.MUTED)
+                textSize = 11f
+                setPadding(dp(6), dp(12), dp(6), dp(12))
             })
             return
         }
@@ -1822,12 +1830,19 @@ class FloatingMenuService : Service() {
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(6), dp(4), dp(0), dp(4))
-                setBackgroundColor(if (macro.id == selectedId) 0x2E3B82F6 else Color.TRANSPARENT)
+                setPadding(dp(10), dp(7), dp(2), dp(7))
+                if (macro.id == selectedId) {
+                    background = Ds.rounded(
+                        Ds.SELECTED_ROW,
+                        Ds.RADIUS_ROW,
+                        this@FloatingMenuService,
+                        Ds.SELECTED_ROW_BORDER
+                    )
+                }
             }
             val info = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
-                setPadding(dp(2), 0, dp(2), 0)
+                setPadding(0, 0, dp(4), 0)
                 layoutParams = LinearLayout.LayoutParams(
                     0,
                     LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -1837,42 +1852,70 @@ class FloatingMenuService : Service() {
             }
             info.addView(TextView(this).apply {
                 text = if (macro.pinned) "PIN · ${macro.name}" else macro.name
-                setTextColor(0xFFE2E8F0.toInt())
+                setTextColor(Ds.TEXT)
+                textSize = 15f
+                setTypeface(typeface, android.graphics.Typeface.BOLD)
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+            })
+            info.addView(TextView(this).apply {
+                text = "${macro.gestures.size} gestures · ${formatDuration(macro.durationMs)}"
+                setTextColor(Ds.MUTED)
                 textSize = 12f
                 maxLines = 1
                 ellipsize = android.text.TextUtils.TruncateAt.END
+                setPadding(0, dp(1), 0, dp(5))
             })
-            info.addView(TextView(this).apply {
-                text = "${macro.gestures.size} gestures · ${formatDuration(macro.durationMs)} · " +
-                    MacroTimeline.formatSpeed(macro.speedMultiplier)
-                setTextColor(0xFF94A3B8.toInt())
-                textSize = 9f
-                maxLines = 1
-                ellipsize = android.text.TextUtils.TruncateAt.END
-            })
-            info.addView(TextView(this).apply {
-                text = MacroTimeline.repeatLabel(macro.repeatMode) + " · " +
-                    macroDelayLabel(macro)
-                setTextColor(0xFF94A3B8.toInt())
-                textSize = 9f
-                maxLines = 1
-                ellipsize = android.text.TextUtils.TruncateAt.END
-            })
+            val chips = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            chips.addView(macroChip(MacroTimeline.formatSpeed(macro.speedMultiplier)))
+            chips.addView(macroChip(MacroTimeline.repeatLabel(macro.repeatMode)))
+            chips.addView(macroChip(macroDelayLabel(macro)))
+            info.addView(chips)
             row.addView(info)
-            row.addView(iconButton(R.drawable.ic_play, "Play ${macro.name}") {
-                haptic()
-                selectedId = macro.id
-                BotState.setSelectedMacroId(macro.id)
-                renderMacroList()
-                startPlayback(macro)
-            })
+            val play = ImageButton(this).apply {
+                setImageResource(R.drawable.ic_play)
+                contentDescription = "Play ${macro.name}"
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    shape = android.graphics.drawable.GradientDrawable.OVAL
+                    setColor(Ds.PLAY)
+                }
+                imageTintList = ColorStateList.valueOf(Color.WHITE)
+                scaleType = ImageView.ScaleType.FIT_CENTER
+                setPadding(dp(13), dp(13), dp(13), dp(13))
+                layoutParams = LinearLayout.LayoutParams(dp(48), dp(48)).apply {
+                    marginStart = dp(4)
+                }
+                setOnClickListener {
+                    haptic()
+                    selectedId = macro.id
+                    BotState.setSelectedMacroId(macro.id)
+                    renderMacroList()
+                    startPlayback(macro)
+                }
+            }
+            row.addView(play)
             row.addView(iconButton(R.drawable.ic_gear, "Settings for ${macro.name}") {
                 haptic()
                 showMacroSettings(macro)
             })
             container.addView(row)
+            container.addView(Ds.spacer(this, 2))
         }
     }
+
+    private fun macroChip(text: String): TextView =
+        Ds.text(this, 11f, Ds.MUTED, bold = true).apply {
+            this.text = text
+            background = Ds.pill(Ds.BUTTON, this@FloatingMenuService)
+            setPadding(dp(9), dp(3), dp(9), dp(3))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { marginEnd = dp(4) }
+        }
 
     private fun iconButton(iconRes: Int, description: String, onClick: () -> Unit): ImageButton =
         ImageButton(this).apply {
@@ -1889,7 +1932,7 @@ class FloatingMenuService : Service() {
 
     private fun macroDelayLabel(macro: Macro): String {
         val delay = macro.effectiveRepeatDelayMs
-        return if (delay <= 0L) "no wait" else formatDelaySeconds(delay) + "s wait"
+        return if (delay <= 0L) "no gap" else formatDelaySeconds(delay) + "s gap"
     }
 
     private fun saveRecording() {
@@ -1947,367 +1990,562 @@ class FloatingMenuService : Service() {
 
     // ------------------------------------------------------ macro settings
 
+    private data class SettingsDraft(
+        var name: String,
+        var speed: Float,
+        var repeat: String,
+        var repeatCount: Int,
+        var delayMs: Long,
+        var countdownSec: Int,
+        var stopOnBackground: Boolean,
+        var stopMinutes: Int?,
+        var stopAttacks: Int?,
+        var pinned: Boolean
+    )
+
     private fun showMacroSettings(macro: Macro) {
         val view = controllerView ?: return
         val host = view.findViewById<FrameLayout>(R.id.settingsHost) ?: return
         if (settingsView != null) closeMacroSettings()
-        val settings = LayoutInflater.from(this).inflate(R.layout.overlay_macro_settings, host, false)
+
+        val draft = SettingsDraft(
+            name = macro.name,
+            speed = MacroTimeline.clampSpeed(macro.speedMultiplier),
+            repeat = macro.repeatMode,
+            repeatCount = MacroTimeline.repeatCount(macro.repeatMode),
+            delayMs = macro.effectiveRepeatDelayMs,
+            countdownSec = (macro.effectiveStartCountdownMs / 1000L).toInt(),
+            stopOnBackground = macro.stopOnBackground,
+            stopMinutes = macro.effectiveStopAfterMinutes,
+            stopAttacks = macro.effectiveStopAfterAttacks,
+            pinned = macro.pinned
+        )
+
+        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         host.removeAllViews()
-        host.addView(settings)
-        settingsView = settings
+        host.addView(root)
+        settingsView = root
         settingsMacroId = macro.id
         host.visibility = View.VISIBLE
         view.findViewById<View>(R.id.pageTabs).visibility = View.GONE
         view.findViewById<View>(R.id.contentFrame).visibility = View.GONE
 
-        settings.findViewById<TextView>(R.id.tvSettingsTitle).text = "Settings"
-        val nameInput = settings.findViewById<EditText>(R.id.etSettingsName)
-        val nameCount = settings.findViewById<TextView>(R.id.tvSettingsNameCount)
-        val repeatCountInput = settings.findViewById<EditText>(R.id.etRepeatCount)
-        val delayInput = settings.findViewById<EditText>(R.id.etDelay)
-        val countdownInput = settings.findViewById<EditText>(R.id.etCountdown)
-        val stopMinutesInput = settings.findViewById<EditText>(R.id.etStopMinutes)
-        val stopAttacksInput = settings.findViewById<EditText>(R.id.etStopAttacks)
-        val swStopMinutes = settings.findViewById<Switch>(R.id.swStopMinutes)
-        val swStopAttacks = settings.findViewById<Switch>(R.id.swStopAttacks)
-        val pinned = settings.findViewById<Switch>(R.id.swPinned)
-        val info = settings.findViewById<TextView>(R.id.tvSettingsInfo)
-        val error = settings.findViewById<TextView>(R.id.tvSettingsError)
-
-        val fields = arrayOf(
-            nameInput, repeatCountInput, delayInput,
-            countdownInput, stopMinutesInput, stopAttacksInput
-        )
-        val settingsScroll = settings.findViewById<ScrollView>(R.id.settingsScroll)
-        fun focusField(field: EditText) {
-            setControllerFocusable(true)
-            field.post {
-                field.requestFocus()
-                val imm = getSystemService(INPUT_METHOD_SERVICE) as? InputMethodManager
-                imm?.showSoftInput(field, InputMethodManager.SHOW_IMPLICIT)
-                settingsScroll.smoothScrollTo(0, (field.top - dp(48)).coerceAtLeast(0))
-            }
-        }
-        fields.forEach { field ->
-            field.setOnTouchListener { _, event ->
-                if (event.actionMasked == MotionEvent.ACTION_DOWN) focusField(field)
-                false
-            }
-            field.setOnFocusChangeListener { _, hasFocus ->
-                if (hasFocus) {
-                    setControllerFocusable(true)
-                    settingsScroll.smoothScrollTo(0, (field.top - dp(48)).coerceAtLeast(0))
-                }
-            }
-        }
-
-        var speed = MacroTimeline.clampSpeed(macro.speedMultiplier)
-        var repeat = macro.repeatMode
-        val speedLabel = settings.findViewById<TextView>(R.id.tvSettingsSpeed)
-        val repeatOnce = settings.findViewById<Button>(R.id.btnRepeatOnce)
-        val repeatLoop = settings.findViewById<Button>(R.id.btnRepeatLoop)
-        val repeatCustom = settings.findViewById<Button>(R.id.btnRepeatCustom)
-        fun paintRepeat() {
-            val active = 0xFF3B82F6.toInt()
-            val idle = 0xFF1E293B.toInt()
-            repeatOnce.backgroundTintList =
-                ColorStateList.valueOf(if (repeat == Macro.REPEAT_ONCE) active else idle)
-            repeatLoop.backgroundTintList =
-                ColorStateList.valueOf(if (repeat == Macro.REPEAT_INFINITE) active else idle)
-            repeatCustom.backgroundTintList =
-                ColorStateList.valueOf(if (MacroTimeline.isCustomRepeat(repeat)) active else idle)
-            repeatCountInput.visibility =
-                if (MacroTimeline.isCustomRepeat(repeat)) View.VISIBLE else View.GONE
-        }
-        fun setSpeed(value: Float) {
-            speed = MacroTimeline.clampSpeed(value)
-            speedLabel.text = MacroTimeline.formatSpeed(speed)
-        }
-        fun addPreset(container: LinearLayout, label: String, onClick: () -> Unit) {
-            container.addView(Button(this).apply {
-                text = label
-                textSize = 10f
-                minWidth = 0
-                minimumWidth = 0
-                setPadding(dp(10), 0, dp(10), 0)
-                setTextColor(0xFFE2E8F0.toInt())
-                backgroundTintList = ColorStateList.valueOf(0xFF1E293B.toInt())
-                layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.WRAP_CONTENT,
-                    dp(44)
-                ).apply {
-                    marginEnd = dp(4)
-                }
-                setOnClickListener {
-                    haptic()
-                    onClick()
-                }
-            })
-        }
-
-        nameInput.setText(macro.name)
-        nameInput.setSelection(nameInput.text.length)
-        nameCount.text = "${nameInput.text.length}/40"
-        repeatCountInput.setText(
-            if (MacroTimeline.isCustomRepeat(repeat)) MacroTimeline.repeatCount(repeat).toString()
-            else "3"
-        )
-        delayInput.setText(formatDelaySeconds(macro.effectiveRepeatDelayMs))
-        countdownInput.setText((macro.effectiveStartCountdownMs / 1000L).toString())
-        swStopMinutes.isChecked = macro.effectiveStopAfterMinutes != null
-        stopMinutesInput.setText((macro.effectiveStopAfterMinutes ?: 30).toString())
-        stopMinutesInput.isEnabled = swStopMinutes.isChecked
-        swStopAttacks.isChecked = macro.effectiveStopAfterAttacks != null
-        stopAttacksInput.setText((macro.effectiveStopAfterAttacks ?: 10).toString())
-        stopAttacksInput.isEnabled = swStopAttacks.isChecked
-        settings.findViewById<Switch>(R.id.swStopOnBackground).isChecked = macro.stopOnBackground
-        pinned.isChecked = macro.pinned
-
-        nameInput.addTextChangedListener(object : TextWatcher {
-            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
-            override fun afterTextChanged(s: Editable?) {
-                nameCount.text = "${s?.length ?: 0}/40"
-                error.visibility = View.GONE
-            }
-        })
-
-        repeatOnce.setOnClickListener {
-            repeat = Macro.REPEAT_ONCE
-            paintRepeat()
-        }
-        repeatLoop.setOnClickListener {
-            repeat = Macro.REPEAT_INFINITE
-            paintRepeat()
-        }
-        repeatCustom.setOnClickListener {
-            repeat = MacroTimeline.customRepeatMode(
-                repeatCountInput.text.toString().toIntOrNull() ?: 3
-            )
-            paintRepeat()
-            focusField(repeatCountInput)
-        }
-        paintRepeat()
-        repeatCountInput.addTextChangedListener(object : TextWatcher {
-            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
-            override fun afterTextChanged(s: Editable?) {
-                error.visibility = View.GONE
-                if (repeat != Macro.REPEAT_ONCE && repeat != Macro.REPEAT_INFINITE) {
-                    repeat = MacroTimeline.customRepeatMode(
-                        s?.toString()?.toIntOrNull() ?: 1
-                    )
-                    paintRepeat()
-                }
-            }
-        })
-
-        setSpeed(speed)
-        settings.findViewById<ImageButton>(R.id.btnSettingsSpeedDown).setOnClickListener {
-            setSpeed(MacroTimeline.stepSpeed(speed, -1))
-        }
-        settings.findViewById<ImageButton>(R.id.btnSettingsSpeedUp).setOnClickListener {
-            setSpeed(MacroTimeline.stepSpeed(speed, 1))
-        }
-        val speedPresets = settings.findViewById<LinearLayout>(R.id.speedPresets)
-        listOf(0.25f, 0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f, 3f, 4f).forEach { preset ->
-            addPreset(speedPresets, MacroTimeline.formatSpeed(preset)) { setSpeed(preset) }
-        }
-        val delayPresets = settings.findViewById<LinearLayout>(R.id.delayPresets)
-        listOf(3, 5, 10, 30).forEach { seconds ->
-            addPreset(delayPresets, "${seconds}s") { delayInput.setText(seconds.toString()) }
-        }
-        val countdownPresets = settings.findViewById<LinearLayout>(R.id.countdownPresets)
-        listOf(0, 3, 5, 10).forEach { seconds ->
-            addPreset(countdownPresets, "${seconds}s") { countdownInput.setText(seconds.toString()) }
-        }
-
-        swStopMinutes.setOnCheckedChangeListener { _, checked ->
-            stopMinutesInput.isEnabled = checked
-        }
-        swStopAttacks.setOnCheckedChangeListener { _, checked ->
-            stopAttacksInput.isEnabled = checked
-        }
-
-        fun updateInfo(updated: Macro) {
-            val lastPlayed = updated.lastPlayedAt?.let {
-                SimpleDateFormat("MM/dd HH:mm", Locale.US).format(Date(it))
-            } ?: "never"
-            info.text = buildString {
-                append("${updated.gestures.size} gestures · ${formatDuration(updated.durationMs)}")
-                append("\nCreated ${SimpleDateFormat("MM/dd HH:mm", Locale.US).format(Date(updated.createdAt))}")
-                append(" · Last played $lastPlayed")
-                append("\nPlayed ${updated.playCount} time(s)")
-            }
-        }
-        updateInfo(macro)
+        val error = Ds.text(this, 10f, Ds.DANGER_TEXT).apply { visibility = View.GONE }
 
         fun showError(message: String) {
             error.text = message
             error.visibility = View.VISIBLE
         }
 
-        fun saveFromForm(onSaved: (Macro) -> Unit) {
-            val name = nameInput.text.toString().trim()
-            if (name.isEmpty()) {
+        fun clearError() {
+            error.visibility = View.GONE
+        }
+
+        fun draftMacro(): Macro = macro.copy(
+            name = draft.name.trim().take(40),
+            speedMultiplier = MacroTimeline.clampSpeed(draft.speed),
+            repeatMode = if (MacroTimeline.isCustomRepeat(draft.repeat)) {
+                MacroTimeline.customRepeatMode(draft.repeatCount)
+            } else {
+                draft.repeat
+            },
+            repeatDelayMs = draft.delayMs.coerceIn(0L, Macro.MAX_REPEAT_DELAY_MS),
+            startCountdownMs = draft.countdownSec.coerceIn(0, 30) * 1000L,
+            stopOnBackground = draft.stopOnBackground,
+            stopAfterMinutes = draft.stopMinutes,
+            stopAfterAttacks = draft.stopAttacks,
+            pinned = draft.pinned
+        )
+
+        fun persist(onSaved: (Macro) -> Unit) {
+            clearError()
+            if (draft.name.isBlank()) {
                 showError("Enter a macro name")
                 return
             }
-            if (MacroTimeline.isCustomRepeat(repeat)) {
-                val count = repeatCountInput.text.toString().toIntOrNull()
-                if (count == null || count !in 1..Macro.MAX_CUSTOM_REPEAT) {
-                    showError("Runs must be between 1 and ${Macro.MAX_CUSTOM_REPEAT}")
-                    return
-                }
-                repeat = MacroTimeline.customRepeatMode(count)
-            }
-            val delaySeconds = delayInput.text.toString().trim().toDoubleOrNull()
-            if (delaySeconds == null || !delaySeconds.isFinite() ||
-                delaySeconds < 0.0 || delaySeconds > 600.0
-            ) {
-                showError("Delay must be between 0 and 600 seconds")
-                return
-            }
-            val countdownSeconds = countdownInput.text.toString().trim().toIntOrNull()
-            if (countdownSeconds == null || countdownSeconds !in 0..30) {
-                showError("Countdown must be between 0 and 30 seconds")
-                return
-            }
-            val stopMinutes = if (swStopMinutes.isChecked) {
-                stopMinutesInput.text.toString().toIntOrNull()
-                    ?.takeIf { it in 1..Macro.MAX_STOP_AFTER_MINUTES }
-                    ?: run {
-                        showError("Minutes must be between 1 and ${Macro.MAX_STOP_AFTER_MINUTES}")
-                        return
-                    }
-            } else {
-                null
-            }
-            val stopAttacks = if (swStopAttacks.isChecked) {
-                stopAttacksInput.text.toString().toIntOrNull()
-                    ?.takeIf { it in 1..Macro.MAX_STOP_AFTER_ATTACKS }
-                    ?: run {
-                        showError("Attacks must be between 1 and ${Macro.MAX_STOP_AFTER_ATTACKS}")
-                        return
-                    }
-            } else {
-                null
-            }
-            val updated = macro.copy(
-                name = name,
-                speedMultiplier = speed,
-                repeatMode = repeat,
-                repeatDelayMs = (delaySeconds * 1000.0).roundToLong()
-                    .coerceIn(0L, Macro.MAX_REPEAT_DELAY_MS),
-                startCountdownMs = countdownSeconds * 1000L,
-                stopOnBackground = settings.findViewById<Switch>(R.id.swStopOnBackground).isChecked,
-                stopAfterMinutes = stopMinutes,
-                stopAfterAttacks = stopAttacks,
-                pinned = pinned.isChecked
-            )
             scope.launch {
-                val saved = repository.save(updated)
-                if (saved == null) {
-                    showError("Save failed")
-                } else {
-                    error.visibility = View.GONE
-                    onSaved(saved)
-                }
+                val saved = repository.save(draftMacro())
+                if (saved == null) showError("Save failed") else onSaved(saved)
             }
         }
 
-        settings.findViewById<Button>(R.id.btnSettingsSave).setOnClickListener {
-            saveFromForm { saved ->
-                closeMacroSettings()
-                BotState.setStatus("Settings saved for \"${saved.name}\"")
-                toast("Saved")
+        fun actionButton(text: String, danger: Boolean = false, onClick: () -> Unit): Button =
+            Button(this).apply {
+                this.text = text
+                textSize = 12f
+                isAllCaps = false
+                minWidth = 0
+                minimumWidth = 0
+                setPadding(dp(10), 0, dp(10), 0)
+                setTextColor(if (danger) Ds.DANGER_TEXT else Ds.TEXT)
+                background = Ds.rounded(
+                    if (danger) Ds.PANEL else Ds.BUTTON,
+                    10,
+                    this@FloatingMenuService,
+                    if (danger) Ds.DANGER_OUTLINE else null
+                )
+                layoutParams = LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+                    marginEnd = dp(8)
+                }
+                setOnClickListener {
+                    haptic()
+                    onClick()
+                }
             }
+
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(2), 0, dp(2))
         }
-        settings.findViewById<ImageButton>(R.id.btnSettingsBack).setOnClickListener {
-            closeMacroSettings()
+        header.addView(iconButton(R.drawable.ic_back, "Back to macros") { closeMacroSettings() })
+        header.addView(
+            Ds.text(this, 15f, Ds.TEXT, bold = true).apply {
+                text = macro.name
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+            },
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginStart = dp(4)
+            }
+        )
+        header.addView(Ds.text(this, 12f, Ds.MUTED).apply { text = "Settings" })
+
+        fun labelRow(label: String, control: View): View {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                minimumHeight = dp(52)
+                setPadding(0, dp(2), 0, dp(2))
+            }
+            row.addView(
+                Ds.text(this, 13f, Ds.MUTED).apply { text = label },
+                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            )
+            row.addView(control)
+            return row
         }
-        settings.findViewById<Button>(R.id.btnDuplicate).setOnClickListener {
-            saveFromForm {
-                scope.launch {
-                    val copy = repository.duplicate(it.id)
-                    closeMacroSettings()
-                    toast(
-                        if (copy != null) "Duplicated as \"${copy.name}\""
-                        else "Duplicate failed"
+
+        fun stepper(
+            valueText: () -> String,
+            enabled: Boolean = true,
+            onMinus: () -> Unit,
+            onPlus: () -> Unit
+        ): LinearLayout {
+            val box = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            val value = Ds.text(
+                this,
+                14f,
+                if (enabled) Ds.TEXT else 0xFF5B6B8A.toInt(),
+                bold = true
+            ).apply {
+                gravity = Gravity.CENTER
+                minWidth = dp(54)
+                minHeight = dp(48)
+                text = valueText()
+            }
+            fun refresh() {
+                value.text = valueText()
+                value.setTextColor(if (enabled) Ds.TEXT else 0xFF5B6B8A.toInt())
+            }
+            val minus = iconButton(R.drawable.ic_minus, "Decrease") {
+                if (enabled) {
+                    onMinus()
+                    refresh()
+                    clearError()
+                }
+            }
+            val plus = iconButton(R.drawable.ic_plus, "Increase") {
+                if (enabled) {
+                    onPlus()
+                    refresh()
+                    clearError()
+                }
+            }
+            box.addView(minus)
+            box.addView(value)
+            box.addView(plus)
+            return box
+        }
+
+        fun enabledSwitch(checked: Boolean, onChange: (Boolean) -> Unit): Switch =
+            Switch(this).apply {
+                isChecked = checked
+                setOnCheckedChangeListener { _, value ->
+                    haptic()
+                    onChange(value)
+                }
+            }
+
+        fun segmented(
+            options: List<Pair<String, String>>,
+            isSelected: (String) -> Boolean,
+            onSelect: (String) -> Unit
+        ): LinearLayout {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                background = Ds.rounded(Ds.INPUT, 10, this@FloatingMenuService)
+                setPadding(dp(3), dp(3), dp(3), dp(3))
+            }
+            val buttons = mutableListOf<TextView>()
+            fun paint() {
+                buttons.forEach { button ->
+                    val selected = isSelected(button.tag as String)
+                    button.background = Ds.rounded(
+                        if (selected) Ds.ACCENT else android.graphics.Color.TRANSPARENT,
+                        8,
+                        this@FloatingMenuService
+                    )
+                    button.setTextColor(
+                        if (selected) android.graphics.Color.WHITE else Ds.MUTED
                     )
                 }
             }
-        }
-        settings.findViewById<Button>(R.id.btnResetDefaults).setOnClickListener {
-            nameInput.setText(macro.name)
-            setSpeed(1f)
-            repeat = Macro.REPEAT_ONCE
-            paintRepeat()
-            delayInput.setText(formatDelaySeconds(Macro.LEGACY_REPEAT_DELAY_MS))
-            countdownInput.setText("0")
-            settings.findViewById<Switch>(R.id.swStopOnBackground).isChecked = true
-            swStopMinutes.isChecked = false
-            stopMinutesInput.setText("30")
-            swStopAttacks.isChecked = false
-            stopAttacksInput.setText("10")
-            pinned.isChecked = false
-            error.visibility = View.GONE
-        }
-        settings.findViewById<Button>(R.id.btnDeleteMacro).setOnClickListener {
-            deleteMacro(macro)
+            options.forEach { (key, label) ->
+                val button = Ds.text(this, 12f, Ds.MUTED, bold = true).apply {
+                    tag = key
+                    text = label
+                    gravity = Gravity.CENTER
+                    setPadding(dp(10), 0, dp(10), 0)
+                    minHeight = dp(42)
+                    minWidth = dp(54)
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        dp(42)
+                    )
+                    setOnClickListener {
+                        haptic()
+                        onSelect(key)
+                        paint()
+                        clearError()
+                    }
+                }
+                buttons.add(button)
+                row.addView(button)
+            }
+            paint()
+            return row
         }
 
-        settingsScroll.layoutParams = settingsScroll.layoutParams.apply {
-            height = (screenHeight * 0.86f - dp(120)).toInt().coerceAtLeast(dp(140))
+        var repeatCountAlpha: TextView? = null
+
+        fun textField(value: String, onEdit: () -> Unit): TextView =
+            Ds.text(this, 14f, Ds.TEXT).apply {
+                text = value
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                setPadding(dp(12), 0, dp(12), 0)
+                minHeight = dp(44)
+                minWidth = dp(150)
+                gravity = Gravity.CENTER_VERTICAL
+                background = Ds.rounded(Ds.INPUT, 10, this@FloatingMenuService, Ds.PANEL_BORDER)
+                isClickable = true
+                contentDescription = "Name: $value"
+                setOnClickListener {
+                    haptic()
+                    onEdit()
+                }
+            }
+
+        fun openNameEditor(current: String) {
+            openTextEditor("Macro name", current, MacroInputActivity.KIND_NAME) { result ->
+                val trimmed = result?.trim()?.take(40).orEmpty()
+                if (trimmed.isNotEmpty()) {
+                    draft.name = trimmed
+                    showMacroSettings(draftMacro())
+                }
+            }
         }
+
+        val nameField = textField(draft.name) { openNameEditor(draft.name) }
+        val speedStepper = stepper(
+            valueText = { MacroTimeline.formatSpeed(draft.speed) },
+            onMinus = { draft.speed = MacroTimeline.stepSpeed(draft.speed, -1) },
+            onPlus = { draft.speed = MacroTimeline.stepSpeed(draft.speed, 1) }
+        )
+        val repeatSegment = segmented(
+            options = listOf(
+                Macro.REPEAT_ONCE to "Once",
+                Macro.REPEAT_INFINITE to "Loop",
+                "custom" to "Custom"
+            ),
+            isSelected = {
+                if (it == "custom") MacroTimeline.isCustomRepeat(draft.repeat)
+                else draft.repeat == it
+            },
+            onSelect = {
+                draft.repeat = if (it == "custom") {
+                    MacroTimeline.customRepeatMode(draft.repeatCount)
+                } else {
+                    it
+                }
+                repeatCountAlpha?.alpha =
+                    if (MacroTimeline.isCustomRepeat(draft.repeat)) 1f else 0.45f
+            }
+        )
+        val repeatCountStepper = stepper(
+            valueText = { draft.repeatCount.toString() },
+            onMinus = {
+                draft.repeatCount = (draft.repeatCount - 1).coerceAtLeast(1)
+                draft.repeat = MacroTimeline.customRepeatMode(draft.repeatCount)
+            },
+            onPlus = {
+                draft.repeatCount = (draft.repeatCount + 1).coerceAtMost(Macro.MAX_CUSTOM_REPEAT)
+                draft.repeat = MacroTimeline.customRepeatMode(draft.repeatCount)
+            }
+        )
+        repeatCountAlpha = repeatCountStepper.getChildAt(1) as? TextView
+        val delayStepper = stepper(
+            valueText = { formatDelaySeconds(draft.delayMs) + " s" },
+            onMinus = { draft.delayMs = (draft.delayMs - 200L).coerceAtLeast(0L) },
+            onPlus = { draft.delayMs = (draft.delayMs + 200L).coerceAtMost(Macro.MAX_REPEAT_DELAY_MS) }
+        )
+        val countdownStepper = stepper(
+            valueText = { "${draft.countdownSec} s" },
+            onMinus = { draft.countdownSec = (draft.countdownSec - 1).coerceAtLeast(0) },
+            onPlus = { draft.countdownSec = (draft.countdownSec + 1).coerceAtMost(30) }
+        )
+
+        val minutesStepper = stepper(
+            valueText = { (draft.stopMinutes ?: 30).toString() },
+            enabled = draft.stopMinutes != null,
+            onMinus = {
+                draft.stopMinutes = ((draft.stopMinutes ?: 30) - 1)
+                    .coerceIn(1, Macro.MAX_STOP_AFTER_MINUTES)
+            },
+            onPlus = {
+                draft.stopMinutes = ((draft.stopMinutes ?: 30) + 1)
+                    .coerceIn(1, Macro.MAX_STOP_AFTER_MINUTES)
+            }
+        )
+        val minutesSwitch = enabledSwitch(draft.stopMinutes != null) { checked ->
+            draft.stopMinutes = if (checked) 30 else null
+            minutesStepper.alpha = if (checked) 1f else 0.45f
+        }
+        minutesStepper.alpha = if (draft.stopMinutes != null) 1f else 0.45f
+
+        val attacksStepper = stepper(
+            valueText = { (draft.stopAttacks ?: 10).toString() },
+            enabled = draft.stopAttacks != null,
+            onMinus = {
+                draft.stopAttacks = ((draft.stopAttacks ?: 10) - 1)
+                    .coerceIn(1, Macro.MAX_STOP_AFTER_ATTACKS)
+            },
+            onPlus = {
+                draft.stopAttacks = ((draft.stopAttacks ?: 10) + 1)
+                    .coerceIn(1, Macro.MAX_STOP_AFTER_ATTACKS)
+            }
+        )
+        val attacksSwitch = enabledSwitch(draft.stopAttacks != null) { checked ->
+            draft.stopAttacks = if (checked) 10 else null
+            attacksStepper.alpha = if (checked) 1f else 0.45f
+        }
+        attacksStepper.alpha = if (draft.stopAttacks != null) 1f else 0.45f
+
+        val pinSwitch = enabledSwitch(draft.pinned) { draft.pinned = it }
+        val stopBackgroundSwitch = enabledSwitch(draft.stopOnBackground) {
+            draft.stopOnBackground = it
+        }
+
+        val landscape = screenWidth > screenHeight
+        val left = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val right = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val columns = LinearLayout(this).apply {
+            orientation = if (landscape) LinearLayout.HORIZONTAL else LinearLayout.VERTICAL
+        }
+        if (landscape) {
+            columns.addView(left, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            columns.addView(
+                right,
+                LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                    marginStart = dp(24)
+                }
+            )
+        } else {
+            columns.addView(left, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+            columns.addView(right, LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+        }
+
+        fun addRow(column: LinearLayout, label: String, control: View) {
+            column.addView(labelRow(label, control))
+            column.addView(Ds.divider(this))
+        }
+
+        addRow(left, "Name", nameField)
+        addRow(left, "Speed", speedStepper)
+        left.addView(labelRow("Repeat", repeatSegment))
+        left.addView(Ds.divider(this))
+        addRow(left, "Repeat count", repeatCountStepper)
+        addRow(left, "Delay between repeats", delayStepper)
+        addRow(left, "Start countdown", countdownStepper)
+
+        val info = Ds.text(this, 11f, Ds.MUTED).apply {
+            val lastPlayed = macro.lastPlayedAt?.let {
+                SimpleDateFormat("MM/dd HH:mm", Locale.US).format(Date(it))
+            } ?: "never"
+            text = "${macro.gestures.size} gestures · ${formatDuration(macro.durationMs)} · " +
+                "Played ${macro.playCount} time(s)\nCreated " +
+                SimpleDateFormat("MM/dd HH:mm", Locale.US).format(Date(macro.createdAt)) +
+                " · Last played $lastPlayed"
+        }
+        right.addView(
+            Ds.text(this, 11f, Ds.MUTED, caps = true).apply {
+                text = "Stop conditions"
+                setPadding(0, dp(8), 0, dp(4))
+            }
+        )
+        right.addView(labelRow("Game leaves foreground", stopBackgroundSwitch))
+        right.addView(Ds.divider(this))
+
+        val minutesRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            minimumHeight = dp(52)
+        }
+        minutesRow.addView(
+            Ds.text(this, 13f, Ds.MUTED).apply { text = "After minutes" },
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        )
+        minutesRow.addView(minutesStepper)
+        minutesRow.addView(minutesSwitch)
+        right.addView(minutesRow)
+        right.addView(Ds.divider(this))
+
+        val attacksRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            minimumHeight = dp(52)
+        }
+        attacksRow.addView(
+            Ds.text(this, 13f, Ds.MUTED).apply { text = "After attacks" },
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        )
+        attacksRow.addView(attacksStepper)
+        attacksRow.addView(attacksSwitch)
+        right.addView(attacksRow)
+        right.addView(Ds.divider(this))
+        right.addView(labelRow("Pin to top", pinSwitch))
+        right.addView(Ds.divider(this))
+        right.addView(info)
+        right.addView(Ds.spacer(this, 4))
+
+        val scroll = ScrollView(this).apply {
+            isFillViewport = false
+            addView(columns)
+        }
+        root.addView(header)
+        root.addView(Ds.divider(this))
+        root.addView(
+            scroll,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                (screenHeight * 0.72f).toInt().coerceAtLeast(dp(200))
+            )
+        )
+        root.addView(Ds.divider(this))
+        root.addView(error)
+
+        val actions = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(6), 0, 0)
+        }
+        actions.addView(
+            LinearLayout(this@FloatingMenuService).apply {
+                orientation = LinearLayout.HORIZONTAL
+                addView(actionButton("Duplicate") {
+                    persist { saved ->
+                        scope.launch {
+                            val copy = repository.duplicate(saved.id)
+                            closeMacroSettings()
+                            toast(
+                                if (copy != null) "Duplicated as \"${copy.name}\""
+                                else "Duplicate failed"
+                            )
+                        }
+                    }
+                })
+                addView(actionButton("Reset") {
+                    showMacroSettings(
+                        macro.copy(
+                            speedMultiplier = 1f,
+                            repeatMode = Macro.REPEAT_ONCE,
+                            repeatDelayMs = Macro.LEGACY_REPEAT_DELAY_MS,
+                            startCountdownMs = 0L,
+                            stopOnBackground = true,
+                            stopAfterMinutes = null,
+                            stopAfterAttacks = null,
+                            pinned = false
+                        )
+                    )
+                })
+                addView(actionButton("Delete", danger = true) { deleteMacro(macro) })
+            }
+        )
+        actions.addView(
+            LinearLayout(this@FloatingMenuService).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setPadding(0, dp(8), 0, 0)
+                addView(actionButton("Cancel") { closeMacroSettings() })
+                addView(actionButton("Save") {
+                    persist { saved ->
+                        closeMacroSettings()
+                        BotState.setStatus("Settings saved for \"${saved.name}\"")
+                        toast("Saved")
+                    }
+                })
+            }
+        )
+        root.addView(actions)
+
         view.post { clampControllerToScreen() }
+        repeatCountAlpha?.alpha =
+            if (MacroTimeline.isCustomRepeat(draft.repeat)) 1f else 0.45f
+    }
+
+    private fun openTextEditor(
+        title: String,
+        value: String,
+        kind: String,
+        onValue: (String?) -> Unit
+    ) {
+        val view = controllerView
+        MacroInputRelay.pending = { result ->
+            view?.visibility = View.VISIBLE
+            handler.post { clampControllerToScreen() }
+            onValue(result)
+        }
+        view?.visibility = View.GONE
+        val timeout = Runnable { MacroInputRelay.complete(null) }
+        handler.postDelayed(timeout, 180_000L)
+        try {
+            startActivity(
+                Intent(this, MacroInputActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    .putExtra(MacroInputActivity.EXTRA_TITLE, title)
+                    .putExtra(MacroInputActivity.EXTRA_VALUE, value)
+                    .putExtra(MacroInputActivity.EXTRA_KIND, kind)
+            )
+        } catch (e: Exception) {
+            handler.removeCallbacks(timeout)
+            MacroInputRelay.complete(null)
+            toast("Could not open the text editor")
+        }
     }
 
     private fun closeMacroSettings() {
         val view = controllerView ?: return
         val host = view.findViewById<FrameLayout>(R.id.settingsHost) ?: return
-        settingsView?.findViewById<EditText>(R.id.etSettingsName)?.clearFocus()
         settingsView = null
         settingsMacroId = -1L
-        hideKeyboard()
-        setControllerFocusable(false)
         host.removeAllViews()
         host.visibility = View.GONE
         view.findViewById<View>(R.id.pageTabs).visibility = View.VISIBLE
         view.findViewById<View>(R.id.contentFrame).visibility = View.VISIBLE
         view.post { clampControllerToScreen() }
         refreshUi()
-    }
-
-    private fun setControllerFocusable(focusable: Boolean) {
-        val view = controllerView ?: return
-        val params = controllerParams ?: return
-        AppEventLog.log("controller focusable=$focusable")
-        val base = WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
-            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
-        params.flags = if (focusable) {
-            base
-        } else {
-            base or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-        }
-        params.softInputMode = if (focusable) {
-            WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE or
-                WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE
-        } else {
-            WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN
-        }
-        try {
-            windowManager.updateViewLayout(view, params)
-        } catch (_: Exception) {
-            // Window detached.
-        }
-        if (focusable) view.post { clampControllerToScreen() }
-    }
-
-    private fun hideKeyboard() {
-        val imm = getSystemService(INPUT_METHOD_SERVICE) as? InputMethodManager ?: return
-        val token = controllerView?.windowToken ?: return
-        imm.hideSoftInputFromWindow(token, 0)
     }
 
     private fun formatDelaySeconds(ms: Long): String =

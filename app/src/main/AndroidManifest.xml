@@ -42,6 +42,14 @@
             android:parentActivityName=".ui.MainActivity"
             android:theme="@style/Theme.AutoClash" />
 
+        <activity
+            android:name=".ui.MacroInputActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:theme="@style/Theme.AutoClash.Input"
+            android:windowSoftInputMode="stateVisible|adjustResize" />
+
         <service
             android:name=".service.FloatingMenuService"
             android:exported="false"
