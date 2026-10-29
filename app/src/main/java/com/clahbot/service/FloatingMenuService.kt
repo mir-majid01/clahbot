@@ -1,5 +1,6 @@
 package com.clahbot.service
 
+import android.annotation.SuppressLint
 import android.app.Dialog
 import android.app.Notification
 import android.app.NotificationChannel
@@ -22,10 +23,7 @@ import android.os.Looper
 import android.os.SystemClock
 import android.provider.Settings
 import android.text.Editable
-import android.text.Spannable
-import android.text.SpannableStringBuilder
 import android.text.TextWatcher
-import android.text.style.ImageSpan
 import android.util.DisplayMetrics
 import android.util.Log
 import android.view.Gravity
@@ -54,12 +52,16 @@ import com.clahbot.data.AttackRepository
 import com.clahbot.data.BotState
 import com.clahbot.data.models.AttackRecord
 import com.clahbot.data.models.AttackStats
-import com.clahbot.data.models.AttackSummary
 import com.clahbot.data.ControllerState
 import com.clahbot.data.MacroRepository
 import com.clahbot.data.MacroSelection
 import com.clahbot.data.RecordingMode
+import com.clahbot.data.SessionRepository
 import com.clahbot.data.SettingsStore
+import com.clahbot.data.models.SessionAggregator
+import com.clahbot.data.models.totalDarkElixir
+import com.clahbot.data.models.totalElixir
+import com.clahbot.data.models.totalGold
 import com.clahbot.data.models.GesturePath
 import com.clahbot.data.models.GesturePoint
 import com.clahbot.data.models.Macro
@@ -78,6 +80,7 @@ import com.clahbot.results.AppResultsReader
 import com.clahbot.results.CaptureSession
 import com.clahbot.results.ResultCaptureGate
 import com.clahbot.results.ResultsCaptureCoordinator
+import com.clahbot.session.GameSessionTracker
 import com.clahbot.ui.MacroInputActivity
 import com.clahbot.ui.MacroInputRelay
 import com.clahbot.ui.MainActivity
@@ -109,12 +112,16 @@ import kotlin.math.roundToLong
  * touch surface and deliberately blocks the game. Playback uses accessibility
  * gesture dispatch in both cases.
  */
+@SuppressLint("SetTextI18n")
 class FloatingMenuService : Service() {
 
     private lateinit var windowManager: WindowManager
     private lateinit var repository: MacroRepository
     private lateinit var settingsStore: SettingsStore
     private lateinit var attackRepository: AttackRepository
+    private lateinit var sessionRepository: SessionRepository
+    private var statsScope = STATS_SESSION
+    private var scanButton: Button? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val handler = Handler(Looper.getMainLooper())
 
@@ -185,10 +192,12 @@ class FloatingMenuService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        GameSessionTracker.start(this)
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         repository = MacroRepository.get(this)
         settingsStore = SettingsStore.get(this)
         attackRepository = AttackRepository.get(this)
+        sessionRepository = SessionRepository.get(this)
         val versionName = runCatching {
             packageManager.getPackageInfo(packageName, 0).versionName
         }.getOrNull() ?: "?"
@@ -243,7 +252,9 @@ class FloatingMenuService : Service() {
 
         scope.launch { repository.refresh() }
         scope.launch { attackRepository.refresh() }
+        scope.launch { sessionRepository.refresh() }
         scope.launch { attackRepository.records.collect { renderStats() } }
+        scope.launch { sessionRepository.sessions.collect { renderStats() } }
         scope.launch { repository.macros.collect { onMacrosChanged(it) } }
         scope.launch {
             BotState.state.collect { state ->
@@ -319,6 +330,7 @@ class FloatingMenuService : Service() {
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
+        MacroInputRelay.pending = null
         BotState.setInterrupted(true)
         captureSession = null
         autoWatch = false
@@ -482,10 +494,6 @@ class FloatingMenuService : Service() {
         }
         view.findViewById<Button>(R.id.btnPageController).setOnClickListener { setPage(PAGE_CONTROLLER) }
         view.findViewById<Button>(R.id.btnPageStats).setOnClickListener { setPage(PAGE_STATS) }
-        view.findViewById<Button>(R.id.btnWatchResults).setOnClickListener {
-            haptic()
-            toggleManualWatch()
-        }
         view.findViewById<Button>(R.id.btnUndo).setOnClickListener {
             haptic()
             undoDelete()
@@ -1443,6 +1451,10 @@ class FloatingMenuService : Service() {
         abortCaptureSession()
         BotState.setInterrupted(false)
         player?.stop()
+        scope.launch {
+            GameSessionTracker.ensureSession()
+            GameSessionTracker.noteMacro(macro.id)
+        }
         AppEventLog.log(
             "playback start macroId=${macro.id} gestures=${macro.gestures.size} " +
                 "durationMs=${macro.durationMs} repeat=${macro.repeatMode} " +
@@ -1562,7 +1574,13 @@ class FloatingMenuService : Service() {
     private fun setPage(next: Int) {
         page = next
         refreshUi()
-        if (next == PAGE_STATS) renderStats()
+        if (next == PAGE_STATS) {
+            scope.launch {
+                sessionRepository.refresh()
+                attackRepository.refresh()
+                renderStats()
+            }
+        }
     }
 
     private fun endAttackSession(interrupted: Boolean) {
@@ -1605,6 +1623,7 @@ class FloatingMenuService : Service() {
         )
         captureSession = capture
         autoWatch = true
+        scope.launch { GameSessionTracker.ensureSession() }
         resultsCapture.begin(capture)
         AppEventLog.log("auto watch start id=$startedAt")
         BotState.setStatus("Auto watch: waiting for a results screen")
@@ -1667,6 +1686,7 @@ class FloatingMenuService : Service() {
         )
         captureSession = capture
         manualWatch = true
+        scope.launch { GameSessionTracker.ensureSession() }
         resultsCapture.begin(capture)
         AppEventLog.log("manual watch start id=$startedAt")
         BotState.setStatus("Watching for results — play your attack")
@@ -1714,73 +1734,304 @@ class FloatingMenuService : Service() {
         }
 
     private fun renderStats() {
+        if (page != PAGE_STATS) return
         val view = controllerView ?: return
-        val records = attackRepository.records.value
-        val summary = AttackStats.summarize(AttackStats.confirmedOnly(records))
-        val state = BotState.state.value
-        view.findViewById<TextView>(R.id.tvStatsState).text = when {
-            state.isPlayback -> BotState.activeMacroName.value?.let { "Playing: " + it } ?: "Playing"
-            state.isRecording -> "Recording"
-            else -> "Idle"
-        }
-        view.findViewById<TextView>(R.id.tvStatsDetail).text =
-            if (state.isPlayback) BotState.status.value else "No attack in progress"
-        view.findViewById<TextView>(R.id.tvStatsTotals).text = lootTotalsText(summary)
-        view.findViewById<TextView>(R.id.tvStatsTime).text =
-            "Measured " + formatDuration(summary.totalDurationMs) +
-                " · avg " + formatDuration(summary.averageDurationMs) +
-                "\nGesture recorder: " + capturedGestures + " captured · " +
-                rejectedGestures + " rejected"
-        view.findViewById<TextView>(R.id.tvStatsRecent).text = if (records.isEmpty()) {
-            "No attacks yet. Play a macro to start history."
-        } else {
-            records.take(4).joinToString("\n") { r ->
-                formatClockOfDay(r.startedAt) + " · " + formatDuration(r.durationMs) + " · " + lootLabel(r)
-            }
-        }
-    }
+        val content = view.findViewById<LinearLayout>(R.id.statsContent) ?: return
+        content.removeAllViews()
+        content.setPadding(dp(2), dp(2), dp(2), dp(2))
 
-    private fun lootTotalsText(summary: AttackSummary): CharSequence {
-        val rows = listOf(
-            Triple(R.drawable.ic_gold, "Gold", lootText(summary.gold, summary.lootedCount)),
-            Triple(R.drawable.ic_elixir, "Elixir", lootText(summary.elixir, summary.lootedCount)),
-            Triple(R.drawable.ic_dark, "Dark", lootText(summary.darkElixir, summary.lootedCount))
-        )
-        val builder = SpannableStringBuilder("Attacks: " + summary.count)
-        rows.forEach { row ->
-            builder.append("\n")
-            val start = builder.length
-            builder.append(" ")
-            val drawable = ContextCompat.getDrawable(this, row.first)?.mutate()
-            if (drawable != null) {
-                drawable.setBounds(0, 0, dp(11), dp(11))
-                builder.setSpan(
-                    ImageSpan(drawable),
-                    start,
-                    start + 1,
-                    Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
-                )
-            }
-            builder.append(" " + row.second + ": " + row.third)
+        val all = AttackStats.confirmedOnly(attackRepository.records.value)
+            .sortedByDescending { it.startedAt }
+        val sessions = sessionRepository.sessions.value
+        val current = sessions.firstOrNull { it.active } ?: sessions.firstOrNull()
+        val scoped = if (statsScope == STATS_SESSION) {
+            if (current == null) emptyList() else all.filter { it.id in current.attackIds }
+        } else {
+            all
         }
-        val bonusTotal = summary.bonusGold + summary.bonusElixir + summary.bonusDarkElixir
-        if (bonusTotal > 0) {
-            builder.append(
-                "\nBonus (separate): G " + summary.bonusGold +
-                    " · E " + summary.bonusElixir +
-                    " · DE " + summary.bonusDarkElixir
+        val totals = SessionAggregator.totals(scoped)
+
+        content.addView(scopeSegment())
+        content.addView(Ds.spacer(this, 8))
+
+        val tiles = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        tiles.addView(
+            resourceTile(R.drawable.ic_gold, "Gold", totals.totalGold, totals.bonusGold),
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = dp(6)
+            }
+        )
+        tiles.addView(
+            resourceTile(R.drawable.ic_elixir, "Elixir", totals.totalElixir, totals.bonusElixir),
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginEnd = dp(6)
+            }
+        )
+        tiles.addView(
+            resourceTile(
+                R.drawable.ic_dark,
+                "Dark elixir",
+                totals.totalDarkElixir,
+                totals.bonusDarkElixir
+            ),
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        )
+        content.addView(tiles)
+        content.addView(statsMetaRow(totals))
+
+        if (totals.incompleteAttacks > 0) {
+            content.addView(
+                Ds.text(this, 10f, Ds.WARN).apply {
+                    text = "${totals.incompleteAttacks} attack(s) incomplete — excluded from totals"
+                    setPadding(0, dp(4), 0, 0)
+                }
             )
         }
-        return builder
+
+        content.addView(
+            Ds.text(this, 11f, Ds.MUTED, caps = true).apply {
+                text = "Recent"
+                setPadding(0, dp(12), 0, dp(4))
+            }
+        )
+        if (scoped.isEmpty()) {
+            content.addView(
+                Ds.text(this, 11f, Ds.MUTED).apply {
+                    text = if (statsScope == STATS_SESSION) {
+                        "No session yet. Switch to All time or launch Clash."
+                    } else {
+                        "No attacks yet."
+                    }
+                    setPadding(0, dp(4), 0, dp(8))
+                }
+            )
+        } else {
+            scoped.take(5).forEachIndexed { index, record ->
+                content.addView(recentAttackRow(record))
+                if (index < minOf(4, scoped.size - 1)) content.addView(Ds.divider(this))
+            }
+        }
+
+        val seeAll = Ds.text(this, 12f, Ds.LINK, bold = true).apply {
+            text = "See all history"
+            gravity = Gravity.CENTER
+            minHeight = dp(48)
+            setOnClickListener {
+                startActivity(
+                    Intent(this@FloatingMenuService, MainActivity::class.java)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+            }
+        }
+        content.addView(seeAll)
+
+        scanButton = Button(this).apply {
+            text = "Scan now"
+            textSize = 11f
+            isAllCaps = false
+            minWidth = 0
+            minimumWidth = 0
+            setTextColor(Ds.TEXT)
+            background = Ds.rounded(Ds.BUTTON, 10, this@FloatingMenuService)
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(40)
+            ).apply { topMargin = dp(4) }
+            setOnClickListener {
+                haptic()
+                toggleManualWatch()
+            }
+        }
+        content.addView(scanButton)
+        updateScanButton()
     }
 
-    private fun lootText(value: Long, lootedCount: Int): String =
-        if (lootedCount == 0) "not captured" else value.toString()
+    private fun scopeSegment(): LinearLayout {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            background = Ds.rounded(Ds.INPUT, 10, this@FloatingMenuService)
+            setPadding(dp(3), dp(3), dp(3), dp(3))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+        }
+        listOf(STATS_SESSION to "Session", STATS_ALL to "All time").forEach { (scope, label) ->
+            val selected = statsScope == scope
+            val button = Ds.text(this, 12f, Ds.MUTED, bold = true).apply {
+                text = label
+                gravity = Gravity.CENTER
+                minHeight = dp(42)
+                setPadding(dp(16), 0, dp(16), 0)
+                background = Ds.rounded(
+                    if (selected) Ds.ACCENT else android.graphics.Color.TRANSPARENT,
+                    8,
+                    this@FloatingMenuService
+                )
+                setTextColor(if (selected) android.graphics.Color.WHITE else Ds.MUTED)
+                setOnClickListener {
+                    if (statsScope != scope) {
+                        statsScope = scope
+                        renderStats()
+                    }
+                }
+            }
+            row.addView(button)
+        }
+        return row
+    }
 
-    private fun lootLabel(record: AttackRecord): String {
-        if (!record.hasLoot) return "loot not captured"
-        return "G " + (record.gold ?: 0) + " · E " + (record.elixir ?: 0) +
-            " · DE " + (record.darkElixir ?: 0)
+    private fun resourceTile(
+        iconRes: Int,
+        label: String,
+        total: Long,
+        bonus: Long
+    ): LinearLayout {
+        val tile = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = Ds.rounded(Ds.PANEL, Ds.RADIUS_CARD, this@FloatingMenuService, Ds.PANEL_BORDER)
+            setPadding(dp(10), dp(9), dp(10), dp(9))
+            isClickable = true
+            setOnClickListener {
+                android.widget.Toast.makeText(
+                    this@FloatingMenuService,
+                    "$label ${String.format(Locale.US, "%,d", total)} " +
+                        "(loot ${String.format(Locale.US, "%,d", total - bonus)} + bonus " +
+                        "${String.format(Locale.US, "%,d", bonus)})",
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+            }
+        }
+        tile.addView(ImageView(this).apply {
+            setImageResource(iconRes)
+            layoutParams = LinearLayout.LayoutParams(dp(24), dp(24))
+        })
+        tile.addView(Ds.text(this, 20f, Ds.TEXT, bold = true).apply {
+            text = Ds.compactNumber(total)
+            setPadding(0, dp(6), 0, 0)
+            fontFeatureSettings = "tnum"
+        })
+        tile.addView(Ds.text(this, 10f, Ds.MUTED).apply {
+            text = if (bonus > 0L) "+${Ds.compactNumber(bonus)} bonus" else "no bonus"
+        })
+        return tile
+    }
+
+    private fun statsMetaRow(totals: com.clahbot.data.models.SessionTotals): LinearLayout {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(0, dp(10), 0, 0)
+        }
+        fun cell(label: String, value: String): LinearLayout =
+            LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                addView(Ds.text(this@FloatingMenuService, 11f, Ds.MUTED).apply {
+                    text = label
+                })
+                addView(Ds.text(this@FloatingMenuService, 15f, Ds.TEXT, bold = true).apply {
+                    text = value
+                    fontFeatureSettings = "tnum"
+                })
+            }
+        val average = if (totals.attackCount > 0) {
+            totals.durationMs / totals.attackCount
+        } else {
+            0L
+        }
+        row.addView(cell("Attacks", totals.attackCount.toString()))
+        row.addView(cell("Avg / attack", formatDuration(average)))
+        row.addView(cell("Time", formatSpan(totals.durationMs)))
+        return row
+    }
+
+    private fun recentAttackRow(record: AttackRecord): LinearLayout {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            minimumHeight = dp(52)
+        }
+        val left = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        val title = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        title.addView(Ds.text(this, 13f, Ds.TEXT, bold = true).apply {
+            text = formatClockOfDay(record.startedAt)
+            fontFeatureSettings = "tnum"
+            setPadding(0, 0, dp(6), 0)
+        })
+        statusChip(record)?.let { title.addView(it) }
+        left.addView(title)
+        left.addView(Ds.text(this, 11f, Ds.MUTED).apply {
+            text = formatDuration(record.durationMs)
+        })
+        row.addView(left)
+
+        val loot = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        loot.addView(lootValue(R.drawable.ic_gold, record.gold))
+        loot.addView(lootValue(R.drawable.ic_elixir, record.elixir))
+        loot.addView(lootValue(R.drawable.ic_dark, record.darkElixir))
+        row.addView(loot)
+        return row
+    }
+
+    private fun statusChip(record: AttackRecord): TextView? {
+        val (text, color, bg) = when {
+            record.needsReview -> Triple("review", Ds.WARN, Ds.WARN_BG)
+            !record.hasLoot -> Triple("not captured", Ds.WARN, Ds.WARN_BG)
+            else -> return null
+        }
+        return Ds.text(this, 9f, color, bold = true).apply {
+            this.text = text
+            background = Ds.pill(bg, this@FloatingMenuService)
+            setPadding(dp(7), dp(2), dp(7), dp(2))
+        }
+    }
+
+    private fun lootValue(iconRes: Int, value: Long?): LinearLayout =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(5), 0, 0, 0)
+            addView(ImageView(this@FloatingMenuService).apply {
+                setImageResource(iconRes)
+                layoutParams = LinearLayout.LayoutParams(dp(16), dp(16))
+            })
+            addView(Ds.text(this@FloatingMenuService, 11f, Ds.TEXT, bold = true).apply {
+                text = value?.let { Ds.compactNumber(it) } ?: "—"
+                setPadding(dp(3), 0, 0, 0)
+                fontFeatureSettings = "tnum"
+            })
+        }
+
+    private fun formatSpan(ms: Long): String {
+        val minutes = ms / 60_000L
+        return if (minutes >= 60L) {
+            "${minutes / 60L}h ${minutes % 60L}m"
+        } else {
+            "${minutes}m"
+        }
+    }
+
+    private fun updateScanButton() {
+        scanButton?.apply {
+            val state = BotState.state.value
+            val captureBusy = resultsCapture.isActive() && !manualWatch && !autoWatch
+            text = when {
+                manualWatch -> "Stop scan"
+                autoWatch -> "Stop auto scan"
+                else -> "Scan now"
+            }
+            isEnabled = manualWatch || autoWatch ||
+                (!state.isBusy && !captureBusy)
+        }
     }
 
     private fun formatClockOfDay(timestamp: Long): String =
@@ -2442,7 +2693,7 @@ class FloatingMenuService : Service() {
             scroll,
             LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                (screenHeight * 0.72f).toInt().coerceAtLeast(dp(200))
+                (screenHeight * 0.90f - dp(220)).toInt().coerceAtLeast(dp(120))
             )
         )
         root.addView(Ds.divider(this))
@@ -2512,13 +2763,14 @@ class FloatingMenuService : Service() {
         onValue: (String?) -> Unit
     ) {
         val view = controllerView
+        val timeout = Runnable { MacroInputRelay.complete(null) }
         MacroInputRelay.pending = { result ->
+            handler.removeCallbacks(timeout)
             view?.visibility = View.VISIBLE
             handler.post { clampControllerToScreen() }
             onValue(result)
         }
         view?.visibility = View.GONE
-        val timeout = Runnable { MacroInputRelay.complete(null) }
         handler.postDelayed(timeout, 180_000L)
         try {
             startActivity(
@@ -2574,12 +2826,13 @@ class FloatingMenuService : Service() {
     private fun showUndo(macro: Macro) {
         val view = controllerView ?: return
         pendingDelete = macro
-        view.findViewById<View>(R.id.undoRow).visibility = View.VISIBLE
+        val undoRow = view.findViewById<View>(R.id.undoRow)
+        undoRow.visibility = View.VISIBLE
         view.findViewById<TextView>(R.id.tvUndoText).text = "Deleted \"${macro.name}\""
         undoTicker?.let(handler::removeCallbacks)
         val ticker = Runnable {
             pendingDelete = null
-            view.findViewById<View>(R.id.undoRow)?.visibility = View.GONE
+            undoRow.visibility = View.GONE
         }
         undoTicker = ticker
         handler.postDelayed(ticker, UNDO_WINDOW_MS)
@@ -2664,16 +2917,7 @@ class FloatingMenuService : Service() {
             ColorStateList.valueOf(if (statsVisible) tabActive else tabIdle)
 
         view.findViewById<Button>(R.id.btnRecord).isEnabled = !startingPassive
-        view.findViewById<Button>(R.id.btnWatchResults).apply {
-            val captureBusy = resultsCapture.isActive() && !manualWatch && !autoWatch
-            text = when {
-                manualWatch -> "Stop watching"
-                autoWatch -> "Stop auto watch"
-                else -> "Watch results"
-            }
-            isEnabled = manualWatch || autoWatch ||
-                (!showRecording && !showReview && !showPlaying && !captureBusy)
-        }
+        updateScanButton()
 
         val recordMode = activeRecordingMode ?: settingsStore.settings.value.recordingMode
         val passiveMode = recordMode == RecordingMode.PASSIVE
@@ -2956,6 +3200,7 @@ class FloatingMenuService : Service() {
 
     private fun closeEverything() {
         AppEventLog.log("closeEverything state=${BotState.state.value}")
+        GameSessionTracker.closeSessionAsync()
         stopPlayback()
         stopRecording(silent = true)
         stopPassiveRecorder()
@@ -3030,6 +3275,8 @@ class FloatingMenuService : Service() {
     companion object {
         private const val PAGE_CONTROLLER = 0
         private const val PAGE_STATS = 1
+        private const val STATS_SESSION = 0
+        private const val STATS_ALL = 1
         private const val TAG = "AutoClashController"
         private const val AUTO_RESTART_DELAY_MS = 5_000L
         private const val CHANNEL_ID = "autoclash_controller"

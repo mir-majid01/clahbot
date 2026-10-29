@@ -1272,3 +1272,100 @@ work plus the installed loot fixes and macro sharing.
 - Remaining V1 device checks: keyboard in landscape, Save persistence, custom
   repeat, countdown visible + Stop during countdown, 5-second Undo, delete of
   the copy, rotation/app-switch/screen-off window cleanup.
+
+## 2026-10-28 — Batch A: settings, sessions, stats, dashboard (2.6.0)
+
+The workflow changed to two batches. Batch A covers Versions 1–3 plus the
+dashboard redesign, built once after all checks. Reference pack
+`autoclash-reference.zip` was extracted to `.ocr-work/reference` and used as
+the visual source of truth.
+
+### Design layer
+
+- `com.clahbot.ui.design.Ds` is the single token source: backdrop, panel,
+  borders, text/muted, accent, record/play, switch colours, selected row,
+  input, button, divider, success/warn/danger, gold/elixir/dark, radii and a
+  compact-number formatter. The floating UI builds its backgrounds from it;
+  the Compose dashboard uses the same ints. One product, not two styles.
+- Overlay: 320 dp panel, 16 dp radius, 52 dp header, 20/22 dp title, 48 dp
+  tabs and all hit targets >= 48 dp. Macro rows use name + summary + three
+  chips (speed, repeat, gap), a green 40 dp play button and a gear.
+- Settings: in-window sub-screen with back, name, speed stepper, Once/Loop/
+  Custom segmented control, repeat/delay/countdown steppers, stop conditions,
+  pin, Duplicate/Reset/Delete and Cancel/Save. Scroll height is capped at
+  90% of the display minus chrome so it fits landscape.
+- Text entry: this ROM refuses the IME for a focusable TYPE_APPLICATION_OVERLAY
+  (tested with LayoutNoLimits removed and with an explicit showSoftInput; the
+  normal Settings app and a normal dialog both show SwiftKey). The overlay stays
+  non-focusable; the Name field opens `MacroInputActivity`, a small normal
+  window, then restores the panel. Numbers use steppers, as the pack shows.
+
+### Play sessions (Version 2)
+
+- `GameSession` + `SessionRepository`: additive `sessions.json`, schema 1,
+  temp+rename writes, mutex, StateFlow. `attacks.json` is never touched.
+- Sessions start on Clash launch from AutoClash and on playback/results
+  capture; start/end, last update, status (active/closed/recovered), attack ids,
+  macros, attack count, incomplete count, loot and bonus totals are stored.
+- `SyncWithRecords` adds confirmed attacks whose start is inside the session,
+  recomputes totals for edited records, and never adopts older attacks.
+- `GameSessionTracker` (accessibility process) polls every 5 s, keeps the game
+  foreground grace for 60 s, closes on leave/timeout, and recovers unfinished
+  sessions at startup. Controller close closes the session asynchronously so
+  process shutdown cannot drop it.
+- Dashboard: Game card shows the active session; Sessions section shows a live
+  card (LIVE chip, duration, tiles, attacks/avg/incomplete), recent rows with
+  status, See all, detail dialog with macros and attacks, and a
+  "Before sessions" count for records older than the first session.
+
+### Stats, bonus and icons (Version 3)
+
+- Totals = loot + bonus, computed at display time. Stored fields stay
+  separate. Incomplete = missing main loot or `bonus not-captured`; those
+  attacks are counted but excluded from totals. No bonus panel = 0 bonus.
+- Floating Stats was rebuilt from tokens: Session/All-time segmented control,
+  three resource tiles (compact number, exact on tap, bonus line), attacks,
+  average, time, incomplete warning, five recent rows with status chips,
+  See all history, and a small Scan now action. The Idle/gesture text is gone.
+- Dashboard Statistics uses the same tiles/rows rules and a Session/All time
+  switch. Main history and the floating rows share the same compact numbers.
+- Original resource icons replaced with vector gradients/highlights:
+  gold coin, elixir droplet, dark droplet. They are used in the floating
+  stats, dashboard, history and Edit panel; the Edit panel still preserves a
+  saved bonus when edited.
+
+### Dashboard
+
+- Header with logo, app name/subtitle, status pill and gear.
+- Game card with installed state, Launch, and live session line.
+- Setup card collapses permissions into "All set" or expands each missing
+  grant; the controller button stays visible.
+- Macro library uses the same rows/chips/play/share/gear as the overlay.
+- Sessions and Statistics sections as above; designed empty cards for no
+  macros, no sessions and no attacks; See all dialogs for sessions/history.
+
+### Verification so far
+
+- **180 app unit tests green** (0 failures), including 50 ocrlab tests
+  separately (50 green). This includes real-file copies: the user's
+  `macros.json` loads and keeps gestures; sessions operations leave the real
+  `attacks.json` copy byte-identical. Run with `CLAHS_TEST_MACROS` /
+  `CLAHS_TEST_ATTACKS`; CI skips those two instead of committing personal data.
+- No JVM screenshot harness (no Paparazzi/Roborazzi/emulator) exists; the
+  reference PNGs are the visual target and screenshots will be taken during
+  the single device pass. This is a deviation from the requested pre-build
+  screenshot test and is recorded honestly.
+- Lint: five API-level errors fixed (`TakeScreenshotCallback` guarded and
+  annotated, `windowLightNavigationBar` removed). A second lint run is in
+  progress; the remaining warnings are pre-existing project-wide hardcoded
+  strings/button-style/old-dependency warnings, plus English-only SetTextI18n
+  suppressed at the service class.
+- Build/install not yet done for this batch, per the new workflow.
+
+### Open verification
+
+- Three real captures comparing balance change to loot + bonus (device, needs
+  live attacks).
+- Device pass for keyboard Activity, stepper settings, countdown/stop, sessions
+  grace/recovery, dashboard orientation/font scale, and overlay cleanup.
+- Before-sessions display depends on old attacks predating the first session.

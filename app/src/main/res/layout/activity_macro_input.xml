@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
     android:layout_margin="20dp"
@@ -11,7 +12,7 @@
         android:id="@+id/tvInputTitle"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Edit value"
+        android:text="@string/macro_input_title"
         android:textColor="#F1F5F9"
         android:textSize="16sp"
         android:textStyle="bold" />
@@ -22,7 +23,9 @@
         android:layout_height="48dp"
         android:layout_marginTop="12dp"
         android:backgroundTint="#3B82F6"
+        android:hint="@string/macro_input_hint"
         android:importantForAutofill="no"
+        android:inputType="text"
         android:singleLine="true"
         android:textColor="#F1F5F9"
         android:textColorHint="#64748B"
@@ -40,7 +43,8 @@
             android:layout_height="48dp"
             android:layout_weight="1"
             android:backgroundTint="#1E293B"
-            android:text="Cancel"
+            android:text="@string/action_cancel"
+            tools:ignore="ButtonStyle"
             android:textColor="#E2E8F0"
             android:textSize="12sp" />
 
@@ -51,7 +55,8 @@
             android:layout_marginStart="8dp"
             android:layout_weight="1"
             android:backgroundTint="#3B82F6"
-            android:text="OK"
+            android:text="@string/action_ok"
+            tools:ignore="ButtonStyle"
             android:textSize="12sp"
             android:textStyle="bold" />
     </LinearLayout>

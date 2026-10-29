@@ -14,4 +14,8 @@
     <string name="action_stop">Stop</string>
     <string name="disclaimer_title">Educational use only</string>
     <string name="disclaimer_body">Automation may violate Clash of Clans\' Terms of Service and can result in an account ban. Use at your own risk.</string>
+    <string name="macro_input_title">Edit value</string>
+    <string name="macro_input_hint">Macro name</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="action_ok">OK</string>
 </resources>
