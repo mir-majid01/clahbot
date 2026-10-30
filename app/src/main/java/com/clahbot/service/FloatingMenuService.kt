@@ -1878,6 +1878,10 @@ class FloatingMenuService : Service() {
 
     private fun maybeAutoOpen() {
         if (!pendingAutoOpen) return
+        if (serviceDestroying) {
+            cancelAutoOpen()
+            return
+        }
         if (settingsView != null || recording || startingPassive ||
             player?.isRunning() == true
         ) {
