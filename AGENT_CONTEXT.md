@@ -1542,7 +1542,17 @@ run the device tests; no install was done in this round.
   user's device test.
 
 ### Build status
-- Final build to be produced as one debug APK 2.7.0 (versionCode 22), signed
-  with the stable release keystore. No phone install was performed because the
-  user is testing themselves. Back up/hash live files before installing as
-  usual.
+- Final debug APK 2.7.0 (versionCode 22), signed with the stable release
+  keystore, built from `8cc5a2c`.
+  SHA-256 `d0527f32fc69c2ce7d61c6273347c2ae6ccf3df219a70d4f3fdb29de61b80d15`.
+- Verification before build: 189 app unit tests green (including the new
+  overlay-placement and bar-exclusion tests), lint 0 errors / 116 warnings
+  (pre-existing style plus five minor new warnings: one cut/paste hint, one
+  service-from-notification hint, and a redundant FrameLayout around the
+  bubble visual).
+- No phone install was performed because the user is testing themselves.
+  Back up/hash live files before installing as usual.
+- Known test gaps: V4 cutout/snap feel, V5 bar appearance over live battle and
+  results screens, the full record-pause-resume-finish device flow, and V6's
+  end-of-run timing/animation. All are code-verified only.
+
