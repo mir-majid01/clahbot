@@ -13,6 +13,9 @@
     <string name="notification_paused">Playback paused</string>
     <string name="action_stop">Stop</string>
     <string name="action_reset_position">Reset position</string>
+    <string name="playback_finished_title">Playback finished</string>
+    <string name="playback_finished_text">Tap to open the AutoClash menu.</string>
+    <string name="action_open_menu">Open menu</string>
     <string name="disclaimer_title">Educational use only</string>
     <string name="disclaimer_body">Automation may violate Clash of Clans\' Terms of Service and can result in an account ban. Use at your own risk.</string>
     <string name="macro_input_title">Edit value</string>

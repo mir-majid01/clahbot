@@ -250,6 +250,7 @@
                     android:minWidth="0dp"
                     android:padding="0dp"
                     android:text="Pause"
+                    android:textColor="#FFFFFF"
                     android:textSize="10sp" />
 
                 <Button
@@ -261,6 +262,7 @@
                     android:minWidth="0dp"
                     android:padding="0dp"
                     android:text="Finish"
+                    android:textColor="#FFFFFF"
                     android:textSize="10sp" />
 
                 <ImageButton
