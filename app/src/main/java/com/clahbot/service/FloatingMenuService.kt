@@ -3166,6 +3166,7 @@ class FloatingMenuService : Service() {
                     val target = minOf(natural + dp(2), cap)
                     if (scroll.layoutParams.height != target) {
                         scroll.layoutParams = scroll.layoutParams.apply { height = target }
+                        view.post { clampControllerToScreen() }
                     }
                 }
             }
@@ -3916,21 +3917,34 @@ class FloatingMenuService : Service() {
         val view = controllerView ?: return
         val panel = view.findViewById<LinearLayout>(R.id.panel) ?: return
         val target = controllerPanelWidthPx(settings)
+        val windowWidth = if (settings) {
+            target
+        } else {
+            WindowManager.LayoutParams.WRAP_CONTENT
+        }
         AppEventLog.log(
             "panel width settings=$settings screen=${screenWidth}x${screenHeight} " +
                 "density=${resources.displayMetrics.density} target=$target"
         )
+        var changed = false
         if (panel.layoutParams.width != target) {
             panel.layoutParams = panel.layoutParams.apply { width = target }
-            panel.requestLayout()
-            view.requestLayout()
-            controllerParams?.let { params ->
+            changed = true
+        }
+        controllerParams?.let { params ->
+            if (params.width != windowWidth) {
+                params.width = windowWidth
+                changed = true
                 try {
                     windowManager.updateViewLayout(view, params)
                 } catch (_: Exception) {
                     // Window detached.
                 }
             }
+        }
+        if (changed) {
+            panel.requestLayout()
+            view.requestLayout()
             view.post { clampControllerToScreen() }
         }
     }
