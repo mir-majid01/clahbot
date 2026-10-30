@@ -1445,28 +1445,45 @@ two lines on a 320 dp panel at font 1.3 but never ellipsizes.
 - Real-file migration tests ran on copies via `CLAHS_TEST_MACROS` /
   `CLAHS_TEST_ATTACKS`; the live `attacks.json` and `macros.json` were not
   touched.
-- Not verified yet: screenshots against the pack and the device pass (font
-  scale 1.0/1.3, widths, landscape, keyboard, 40-char name, max totals,
-  0/1/8 macros, session grace/recovery). That is the pending single device
-  pass for 2.6.1.
+- The single device pass is recorded in the next section; remaining gaps are
+  font scale 1.3, 0/8 macros, a 40-char name, 999,999,999,999 totals, keyboard
+  entry and a fresh live capture.
 
-### 2.6.1 build and device-pass status
+### 2.6.1 build and device pass
 
-- Built one debug APK from commit `10c612f` (after the self-review fixes),
-  signed with the stable release keystore
-  (`keystore/autoclash-release.jks`), versionCode 21 / 2.6.1.
-  SHA-256 `cfa2e9663face333acdb148fe7bdf2b7eac46bc2aae81c57cc060546f4367fa1`.
-- Self-review caught and fixed: macro list height now follows the actual row
-  count; Duplicate no longer commits the draft to the source macro; rotation
-  rebuilds list/stats/settings and preserves the open settings draft; manual
-  watch starts its session at the capture timestamp; an empty Session scope
-  no longer falls back to all-time totals.
-- No install was attempted: at build time `adb devices` was empty and Windows
-  PnP showed no Android/ADB/Infinix device, so the phone was not connected to
-  this machine. Live `attacks.json`, `macros.json` and `sessions.json` were
-  therefore untouched in this round; the pre-install backup rule still applies
-  when the phone is reconnected.
-- The one device pass remains outstanding and must be run before Batch A is
-  called verified on hardware. Do not build another APK unless that pass
-  produces a real defect.
+- Final APK built from commit `389c7ff`, signed with the stable release
+  keystore, versionCode 21 / 2.6.1. SHA-256
+  `08bbf03b5990a93602515e8fea4fe19d3bce214e6baa34a0cf13ef00390f6235`.
+- Installed in place over 2.6.0 with `adb install -r`; the phone was
+  reconnected on 2026-10-29. Before every install, `macros.json` and
+  `sessions.json` were pulled to `.ocr-work/backups/`; the final install kept
+  macros `d1278460…` and sessions `8f2c9888…` byte-identical. `attacks.json`
+  was absent at the earlier check and appeared when the user made an attack;
+  it was never written by this app session (hash after the pass
+  `08e0e154…`).
+- Device pass found and fixed two real defects: the settings panel always
+  stretched to the 90 % cap with a large empty area, and rotating with settings
+  open left the window at the old portrait width, clipping the right column.
+  The installed build now sizes settings to its content and carries the target
+  window width while settings is open.
+- Verified on the Infinix X6876 in portrait and landscape:
+  - Dashboard: one-row header, game card with a grey dot and
+    `Session closed · 4m · 1 attacks`, stacked Statistics, Session|All time
+    defaulting to All time, and only the non-empty session listed (the old
+    0-attack session remains in `sessions.json` but is hidden).
+  - Controller: one-row header with green dot, Controller|Stats segment,
+    Record with white text, macro rows with the accent meta line, 36 dp play
+    and a plain gear, list height following the actual 2-row count.
+  - Settings: page 1 and Stop conditions both hug their content; steppers,
+    toggles, labels and the Cancel/Save footer are fully inside the panel;
+    Cancel left `macros.json` unchanged.
+  - Rotation with settings open preserved the draft and the current page;
+    landscape used a 480 dp window, both columns were fully visible and the
+    right stepper was not clipped; rotating back restored 320 dp.
+  - Opening/reopening the controller did not create a session
+    (`sessions.json` hash unchanged).
+- Not exercised on hardware: font scale 1.3, 0/8-macro libraries, a 40-char
+  macro name, 999,999,999,999 totals, the text-editor keyboard, and a new live
+  results capture. Those remain honest gaps. The phone was returned to the
+  home screen and auto-rotate was restored to on.
 
