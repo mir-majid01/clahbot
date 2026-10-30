@@ -1487,3 +1487,62 @@ two lines on a 320 dp panel at font 1.3 but never ellipsizes.
   results capture. Those remain honest gaps. The phone was returned to the
   home screen and auto-rotate was restored to on.
 
+
+## 2026-10-30 — Batch B: floating icon, recording bar, auto-open (2.7.0)
+
+Implemented V4–V6 together and bumped to versionCode 22 / 2.7.0. The user will
+run the device tests; no install was done in this round.
+
+### V4 — floating icon position
+- The icon now has a touch frame of at least 48 dp while the drawn circle keeps
+  the user's bubble scale; the whole frame is clamped inside system bars and
+  the display cutout. Dragging snaps to the nearest horizontal edge (180 ms)
+  and positions are remembered per orientation for both the bubble and the
+  expanded menu.
+- Added a four-corner setting (default top-right) in the main app, reused the
+  existing "Reset floating position" button, and added a notification
+  "Reset position" action. Reset clears all remembered positions.
+- Capture-time overlay hiding is now 140 ms around each clean shot and 80 ms
+  around each stable shot, instead of 600 ms plus the entire OCR pass. Reason
+  for the old ~1 s disappearance: a 600 ms settle delay followed by hiding the
+  overlay until the result was read and saved. Detection frames still include
+  the overlay; value frames do not.
+- Evidence: `OverlayPlacementTest` covers corners, clamping, snap and the menu
+  default. Hardware placement/snap/cutout behaviour and the OCR interaction
+  remain unverified until the user's test.
+
+### V5 — recording bar
+- During recording the header, tabs and status strip disappear and the window
+  becomes one 48 dp red bar (state, timer, Pause, Finish, minimize) at the
+  top-centre. Minimize shrinks it to a red-dot timer pill; tapping expands it.
+  The bar/pill is draggable and its position is remembered per orientation.
+- Removed the separate top-right REC pill entirely. Passive-recorder bounds are
+  set to the bar (and refreshed on every drag/move and after minimize/expand),
+  so bar touches and drags are excluded from macro gestures. Pause/resume still
+  drops input and the pause clock is subtracted from gesture timestamps; that
+  code was unchanged.
+- Decision: the bar is top-centre as specified. It has not been checked against
+  live battle/results screens yet, so the user may want it lower if it covers
+  game information.
+- Evidence: existing PassiveGestureBuilder/PassiveRecorder tests cover the
+  controller-hit exclusion and pause drop/resume; the new bar UI is compile-
+  verified only.
+
+### V6 — auto-open menu after playback
+- A run end (natural finish, Stop, or ERROR) sets a pending auto-open. The menu
+  waits for the results capture/read to end, with a 15 s cap, then moves the
+  icon to the menu's default left position in 220 ms and fades the full menu in
+  over 130 ms (350 ms total, ease-out). The window is `FLAG_NOT_TOUCHABLE`
+  during the transition, the system animator setting is respected, and a new
+  run/recording/close cancels the animation.
+- It never triggers between loop iterations or while recording. If the game is
+  not in front, a "Playback finished" notification with an "Open menu" action
+  is posted instead.
+- Evidence: compile/tests only; the end-of-run timing and animation need the
+  user's device test.
+
+### Build status
+- Final build to be produced as one debug APK 2.7.0 (versionCode 22), signed
+  with the stable release keystore. No phone install was performed because the
+  user is testing themselves. Back up/hash live files before installing as
+  usual.
