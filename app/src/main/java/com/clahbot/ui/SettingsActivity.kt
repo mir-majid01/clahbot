@@ -73,6 +73,7 @@ import com.clahbot.data.ThemeMode
 import com.clahbot.data.models.Macro
 import com.clahbot.execution.MacroTimeline
 import com.clahbot.input.InputAccessManager
+import com.clahbot.overlay.BubbleCorner
 import com.clahbot.service.FloatingMenuService
 import com.clahbot.ui.theme.AutoClashTheme
 import com.clahbot.update.GitHubUpdater
@@ -594,13 +595,34 @@ fun SettingsScreen(
                         steps = 15
                     )
                     Text(
+                        "Floating icon corner",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        CornerChip("Top left", BubbleCorner.TOP_LEFT, settings.bubbleCorner) {
+                            onUpdate { it.copy(bubbleCorner = BubbleCorner.TOP_LEFT) }
+                        }
+                        CornerChip("Top right", BubbleCorner.TOP_RIGHT, settings.bubbleCorner) {
+                            onUpdate { it.copy(bubbleCorner = BubbleCorner.TOP_RIGHT) }
+                        }
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        CornerChip("Bottom left", BubbleCorner.BOTTOM_LEFT, settings.bubbleCorner) {
+                            onUpdate { it.copy(bubbleCorner = BubbleCorner.BOTTOM_LEFT) }
+                        }
+                        CornerChip("Bottom right", BubbleCorner.BOTTOM_RIGHT, settings.bubbleCorner) {
+                            onUpdate { it.copy(bubbleCorner = BubbleCorner.BOTTOM_RIGHT) }
+                        }
+                    }
+                    Text(
                         "Size changes apply when the controller is reopened.",
                         fontSize = 9.sp,
                         color = TextMuted
                     )
                     Row {
                         TextButton(onClick = onResetPosition) {
-                            Text("Reset controller position", fontSize = 11.sp)
+                            Text("Reset floating position", fontSize = 11.sp)
                         }
                     }
                 }
@@ -1030,6 +1052,20 @@ private fun InfoRow(label: String, value: String) {
         )
         Text(value, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface)
     }
+}
+
+@Composable
+private fun CornerChip(
+    label: String,
+    corner: BubbleCorner,
+    selected: BubbleCorner,
+    onSelect: () -> Unit
+) {
+    FilterChip(
+        selected = selected == corner,
+        onClick = onSelect,
+        label = { Text(label, fontSize = 11.sp) }
+    )
 }
 
 @Composable

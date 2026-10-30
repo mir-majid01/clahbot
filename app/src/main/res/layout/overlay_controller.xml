@@ -453,26 +453,33 @@
         android:id="@+id/bubble"
         android:layout_width="48dp"
         android:layout_height="48dp"
-        android:background="@drawable/bg_bubble"
         android:visibility="gone">
 
-        <ImageView
-            android:id="@+id/bubbleIcon"
-            android:layout_width="34dp"
-            android:layout_height="34dp"
+        <FrameLayout
+            android:id="@+id/bubbleVisual"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
             android:layout_gravity="center"
-            android:contentDescription="@string/app_name"
-            android:src="@drawable/ic_autoclash_mark" />
+            android:background="@drawable/bg_bubble">
 
-        <TextView
-            android:id="@+id/bubbleStatus"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_gravity="bottom|center_horizontal"
-            android:layout_marginBottom="2dp"
-            android:text=""
-            android:textColor="#FCA5A5"
-            android:textSize="6sp"
-            android:textStyle="bold" />
+            <ImageView
+                android:id="@+id/bubbleIcon"
+                android:layout_width="34dp"
+                android:layout_height="34dp"
+                android:layout_gravity="center"
+                android:contentDescription="@string/app_name"
+                android:src="@drawable/ic_autoclash_mark" />
+
+            <TextView
+                android:id="@+id/bubbleStatus"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="bottom|center_horizontal"
+                android:layout_marginBottom="2dp"
+                android:text=""
+                android:textColor="#FCA5A5"
+                android:textSize="6sp"
+                android:textStyle="bold" />
+        </FrameLayout>
     </FrameLayout>
 </FrameLayout>

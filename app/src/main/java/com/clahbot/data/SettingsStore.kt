@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import com.clahbot.data.models.Macro
 import com.clahbot.execution.MacroTimeline
+import com.clahbot.overlay.BubbleCorner
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -22,6 +23,7 @@ data class AppSettings(
     val controllerAlpha: Float = 1f,
     val controllerScale: Float = 1f,
     val bubbleScale: Float = 1f,
+    val bubbleCorner: BubbleCorner = BubbleCorner.TOP_RIGHT,
     val saveResultsScreenshots: Boolean = false,
     val theme: ThemeMode = ThemeMode.DARK
 )
@@ -56,6 +58,12 @@ class SettingsStore private constructor(private val prefs: SharedPreferences) {
                 .coerceIn(MIN_CONTROLLER_SCALE, MAX_CONTROLLER_SCALE),
             bubbleScale = prefs.getFloat(KEY_BUBBLE_SCALE, 1f)
                 .coerceIn(MIN_BUBBLE_SCALE, MAX_BUBBLE_SCALE),
+            bubbleCorner = runCatching {
+                BubbleCorner.valueOf(
+                    prefs.getString(KEY_BUBBLE_CORNER, BubbleCorner.TOP_RIGHT.name)
+                        ?: BubbleCorner.TOP_RIGHT.name
+                )
+            }.getOrDefault(BubbleCorner.TOP_RIGHT),
             saveResultsScreenshots = prefs.getBoolean(KEY_SAVE_RESULTS, false),
             theme = runCatching { ThemeMode.valueOf(themeName) }.getOrDefault(ThemeMode.DARK)
         )
@@ -83,6 +91,7 @@ class SettingsStore private constructor(private val prefs: SharedPreferences) {
             .putFloat(KEY_ALPHA, normalized.controllerAlpha)
             .putFloat(KEY_CONTROLLER_SCALE, normalized.controllerScale)
             .putFloat(KEY_BUBBLE_SCALE, normalized.bubbleScale)
+            .putString(KEY_BUBBLE_CORNER, normalized.bubbleCorner.name)
             .putBoolean(KEY_SAVE_RESULTS, normalized.saveResultsScreenshots)
             .putString(KEY_THEME, normalized.theme.name)
             .apply()
@@ -116,6 +125,7 @@ class SettingsStore private constructor(private val prefs: SharedPreferences) {
         private const val KEY_ALPHA = "controller_alpha"
         private const val KEY_CONTROLLER_SCALE = "controller_scale"
         private const val KEY_BUBBLE_SCALE = "bubble_scale"
+        private const val KEY_BUBBLE_CORNER = "bubble_corner"
         private const val KEY_SAVE_RESULTS = "save_results_screenshots"
         private const val KEY_THEME = "theme"
 

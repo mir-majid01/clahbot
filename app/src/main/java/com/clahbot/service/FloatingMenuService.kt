@@ -1,6 +1,7 @@
 package com.clahbot.service
 
 import android.annotation.SuppressLint
+import android.animation.ValueAnimator
 import android.app.Dialog
 import android.app.Notification
 import android.app.NotificationChannel
@@ -34,7 +35,9 @@ import android.view.LayoutInflater
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
+import android.view.WindowInsets
 import android.view.WindowManager
+import android.view.animation.DecelerateInterpolator
 import android.view.inputmethod.InputMethodManager
 import android.widget.Button
 import android.widget.EditText
@@ -70,10 +73,14 @@ import com.clahbot.data.models.GesturePath
 import com.clahbot.data.models.GesturePoint
 import com.clahbot.data.models.Macro
 import com.clahbot.data.models.RecordedGesture
-import com.clahbot.execution.BubbleCorner
 import com.clahbot.execution.MacroPlayer
 import com.clahbot.execution.MacroTimeline
 import com.clahbot.execution.PlaybackBubblePlacement
+import com.clahbot.overlay.BubbleCorner
+import com.clahbot.overlay.OverlayBounds
+import com.clahbot.overlay.OverlayPlacement
+import com.clahbot.overlay.OverlayPoint
+import com.clahbot.overlay.OverlayPositionStore
 import com.clahbot.input.BuiltGesture
 import com.clahbot.input.InputAccessManager
 import com.clahbot.input.InputEventSource
@@ -119,6 +126,12 @@ import kotlin.math.roundToLong
 @SuppressLint("SetTextI18n")
 class FloatingMenuService : Service() {
 
+    private enum class PlacementKind(val key: String) {
+        CONTROLLER("controller"),
+        BUBBLE("bubble"),
+        RECORDING("recording")
+    }
+
     private lateinit var windowManager: WindowManager
     private lateinit var repository: MacroRepository
     private lateinit var settingsStore: SettingsStore
@@ -132,6 +145,11 @@ class FloatingMenuService : Service() {
 
     private var controllerView: View? = null
     private var controllerParams: WindowManager.LayoutParams? = null
+    private var overlayPositions: OverlayPositionStore? = null
+    private var snapAnimator: ValueAnimator? = null
+    private var lastBubbleCorner: BubbleCorner? = null
+    private var lastRecordingMinimized = false
+    private var recordingChromeActive = false
     private var captureView: View? = null
     private var captureParams: WindowManager.LayoutParams? = null
     private var passiveRecorder: PassiveRecorder? = null
@@ -202,6 +220,8 @@ class FloatingMenuService : Service() {
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         repository = MacroRepository.get(this)
         settingsStore = SettingsStore.get(this)
+        overlayPositions = OverlayPositionStore.get(this)
+        lastBubbleCorner = settingsStore.settings.value.bubbleCorner
         attackRepository = AttackRepository.get(this)
         sessionRepository = SessionRepository.get(this)
         val versionName = runCatching {
@@ -294,6 +314,22 @@ class FloatingMenuService : Service() {
                         // Window detached.
                     }
                 }
+                val previousCorner = lastBubbleCorner
+                if (previousCorner != null && previousCorner != settings.bubbleCorner) {
+                    overlayPositions?.clear("bubble")
+                    if (collapsed && !recording && !startingPassive) {
+                        val size = currentBubbleSizePx()
+                        val point = OverlayPlacement.defaultBubble(
+                            settings.bubbleCorner,
+                            size,
+                            size,
+                            safeBounds(),
+                            dp(8)
+                        )
+                        applyWindowPoint(params, point, PlacementKind.BUBBLE)
+                    }
+                }
+                lastBubbleCorner = settings.bubbleCorner
                 refreshUi()
             }
         }
@@ -326,6 +362,13 @@ class FloatingMenuService : Service() {
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
+        val previousParams = controllerParams
+        if (previousParams != null && settingsView == null && !recording && !startingPassive) {
+            savePosition(
+                if (collapsed) PlacementKind.BUBBLE else PlacementKind.CONTROLLER,
+                previousParams
+            )
+        }
         updateScreenSize()
         applyPanelWidth(settingsView != null)
         refreshControllerBoundsSnapshot()
@@ -338,6 +381,48 @@ class FloatingMenuService : Service() {
             renderStats()
         } else {
             renderMacroList()
+        }
+        if (settingsView == null && !recording && !startingPassive) {
+            val view = controllerView
+            val params = controllerParams
+            if (view != null && params != null) {
+                if (collapsed) {
+                    val point = savedPosition(PlacementKind.BUBBLE) ?: defaultBubblePoint()
+                    val size = currentBubbleSizePx()
+                    applyWindowPoint(
+                        params,
+                        OverlayPlacement.clamp(
+                            point.x,
+                            point.y,
+                            size,
+                            size,
+                            safeBounds(),
+                            dp(8)
+                        ),
+                        PlacementKind.BUBBLE
+                    )
+                } else {
+                    applyPanelWidth(settings = false)
+                    val panel = view.findViewById<View>(R.id.panel)
+                    val panelWidth = panel?.width?.takeIf { it > 0 }
+                        ?: controllerPanelWidthPx(false)
+                    val panelHeight = panel?.height?.takeIf { it > 0 } ?: dp(260)
+                    val point = savedPosition(PlacementKind.CONTROLLER)
+                        ?: defaultControllerPoint(panelWidth, panelHeight)
+                    applyWindowPoint(
+                        params,
+                        OverlayPlacement.clamp(
+                            point.x,
+                            point.y,
+                            panelWidth,
+                            panelHeight,
+                            safeBounds(),
+                            0
+                        ),
+                        PlacementKind.CONTROLLER
+                    )
+                }
+            }
         }
         if (!recording) return
         stopRecording()
@@ -436,6 +521,9 @@ class FloatingMenuService : Service() {
             layoutParams = layoutParams.apply { height = dp(192) }
         }
         applyBubbleSize(view, controllerContext, prefs.bubbleScale)
+        val initialPosition = overlayPositions?.get(
+            "controller_${currentOrientation()}"
+        ) ?: defaultControllerPoint(controllerPanelWidthPx(false), dp(260))
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -445,8 +533,8 @@ class FloatingMenuService : Service() {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = dp(12)
-            y = dp(96)
+            x = initialPosition.x
+            y = initialPosition.y
             alpha = prefs.controllerAlpha
         }
 
@@ -499,9 +587,9 @@ class FloatingMenuService : Service() {
         val params = controllerParams ?: return
 
         view.findViewById<View>(R.id.controllerHeader)
-            .setOnTouchListener(dragListener(params, onTap = {}))
+            .setOnTouchListener(dragListener(params, PlacementKind.CONTROLLER, onTap = {}))
         view.findViewById<View>(R.id.bubble)
-            .setOnTouchListener(dragListener(params, onTap = { expandController() }))
+            .setOnTouchListener(dragListener(params, PlacementKind.BUBBLE, onTap = { expandController() }))
 
         view.findViewById<ImageButton>(R.id.btnMinimize).setOnClickListener {
             haptic()
@@ -553,6 +641,7 @@ class FloatingMenuService : Service() {
 
     private fun dragListener(
         params: WindowManager.LayoutParams,
+        kind: PlacementKind,
         onTap: () -> Unit
     ): View.OnTouchListener {
         var startX = 0
@@ -565,6 +654,7 @@ class FloatingMenuService : Service() {
         return View.OnTouchListener { _, event ->
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
+                    snapAnimator?.cancel()
                     startX = params.x
                     startY = params.y
                     touchX = event.rawX
@@ -578,8 +668,9 @@ class FloatingMenuService : Service() {
                     val dy = (event.rawY - touchY).toInt()
                     if (!moved && (abs(dx) > slop || abs(dy) > slop)) moved = true
                     if (moved) {
-                        params.x = clampX(startX + dx)
-                        params.y = clampY(startY + dy)
+                        val point = clampCurrentWindow(startX + dx, startY + dy, kind)
+                        params.x = point.x
+                        params.y = point.y
                         val view = controllerView
                         if (view != null) {
                             try {
@@ -593,12 +684,19 @@ class FloatingMenuService : Service() {
                 }
 
                 MotionEvent.ACTION_UP -> {
-                    if (!moved) onTap()
+                    if (!moved) {
+                        onTap()
+                    } else if (kind == PlacementKind.BUBBLE) {
+                        snapBubbleToEdge(params)
+                    } else {
+                        savePosition(kind, params)
+                    }
                     updateControllerPassthrough()
                     true
                 }
 
                 MotionEvent.ACTION_CANCEL -> {
+                    savePosition(kind, params)
                     updateControllerPassthrough()
                     true
                 }
@@ -608,64 +706,223 @@ class FloatingMenuService : Service() {
         }
     }
 
-    private fun clampX(value: Int): Int {
-        val width = controllerView?.width?.takeIf { it > 0 } ?: dp(304)
-        return value.coerceIn(0, (screenWidth - width).coerceAtLeast(0))
+    private fun safeBounds(): OverlayBounds {
+        if (screenWidth <= 0 || screenHeight <= 0) updateScreenSize()
+        var left = 0
+        var top = 0
+        var right = screenWidth
+        var bottom = screenHeight
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                val metrics = windowManager.currentWindowMetrics
+                val insets = metrics.windowInsets.getInsetsIgnoringVisibility(
+                    WindowInsets.Type.systemBars() or
+                        WindowInsets.Type.displayCutout() or
+                        WindowInsets.Type.captionBar()
+                )
+                left = insets.left
+                top = insets.top
+                right = metrics.bounds.width() - insets.right
+                bottom = metrics.bounds.height() - insets.bottom
+            } catch (_: Exception) {
+                // Fall back to the real screen size.
+            }
+        }
+        if (right <= left || bottom <= top) {
+            left = 0
+            top = 0
+            right = screenWidth
+            bottom = screenHeight
+        }
+        return OverlayBounds(left, top, right, bottom)
     }
 
-    private fun clampY(value: Int): Int {
-        val height = controllerView?.height?.takeIf { it > 0 } ?: dp(220)
-        return value.coerceIn(0, (screenHeight - height).coerceAtLeast(0))
+    private fun positionKey(kind: PlacementKind): String =
+        "${kind.key}_${currentOrientation()}"
+
+    private fun savePosition(kind: PlacementKind, params: WindowManager.LayoutParams) {
+        if (kind == PlacementKind.RECORDING && !recording && !startingPassive) return
+        overlayPositions?.set(positionKey(kind), OverlayPoint(params.x, params.y))
+    }
+
+    private fun savedPosition(kind: PlacementKind): OverlayPoint? =
+        overlayPositions?.get(positionKey(kind))
+
+    private fun defaultBubblePoint(): OverlayPoint {
+        val size = currentBubbleSizePx()
+        return OverlayPlacement.defaultBubble(
+            settingsStore.settings.value.bubbleCorner,
+            size,
+            size,
+            safeBounds(),
+            dp(8)
+        )
+    }
+
+    private fun defaultControllerPoint(panelWidth: Int, panelHeight: Int): OverlayPoint {
+        val start = OverlayPlacement.menuDefault(safeBounds(), dp(8), dp(96))
+        return OverlayPlacement.clamp(
+            start.x,
+            start.y,
+            panelWidth,
+            panelHeight,
+            safeBounds(),
+            0
+        )
+    }
+
+    private fun clampCurrentWindow(x: Int, y: Int, kind: PlacementKind): OverlayPoint {
+        val width = if (kind == PlacementKind.BUBBLE) {
+            currentBubbleSizePx()
+        } else {
+            controllerView?.width?.takeIf { it > 0 } ?: dp(304)
+        }
+        val height = if (kind == PlacementKind.BUBBLE) {
+            currentBubbleSizePx()
+        } else {
+            controllerView?.height?.takeIf { it > 0 } ?: dp(260)
+        }
+        val margin = if (kind == PlacementKind.CONTROLLER) 0 else dp(8)
+        return OverlayPlacement.clamp(x, y, width, height, safeBounds(), margin)
+    }
+
+    private fun applyWindowPoint(
+        params: WindowManager.LayoutParams,
+        point: OverlayPoint,
+        kind: PlacementKind,
+        save: Boolean = true
+    ) {
+        params.x = point.x
+        params.y = point.y
+        val view = controllerView
+        if (view != null) {
+            try {
+                windowManager.updateViewLayout(view, params)
+            } catch (_: Exception) {
+                // Ignore.
+            }
+        }
+        if (save) savePosition(kind, params)
+        view?.post { refreshControllerBoundsSnapshot() }
+    }
+
+    private fun snapBubbleToEdge(params: WindowManager.LayoutParams) {
+        val size = currentBubbleSizePx()
+        val safe = safeBounds()
+        val targetX = OverlayPlacement.snapX(params.x, size, safe, dp(8))
+        val targetY = OverlayPlacement.clamp(
+            params.x,
+            params.y,
+            size,
+            size,
+            safe,
+            dp(8)
+        ).y
+        snapAnimator?.cancel()
+        if (!ValueAnimator.areAnimatorsEnabled()) {
+            applyWindowPoint(params, OverlayPoint(targetX, targetY), PlacementKind.BUBBLE)
+            return
+        }
+        val startX = params.x
+        val startY = params.y
+        val animator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = SNAP_DURATION_MS
+            interpolator = DecelerateInterpolator()
+            addUpdateListener { animation ->
+                val t = animation.animatedFraction
+                params.x = (startX + (targetX - startX) * t).roundToInt()
+                params.y = (startY + (targetY - startY) * t).roundToInt()
+                controllerView?.let { view ->
+                    try {
+                        windowManager.updateViewLayout(view, params)
+                    } catch (_: Exception) {
+                        // Ignore.
+                    }
+                }
+            }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: android.animation.Animator) {
+                    snapAnimator = null
+                    savePosition(PlacementKind.BUBBLE, params)
+                    refreshControllerBoundsSnapshot()
+                }
+            })
+        }
+        snapAnimator = animator
+        animator.start()
     }
 
     private fun collapseController() {
         val view = controllerView ?: return
         val params = controllerParams ?: return
+        if (recording || startingPassive) return
+        savePosition(PlacementKind.CONTROLLER, params)
         collapsed = true
         view.findViewById<View>(R.id.panel).visibility = View.GONE
         view.findViewById<View>(R.id.bubble).visibility = View.VISIBLE
-        if ((controllerView?.width ?: 0) > 0) params.x = clampX(params.x)
-        try {
-            windowManager.updateViewLayout(view, params)
-        } catch (_: Exception) {
-            // Ignore.
-        }
-        view.post { updateControllerPassthrough() }
+        val point = savedPosition(PlacementKind.BUBBLE) ?: defaultBubblePoint()
+        val size = currentBubbleSizePx()
+        val clamped = OverlayPlacement.clamp(
+            point.x,
+            point.y,
+            size,
+            size,
+            safeBounds(),
+            dp(8)
+        )
+        applyWindowPoint(params, clamped, PlacementKind.BUBBLE)
         refreshUi()
     }
 
     private fun expandController() {
         val view = controllerView ?: return
         val params = controllerParams ?: return
+        if (!recording) savePosition(PlacementKind.BUBBLE, params)
         collapsed = false
         view.findViewById<View>(R.id.bubble).visibility = View.GONE
         val panel = view.findViewById<View>(R.id.panel)
         panel.visibility = View.VISIBLE
-        val panelWidth = panel.width.takeIf { it > 0 } ?: dp(304)
+        applyPanelWidth(settings = false)
+        val panelWidth = panel.width.takeIf { it > 0 } ?: controllerPanelWidthPx(false)
         val panelHeight = panel.height.takeIf { it > 0 } ?: dp(260)
-        params.x = params.x.coerceIn(0, (screenWidth - panelWidth).coerceAtLeast(0))
-        params.y = params.y.coerceIn(0, (screenHeight - panelHeight).coerceAtLeast(0))
-        try {
-            windowManager.updateViewLayout(view, params)
-        } catch (_: Exception) {
-            // Ignore.
-        }
-        view.post { updateControllerPassthrough() }
+        val saved = savedPosition(PlacementKind.CONTROLLER)
+            ?: defaultControllerPoint(panelWidth, panelHeight)
+        val clamped = OverlayPlacement.clamp(
+            saved.x,
+            saved.y,
+            panelWidth,
+            panelHeight,
+            safeBounds(),
+            0
+        )
+        applyWindowPoint(params, clamped, PlacementKind.CONTROLLER)
         refreshUi()
     }
 
     private fun resetControllerPosition() {
-        val view = controllerView ?: return
-        val params = controllerParams ?: return
-        params.x = dp(12)
-        params.y = dp(96)
-        try {
-            windowManager.updateViewLayout(view, params)
-        } catch (_: Exception) {
-            // Ignore.
+        snapAnimator?.cancel()
+        overlayPositions?.clear()
+        val view = controllerView
+        val params = controllerParams
+        if (view == null || params == null) {
+            toast("Position reset; open the controller to see it")
+            return
         }
-        view.post { refreshControllerBoundsSnapshot() }
-        toast("Controller position reset")
+        val point = if (collapsed) {
+            defaultBubblePoint()
+        } else {
+            val panel = view.findViewById<View>(R.id.panel)
+            defaultControllerPoint(
+                panel?.width?.takeIf { it > 0 } ?: controllerPanelWidthPx(false),
+                panel?.height?.takeIf { it > 0 } ?: dp(260)
+            )
+        }
+        applyWindowPoint(
+            params,
+            point,
+            if (collapsed) PlacementKind.BUBBLE else PlacementKind.CONTROLLER
+        )
+        toast("Floating position reset")
     }
 
     // -------------------------------------------------------------- recording
@@ -1019,22 +1276,27 @@ class FloatingMenuService : Service() {
 
     private fun applyBubbleSize(view: View, context: Context, bubbleScale: Float) {
         val density = context.resources.displayMetrics.density
-        val bubblePx = (BUBBLE_SIZE_DP * bubbleScale * density)
+        val visualPx = (BUBBLE_SIZE_DP * bubbleScale * density)
             .roundToInt()
             .coerceAtLeast(1)
-        val iconPx = (BUBBLE_ICON_DP * bubbleScale * density)
-            .roundToInt()
-            .coerceAtLeast(1)
+        val touchPx = maxOf(dp(BUBBLE_SIZE_DP), visualPx)
         view.findViewById<View>(R.id.bubble)?.let { bubble ->
             bubble.layoutParams = bubble.layoutParams.apply {
-                width = bubblePx
-                height = bubblePx
+                width = touchPx
+                height = touchPx
+            }
+        }
+        view.findViewById<View>(R.id.bubbleVisual)?.let { visual ->
+            visual.layoutParams = visual.layoutParams.apply {
+                width = visualPx
+                height = visualPx
             }
         }
         view.findViewById<View>(R.id.bubbleIcon)?.let { icon ->
             icon.layoutParams = icon.layoutParams.apply {
-                width = iconPx
-                height = iconPx
+                val iconPx = (BUBBLE_ICON_DP * bubbleScale * density).roundToInt().coerceAtLeast(1)
+                width = minOf(iconPx, visualPx - dp(2).coerceAtLeast(1))
+                height = minOf(iconPx, visualPx - dp(2).coerceAtLeast(1))
             }
         }
         view.findViewById<TextView>(R.id.bubbleStatus)?.textSize =
@@ -1043,10 +1305,11 @@ class FloatingMenuService : Service() {
 
     private fun currentBubbleSizePx(): Int {
         val prefs = settingsStore.settings.value
-        return (BUBBLE_SIZE_DP * prefs.controllerScale * prefs.bubbleScale *
-            resources.displayMetrics.density)
+        val density = resources.displayMetrics.density
+        val visual = (BUBBLE_SIZE_DP * prefs.controllerScale * prefs.bubbleScale * density)
             .roundToInt()
             .coerceAtLeast(1)
+        return maxOf(dp(BUBBLE_SIZE_DP), visual)
     }
 
     private fun clampControllerToScreen() {
@@ -1054,11 +1317,11 @@ class FloatingMenuService : Service() {
         val params = controllerParams ?: return
         if (view.width <= 0 || view.height <= 0) return
         if (screenWidth <= 0 || screenHeight <= 0) return
-        val x = params.x.coerceIn(0, (screenWidth - view.width).coerceAtLeast(0))
-        val y = params.y.coerceIn(0, (screenHeight - view.height).coerceAtLeast(0))
-        if (x == params.x && y == params.y) return
-        params.x = x
-        params.y = y
+        val kind = if (collapsed) PlacementKind.BUBBLE else PlacementKind.CONTROLLER
+        val point = clampCurrentWindow(params.x, params.y, kind)
+        if (point.x == params.x && point.y == params.y) return
+        params.x = point.x
+        params.y = point.y
         try {
             windowManager.updateViewLayout(view, params)
         } catch (_: Exception) {
@@ -3799,6 +4062,11 @@ class FloatingMenuService : Service() {
             Intent(this, FloatingMenuService::class.java).setAction(ACTION_CLOSE),
             PendingIntent.FLAG_IMMUTABLE
         )
+        val resetIntent = PendingIntent.getService(
+            this, 2,
+            Intent(this, FloatingMenuService::class.java).setAction(ACTION_RESET_POSITION),
+            PendingIntent.FLAG_IMMUTABLE
+        )
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(getString(R.string.notification_title))
@@ -3806,6 +4074,7 @@ class FloatingMenuService : Service() {
             .setContentIntent(openIntent)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
+            .addAction(0, getString(R.string.action_reset_position), resetIntent)
             .addAction(0, getString(R.string.action_stop), closeIntent)
             .build()
     }
@@ -3988,6 +4257,7 @@ class FloatingMenuService : Service() {
         private const val BUBBLE_MARGIN_DP = 8
         private const val BUBBLE_TOP_DP = 48
         private const val BUBBLE_TOP_LANDSCAPE_DP = 8
+        private const val SNAP_DURATION_MS = 180L
         private const val EXTRA_MACRO_ID = "macro_id"
 
         const val ACTION_PLAY = "com.clahbot.action.PLAY"
