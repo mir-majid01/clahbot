@@ -128,6 +128,36 @@ class PassiveRecorderTest {
     }
 
     @Test
+    fun barTapsAndPauseControlsNeverBecomeGestures() {
+        val localGestures = mutableListOf<BuiltGesture>()
+        val local = PassiveRecorder(
+            source = source,
+            geometry = { ScreenGeometry(1080, 2400, 0) },
+            controllerBounds = { ScreenRect(0f, 0f, 500f, 200f) },
+            onGesture = { localGestures += it },
+            onError = { }
+        )
+        assertTrue(local.start())
+
+        // The intended game gesture.
+        source.emit(down(1000, 1, 300, 2300))
+        source.emit(up(1200))
+        // Pause, finish and resume taps all land on the recording bar.
+        source.emit(down(2000, 2, 100, 100))
+        source.emit(up(2200))
+        local.setPaused(true)
+        source.emit(down(3000, 3, 100, 100))
+        source.emit(up(3200))
+        local.setPaused(false)
+        source.emit(down(4000, 4, 100, 100))
+        source.emit(up(4200))
+
+        assertEquals(1, localGestures.size)
+        assertEquals(1000L, localGestures.single().startUptimeMs)
+        local.close()
+    }
+
+    @Test
     fun closeWithoutStartStillClosesTheSource() {
         recorder.close()
 
