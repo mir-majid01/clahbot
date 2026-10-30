@@ -151,6 +151,11 @@ class FloatingMenuService : Service() {
     private var recordingMinimized = false
     private var lastRecordingMinimized = false
     private var recordingChromeActive = false
+    private var playbackRunActive = false
+    private var pendingAutoOpen = false
+    private var autoOpenTimeout: Runnable? = null
+    private var autoOpenAnimator: ValueAnimator? = null
+    private var serviceDestroying = false
     private var captureView: View? = null
     private var captureParams: WindowManager.LayoutParams? = null
     private var passiveRecorder: PassiveRecorder? = null
@@ -271,6 +276,7 @@ class FloatingMenuService : Service() {
                         startAutoWatch()
                     }
                 }
+                if (pendingAutoOpen) maybeAutoOpen()
                 refreshUi()
             }
         )
@@ -287,6 +293,9 @@ class FloatingMenuService : Service() {
             BotState.state.collect { state ->
                 if (state == ControllerState.PLAYBACK_PAUSED) {
                     updateNotification(getString(R.string.notification_paused))
+                }
+                if (state == ControllerState.ERROR && playbackRunActive) {
+                    onPlaybackRunEnded()
                 }
                 refreshUi()
             }
@@ -353,6 +362,11 @@ class FloatingMenuService : Service() {
             }
 
             ACTION_RESET_POSITION -> resetControllerPosition()
+            ACTION_OPEN -> {
+                ensureController()
+                expandController()
+                cancelAutoOpenNotification()
+            }
             ACTION_CLOSE -> requestClose()
             else -> ensureController()
         }
@@ -361,6 +375,7 @@ class FloatingMenuService : Service() {
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
+        cancelAutoOpen()
         val previousParams = controllerParams
         if (previousParams != null && settingsView == null && !recording && !startingPassive) {
             savePosition(
@@ -432,6 +447,8 @@ class FloatingMenuService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        serviceDestroying = true
+        cancelAutoOpen()
         handler.removeCallbacksAndMessages(null)
         MacroInputRelay.pending = null
         BotState.setInterrupted(true)
@@ -886,6 +903,8 @@ class FloatingMenuService : Service() {
     private fun expandController() {
         val view = controllerView ?: return
         val params = controllerParams ?: return
+        cancelAutoOpen()
+        view.findViewById<View>(R.id.panel).alpha = 1f
         if (!recording) savePosition(PlacementKind.BUBBLE, params)
         collapsed = false
         view.findViewById<View>(R.id.bubble).visibility = View.GONE
@@ -938,7 +957,9 @@ class FloatingMenuService : Service() {
 
     private fun startRecording() {
         if (recording || startingPassive) return
+        cancelAutoOpen()
         if (BotState.state.value.isPlayback) stopPlayback()
+        cancelAutoOpen()
         if (controllerView == null) ensureController()
         if (controllerView == null) return
         // The always-on watcher must not poll or hide the overlay while the
@@ -1660,6 +1681,8 @@ class FloatingMenuService : Service() {
             )
         }
         abortCaptureSession()
+        cancelAutoOpen()
+        playbackRunActive = true
         BotState.setInterrupted(false)
         player?.stop()
         scope.launch {
@@ -1692,6 +1715,7 @@ class FloatingMenuService : Service() {
         player = newPlayer
         newPlayer.play(adjusted, scope) {
             endAttackSession(interrupted = false)
+            onPlaybackRunEnded()
         }
         if (!newPlayer.isRunning()) {
             abortCaptureSession()
@@ -1775,9 +1799,11 @@ class FloatingMenuService : Service() {
     private fun stopPlayback() {
         val interrupted = BotState.interrupted.value
         AppEventLog.log("playback stop interrupted=$interrupted")
+        val wasRun = playbackRunActive
         player?.stop()
         player = null
         endAttackSession(interrupted)
+        if (wasRun) onPlaybackRunEnded()
         updateNotification(getString(R.string.notification_idle))
         refreshUi()
     }
@@ -1815,6 +1841,200 @@ class FloatingMenuService : Service() {
         autoWatch = false
         if (::resultsCapture.isInitialized) resultsCapture.cancel()
         if (hadSession) AppEventLog.log("capture session aborted")
+    }
+
+    private fun onPlaybackRunEnded() {
+        if (serviceDestroying) return
+        playbackRunActive = false
+        if (recording || startingPassive) return
+        pendingAutoOpen = true
+        autoOpenTimeout?.let(handler::removeCallbacks)
+        val timeout = Runnable { maybeAutoOpen() }
+        autoOpenTimeout = timeout
+        handler.postDelayed(timeout, AUTO_OPEN_TIMEOUT_MS)
+        if (!resultsCapture.isActive()) maybeAutoOpen()
+    }
+
+    private fun cancelAutoOpen() {
+        pendingAutoOpen = false
+        autoOpenTimeout?.let(handler::removeCallbacks)
+        autoOpenTimeout = null
+        autoOpenAnimator?.cancel()
+        autoOpenAnimator = null
+        controllerView?.findViewById<View>(R.id.panel)?.alpha = 1f
+        val params = controllerParams ?: return
+        val notTouchable = WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        if ((params.flags and notTouchable) != 0) {
+            params.flags = params.flags and notTouchable.inv()
+            controllerView?.let { view ->
+                try {
+                    windowManager.updateViewLayout(view, params)
+                } catch (_: Exception) {
+                    // Window detached.
+                }
+            }
+        }
+    }
+
+    private fun maybeAutoOpen() {
+        if (!pendingAutoOpen) return
+        if (settingsView != null || recording || startingPassive ||
+            player?.isRunning() == true
+        ) {
+            cancelAutoOpen()
+            return
+        }
+        pendingAutoOpen = false
+        autoOpenTimeout?.let(handler::removeCallbacks)
+        autoOpenTimeout = null
+        if (!ClahAccessibilityService.isGameForeground()) {
+            showAutoOpenNotification()
+            return
+        }
+        cancelAutoOpenNotification()
+        if (controllerView == null) {
+            ensureController()
+            return
+        }
+        if (!collapsed) {
+            refreshUi()
+            return
+        }
+        animateAutoOpen()
+    }
+
+    private fun animateAutoOpen() {
+        val view = controllerView ?: return
+        val params = controllerParams ?: return
+        cancelAutoOpen()
+        val target = defaultControllerPoint(
+            controllerPanelWidthPx(false),
+            view.findViewById<View>(R.id.panel)?.height?.takeIf { it > 0 } ?: dp(320)
+        )
+        val startX = params.x
+        val startY = params.y
+        val baseFlags = params.flags
+        params.flags = baseFlags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        try {
+            windowManager.updateViewLayout(view, params)
+        } catch (_: Exception) {
+            // Window detached.
+        }
+        if (!ValueAnimator.areAnimatorsEnabled()) {
+            finishAutoOpen(view, params, target, baseFlags)
+            return
+        }
+        val move = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = AUTO_OPEN_MOVE_MS
+            interpolator = DecelerateInterpolator()
+            addUpdateListener { animation ->
+                val t = animation.animatedFraction
+                params.x = (startX + (target.x - startX) * t).roundToInt()
+                params.y = (startY + (target.y - startY) * t).roundToInt()
+                try {
+                    windowManager.updateViewLayout(view, params)
+                } catch (_: Exception) {
+                    // Window detached.
+                }
+            }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: android.animation.Animator) {
+                    autoOpenAnimator = null
+                    finishAutoOpen(view, params, target, baseFlags)
+                }
+            })
+        }
+        autoOpenAnimator = move
+        move.start()
+    }
+
+    private fun finishAutoOpen(
+        view: View,
+        params: WindowManager.LayoutParams,
+        target: OverlayPoint,
+        baseFlags: Int
+    ) {
+        params.x = target.x
+        params.y = target.y
+        collapsed = false
+        view.findViewById<View>(R.id.bubble).visibility = View.GONE
+        val panel = view.findViewById<View>(R.id.panel)
+        panel.visibility = View.VISIBLE
+        panel.alpha = 1f
+        applyPanelWidth(settings = false)
+        params.flags = baseFlags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        try {
+            windowManager.updateViewLayout(view, params)
+        } catch (_: Exception) {
+            // Window detached.
+        }
+        refreshUi()
+        savePosition(PlacementKind.CONTROLLER, params)
+        view.post { refreshControllerBoundsSnapshot() }
+        view.post { clampControllerToScreen() }
+        if (!ValueAnimator.areAnimatorsEnabled()) {
+            params.flags = baseFlags
+            try {
+                windowManager.updateViewLayout(view, params)
+            } catch (_: Exception) {
+                // Window detached.
+            }
+            return
+        }
+        panel.alpha = 0f
+        val fade = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = AUTO_OPEN_FADE_MS
+            interpolator = DecelerateInterpolator()
+            addUpdateListener { panel.alpha = it.animatedFraction }
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: android.animation.Animator) {
+                    autoOpenAnimator = null
+                    params.flags = baseFlags
+                    try {
+                        windowManager.updateViewLayout(view, params)
+                    } catch (_: Exception) {
+                        // Window detached.
+                    }
+                    refreshControllerBoundsSnapshot()
+                }
+            })
+        }
+        autoOpenAnimator = fade
+        fade.start()
+    }
+
+    private fun showAutoOpenNotification() {
+        try {
+            ensureChannel()
+            val openMenu = PendingIntent.getService(
+                this,
+                3,
+                Intent(this, FloatingMenuService::class.java).setAction(ACTION_OPEN),
+                PendingIntent.FLAG_IMMUTABLE
+            )
+            val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_notification)
+                .setContentTitle("Playback finished")
+                .setContentText("Tap to open the AutoClash menu.")
+                .setContentIntent(openMenu)
+                .setAutoCancel(true)
+                .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                .addAction(0, "Open menu", openMenu)
+                .build()
+            getSystemService(NotificationManager::class.java)
+                ?.notify(AUTO_OPEN_NOTIFICATION_ID, notification)
+        } catch (_: Exception) {
+            // Notification permission/state is best effort.
+        }
+    }
+
+    private fun cancelAutoOpenNotification() {
+        try {
+            getSystemService(NotificationManager::class.java)
+                ?.cancel(AUTO_OPEN_NOTIFICATION_ID)
+        } catch (_: Exception) {
+            // Best effort.
+        }
     }
 
     private fun startAutoWatch() {
@@ -4177,8 +4397,10 @@ class FloatingMenuService : Service() {
 
     private fun closeEverything() {
         AppEventLog.log("closeEverything state=${BotState.state.value}")
+        cancelAutoOpen()
         GameSessionTracker.closeSessionAsync()
         stopPlayback()
+        cancelAutoOpen()
         stopRecording(silent = true)
         stopPassiveRecorder()
         removeCapture()
@@ -4318,9 +4540,14 @@ class FloatingMenuService : Service() {
         private const val BUBBLE_TOP_DP = 48
         private const val BUBBLE_TOP_LANDSCAPE_DP = 8
         private const val SNAP_DURATION_MS = 180L
+        private const val AUTO_OPEN_MOVE_MS = 220L
+        private const val AUTO_OPEN_FADE_MS = 130L
+        private const val AUTO_OPEN_TIMEOUT_MS = 15_000L
+        private const val AUTO_OPEN_NOTIFICATION_ID = 1002
         private const val EXTRA_MACRO_ID = "macro_id"
 
         const val ACTION_PLAY = "com.clahbot.action.PLAY"
+        const val ACTION_OPEN = "com.clahbot.action.OPEN"
         const val ACTION_CLOSE = "com.clahbot.action.CLOSE"
         const val ACTION_RESET_POSITION = "com.clahbot.action.RESET_POSITION"
 
