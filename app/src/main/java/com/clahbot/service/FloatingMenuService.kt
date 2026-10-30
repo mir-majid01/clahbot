@@ -330,9 +330,10 @@ class FloatingMenuService : Service() {
         applyPanelWidth(settingsView != null)
         refreshControllerBoundsSnapshot()
         val openDraft = settingsDraft
+        val openPage = settingsPage
         if (settingsView != null) {
             val macro = macros.firstOrNull { it.id == settingsMacroId }
-            if (macro != null) showMacroSettings(macro, openDraft) else closeMacroSettings()
+            if (macro != null) showMacroSettings(macro, openDraft, openPage) else closeMacroSettings()
         } else if (page == PAGE_STATS) {
             renderStats()
         } else {
@@ -2370,7 +2371,11 @@ class FloatingMenuService : Service() {
 
     private var settingsPage = 0
 
-    private fun showMacroSettings(macro: Macro, initialDraft: SettingsDraft? = null) {
+    private fun showMacroSettings(
+        macro: Macro,
+        initialDraft: SettingsDraft? = null,
+        initialPage: Int = 0
+    ) {
         val view = controllerView ?: return
         val host = view.findViewById<FrameLayout>(R.id.settingsHost) ?: return
         if (settingsView != null) closeMacroSettings()
@@ -2413,7 +2418,7 @@ class FloatingMenuService : Service() {
         settingsDraft = draft
         host.visibility = View.VISIBLE
 
-        settingsPage = 0
+        settingsPage = initialPage.coerceIn(0, 1)
         val error = Ds.text(this, 10f, Ds.DANGER_TEXT).apply { visibility = View.GONE }
         val landscape = screenWidth > screenHeight
 
@@ -3150,6 +3155,20 @@ class FloatingMenuService : Service() {
             if (settingsPage == 0) playbackPage() else stopPage()
             updateTabs()
             content.requestLayout()
+            content.post {
+                val maxPanel = minOf(
+                    (screenHeight * 0.90f).toInt(),
+                    screenHeight - (controllerParams?.y ?: dp(48)) - dp(8)
+                )
+                val cap = (maxPanel - dp(198)).coerceAtLeast(dp(96))
+                val natural = content.height
+                if (natural > 0) {
+                    val target = minOf(natural + dp(2), cap)
+                    if (scroll.layoutParams.height != target) {
+                        scroll.layoutParams = scroll.layoutParams.apply { height = target }
+                    }
+                }
+            }
         }
 
         val swipeDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
@@ -3203,11 +3222,6 @@ class FloatingMenuService : Service() {
         root.addView(footer)
 
         renderPage()
-
-        val yPx = controllerParams?.y ?: dp(48)
-        val maxPanelPx = minOf((screenHeight * 0.90f).toInt(), screenHeight - yPx - dp(8))
-        val scrollPx = (maxPanelPx - dp(198)).coerceAtLeast(dp(96))
-        scroll.layoutParams = scroll.layoutParams.apply { height = scrollPx }
 
         root.isFocusableInTouchMode = true
         root.requestFocus()
@@ -3902,8 +3916,21 @@ class FloatingMenuService : Service() {
         val view = controllerView ?: return
         val panel = view.findViewById<LinearLayout>(R.id.panel) ?: return
         val target = controllerPanelWidthPx(settings)
+        AppEventLog.log(
+            "panel width settings=$settings screen=${screenWidth}x${screenHeight} " +
+                "density=${resources.displayMetrics.density} target=$target"
+        )
         if (panel.layoutParams.width != target) {
             panel.layoutParams = panel.layoutParams.apply { width = target }
+            panel.requestLayout()
+            view.requestLayout()
+            controllerParams?.let { params ->
+                try {
+                    windowManager.updateViewLayout(view, params)
+                } catch (_: Exception) {
+                    // Window detached.
+                }
+            }
             view.post { clampControllerToScreen() }
         }
     }
