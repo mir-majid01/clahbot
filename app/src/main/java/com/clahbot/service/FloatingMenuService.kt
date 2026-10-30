@@ -1937,8 +1937,14 @@ class FloatingMenuService : Service() {
                     // Window detached.
                 }
             }
+            var cancelled = false
             addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationCancel(animation: android.animation.Animator) {
+                    cancelled = true
+                }
+
                 override fun onAnimationEnd(animation: android.animation.Animator) {
+                    if (cancelled) return
                     autoOpenAnimator = null
                     finishAutoOpen(view, params, target, baseFlags)
                 }
@@ -1986,8 +1992,14 @@ class FloatingMenuService : Service() {
             duration = AUTO_OPEN_FADE_MS
             interpolator = DecelerateInterpolator()
             addUpdateListener { panel.alpha = it.animatedFraction }
+            var cancelled = false
             addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationCancel(animation: android.animation.Animator) {
+                    cancelled = true
+                }
+
                 override fun onAnimationEnd(animation: android.animation.Animator) {
+                    if (cancelled) return
                     autoOpenAnimator = null
                     params.flags = baseFlags
                     try {
@@ -2014,12 +2026,12 @@ class FloatingMenuService : Service() {
             )
             val notification = NotificationCompat.Builder(this, CHANNEL_ID)
                 .setSmallIcon(R.drawable.ic_notification)
-                .setContentTitle("Playback finished")
-                .setContentText("Tap to open the AutoClash menu.")
+                .setContentTitle(getString(R.string.playback_finished_title))
+                .setContentText(getString(R.string.playback_finished_text))
                 .setContentIntent(openMenu)
                 .setAutoCancel(true)
                 .setPriority(NotificationCompat.PRIORITY_DEFAULT)
-                .addAction(0, "Open menu", openMenu)
+                .addAction(0, getString(R.string.action_open_menu), openMenu)
                 .build()
             getSystemService(NotificationManager::class.java)
                 ?.notify(AUTO_OPEN_NOTIFICATION_ID, notification)
