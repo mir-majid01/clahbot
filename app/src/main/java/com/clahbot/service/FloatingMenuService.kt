@@ -148,13 +148,12 @@ class FloatingMenuService : Service() {
     private var overlayPositions: OverlayPositionStore? = null
     private var snapAnimator: ValueAnimator? = null
     private var lastBubbleCorner: BubbleCorner? = null
+    private var recordingMinimized = false
     private var lastRecordingMinimized = false
     private var recordingChromeActive = false
     private var captureView: View? = null
     private var captureParams: WindowManager.LayoutParams? = null
     private var passiveRecorder: PassiveRecorder? = null
-    private var indicatorView: View? = null
-    private var indicatorText: TextView? = null
     private var startingPassive = false
     private var activeRecordingMode: RecordingMode? = null
 
@@ -207,9 +206,9 @@ class FloatingMenuService : Service() {
     private val timerRunnable = object : Runnable {
         override fun run() {
             if (!recording) return
-            controllerView?.findViewById<TextView>(R.id.tvRecTimer)?.text =
-                formatClock(elapsedRecordingMs())
-            updateIndicator()
+            val timer = formatClock(elapsedRecordingMs())
+            controllerView?.findViewById<TextView>(R.id.tvRecTimer)?.text = timer
+            controllerView?.findViewById<TextView>(R.id.tvRecPillTimer)?.text = timer
             handler.postDelayed(this, 500L)
         }
     }
@@ -445,7 +444,6 @@ class FloatingMenuService : Service() {
         stopPlayback()
         stopRecording(silent = true)
         stopPassiveRecorder()
-        removeIndicator()
         removeCapture()
         removeController()
         scope.cancel()
@@ -612,6 +610,16 @@ class FloatingMenuService : Service() {
             haptic()
             stopRecording()
         }
+        view.findViewById<ImageButton>(R.id.btnRecMinimize).setOnClickListener {
+            haptic()
+            minimizeRecordingBar()
+        }
+        view.findViewById<View>(R.id.recDragBar)
+            .setOnTouchListener(dragListener(params, PlacementKind.RECORDING, onTap = {}))
+        view.findViewById<View>(R.id.recPill)
+            .setOnTouchListener(
+                dragListener(params, PlacementKind.RECORDING, onTap = { expandRecordingBar() })
+            )
 
         view.findViewById<Button>(R.id.btnRecordAgain).setOnClickListener {
             haptic()
@@ -675,6 +683,7 @@ class FloatingMenuService : Service() {
                         if (view != null) {
                             try {
                                 windowManager.updateViewLayout(view, params)
+                                refreshControllerBoundsSnapshot()
                             } catch (_: Exception) {
                                 // Window detached mid drag.
                             }
@@ -998,15 +1007,6 @@ class FloatingMenuService : Service() {
         BotState.clearRecording()
         BotState.setState(ControllerState.READY)
         BotState.setStatus("Starting capture — wait for REC")
-        if (!addIndicator()) {
-            recording = false
-            startingPassive = false
-            activeRecordingMode = null
-            BotState.setState(ControllerState.READY)
-            BotState.setStatus("Could not show the recording indicator")
-            toast("Could not show the recording indicator")
-            return
-        }
         handler.removeCallbacks(timerRunnable)
         handler.post(timerRunnable)
         scope.launch { runPassiveStart() }
@@ -1061,7 +1061,6 @@ class FloatingMenuService : Service() {
             Log.i(TAG, "Passive source started via ${source.label}")
             toast("Passive recording started. Swipe now.")
             updateRecordingNotification()
-            updateIndicator()
             refreshUi()
         } catch (t: CancellationException) {
             throw t
@@ -1088,7 +1087,6 @@ class FloatingMenuService : Service() {
         recording = false
         activeRecordingMode = null
         handler.removeCallbacks(timerRunnable)
-        removeIndicator()
         setControllerKeepScreenOn(false)
         updateNotification(getString(R.string.notification_idle))
         BotState.setState(ControllerState.READY)
@@ -1239,7 +1237,6 @@ class FloatingMenuService : Service() {
 
             else -> return
         }
-        updateIndicator()
         updateRecordingNotification()
         refreshUi()
     }
@@ -1358,73 +1355,6 @@ class FloatingMenuService : Service() {
         } catch (_: Exception) {
             // Window detached.
         }
-    }
-
-    private fun addIndicator(): Boolean {
-        if (indicatorView != null) {
-            updateIndicator()
-            return true
-        }
-        val view = TextView(this).apply {
-            textSize = 10f
-            typeface = android.graphics.Typeface.DEFAULT_BOLD
-            setPadding(dp(9), dp(5), dp(9), dp(5))
-            background = GradientDrawable().apply {
-                cornerRadius = dp(14).toFloat()
-                setColor(0xD9111827.toInt())
-                setStroke(dp(1), 0x66EF4444)
-            }
-        }
-        val params = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            overlayType(),
-            WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.TOP or Gravity.END
-            x = dp(12)
-            y = dp(96)
-        }
-        return try {
-            windowManager.addView(view, params)
-            indicatorView = view
-            indicatorText = view
-            updateIndicator()
-            true
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to show the recording indicator", e)
-            false
-        }
-    }
-
-    private fun removeIndicator() {
-        val view = indicatorView ?: return
-        indicatorView = null
-        indicatorText = null
-        try {
-            windowManager.removeView(view)
-        } catch (_: Exception) {
-            // Already detached.
-        }
-    }
-
-    private fun updateIndicator() {
-        val view = indicatorText ?: return
-        val state = BotState.state.value
-        view.text = when {
-            state == ControllerState.RECORDING_PAUSED -> "❚❚ PAUSED"
-            startingPassive -> "● STARTING"
-            else -> "● REC " + formatClock(elapsedRecordingMs())
-        }
-        view.setTextColor(
-            if (state == ControllerState.RECORDING_PAUSED) {
-                0xFFFDE68A.toInt()
-            } else {
-                0xFFFCA5A5.toInt()
-            }
-        )
     }
 
     @Suppress("DEPRECATION")
@@ -1632,7 +1562,6 @@ class FloatingMenuService : Service() {
         if (recorded.isEmpty()) rejectedGestures++
         pathPoints.clear()
         handler.removeCallbacks(timerRunnable)
-        removeIndicator()
         removeCapture()
         setControllerKeepScreenOn(false)
         pausedAtMs = 0L
@@ -1681,7 +1610,6 @@ class FloatingMenuService : Service() {
 
     private fun discardRecording(quiet: Boolean = false) {
         stopPassiveRecorder()
-        removeIndicator()
         removeCapture()
         setControllerKeepScreenOn(false)
         handler.removeCallbacks(timerRunnable)
@@ -3744,8 +3672,124 @@ class FloatingMenuService : Service() {
 
     // -------------------------------------------------------------------- ui
 
-    private fun setCaptureOverlayHidden(hidden: Boolean) {
-        captureOverlayHidden = hidden
+    private fun recordingUiActive(): Boolean = recording || startingPassive
+
+    private fun enterRecordingChrome() {
+        val view = controllerView ?: return
+        val params = controllerParams ?: return
+        recordingChromeActive = true
+        recordingMinimized = false
+        lastRecordingMinimized = false
+        val safe = safeBounds()
+        val barWidth = controllerPanelWidthPx(false)
+        val saved = overlayPositions?.get(positionKey(PlacementKind.RECORDING))
+        val point = saved ?: OverlayPoint(
+            safe.left + ((safe.width - barWidth) / 2).coerceAtLeast(0),
+            safe.top + dp(8)
+        )
+        val clamped = OverlayPlacement.clamp(
+            point.x,
+            point.y,
+            barWidth,
+            dp(48),
+            safe,
+            dp(8)
+        )
+        applyWindowPoint(params, clamped, PlacementKind.RECORDING, save = false)
+        val pad = dp(10)
+        controllerBoundsSnapshot = ScreenRect(
+            (clamped.x - pad).toFloat(),
+            (clamped.y - pad).toFloat(),
+            (clamped.x + barWidth + pad).toFloat(),
+            (clamped.y + dp(48) + pad).toFloat()
+        )
+        applyRecordingChrome()
+    }
+
+    private fun applyRecordingChrome() {
+        val view = controllerView ?: return
+        val panel = view.findViewById<LinearLayout>(R.id.panel) ?: return
+        view.findViewById<View>(R.id.controllerHeader).visibility = View.GONE
+        view.findViewById<View>(R.id.tvStatus).visibility = View.GONE
+        view.findViewById<View>(R.id.settingsHost).visibility = View.GONE
+        panel.background = null
+        panel.setPadding(0, 0, 0, 0)
+        val content = view.findViewById<View>(R.id.contentFrame)
+        (content?.layoutParams as? LinearLayout.LayoutParams)?.topMargin = 0
+        content?.visibility = if (recordingMinimized) View.GONE else View.VISIBLE
+        view.findViewById<View>(R.id.recPill).visibility =
+            if (recordingMinimized) View.VISIBLE else View.GONE
+        panel.layoutParams = panel.layoutParams.apply {
+            width = if (recordingMinimized) {
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            } else {
+                controllerPanelWidthPx(false)
+            }
+        }
+        panel.requestLayout()
+        view.requestLayout()
+        view.post {
+            refreshControllerBoundsSnapshot()
+            clampControllerToScreen()
+        }
+    }
+
+    private fun restoreControllerChrome() {
+        if (!recordingChromeActive) return
+        val view = controllerView ?: return
+        val panel = view.findViewById<LinearLayout>(R.id.panel) ?: return
+        recordingChromeActive = false
+        recordingMinimized = false
+        lastRecordingMinimized = false
+        panel.background = getDrawable(R.drawable.bg_panel)
+        val inset = dp(10)
+        panel.setPadding(inset, inset, inset, inset)
+        val content = view.findViewById<View>(R.id.contentFrame)
+        (content?.layoutParams as? LinearLayout.LayoutParams)?.topMargin = dp(6)
+        content?.visibility = View.VISIBLE
+        view.findViewById<View>(R.id.controllerHeader).visibility = View.VISIBLE
+        view.findViewById<View>(R.id.recPill).visibility = View.GONE
+        applyPanelWidth(settingsView != null)
+        view.requestLayout()
+        view.post {
+            val params = controllerParams
+            if (params != null && !collapsed) {
+                val panelWidth = panel.width.takeIf { it > 0 }
+                    ?: controllerPanelWidthPx(false)
+                val panelHeight = panel.height.takeIf { it > 0 } ?: dp(260)
+                val point = savedPosition(PlacementKind.CONTROLLER)
+                    ?: defaultControllerPoint(panelWidth, panelHeight)
+                applyWindowPoint(
+                    params,
+                    OverlayPlacement.clamp(
+                        point.x,
+                        point.y,
+                        panelWidth,
+                        panelHeight,
+                        safeBounds(),
+                        0
+                    ),
+                    PlacementKind.CONTROLLER,
+                    save = false
+                )
+            }
+            refreshControllerBoundsSnapshot()
+        }
+    }
+
+    private fun minimizeRecordingBar() {
+        if (!recordingUiActive()) return
+        recordingMinimized = true
+        refreshUi()
+    }
+
+    private fun expandRecordingBar() {
+        if (!recordingUiActive()) return
+        recordingMinimized = false
+        refreshUi()
+    }
+
+    private fun setCaptureOverlayHidden(hidden: Boolean) {        captureOverlayHidden = hidden
         val view = controllerView ?: return
         if (hidden) {
             view.visibility = View.GONE
@@ -3773,10 +3817,24 @@ class FloatingMenuService : Service() {
             captureSession = null
         }
 
-        val showRecording = state == ControllerState.RECORDING || state == ControllerState.RECORDING_PAUSED
+        val showRecording = state == ControllerState.RECORDING ||
+            state == ControllerState.RECORDING_PAUSED ||
+            startingPassive
         val showReview = state == ControllerState.REVIEW
         val showPlaying = state == ControllerState.PLAYING || state == ControllerState.PLAYBACK_PAUSED
         val showReady = !showRecording && !showReview && !showPlaying
+
+        if (showRecording) {
+            if (!recordingChromeActive) {
+                collapsed = false
+                enterRecordingChrome()
+            } else if (recordingMinimized != lastRecordingMinimized) {
+                lastRecordingMinimized = recordingMinimized
+                applyRecordingChrome()
+            }
+        } else if (recordingChromeActive) {
+            restoreControllerChrome()
+        }
 
         val statsVisible = page == PAGE_STATS
         val startCountdown = BotState.startCountdown.value
@@ -3785,7 +3843,11 @@ class FloatingMenuService : Service() {
         view.findViewById<View>(R.id.readyPanel).visibility =
             if (!statsVisible && showReady && !countdownVisible) View.VISIBLE else View.GONE
         view.findViewById<View>(R.id.recordingPanel).visibility =
-            if (!statsVisible && showRecording && !countdownVisible) View.VISIBLE else View.GONE
+            if (!statsVisible && showRecording && !countdownVisible && !recordingMinimized) {
+                View.VISIBLE
+            } else {
+                View.GONE
+            }
         view.findViewById<View>(R.id.reviewPanel).visibility =
             if (!statsVisible && showReview && !countdownVisible) View.VISIBLE else View.GONE
         view.findViewById<View>(R.id.playingPanel).visibility =
@@ -3811,14 +3873,14 @@ class FloatingMenuService : Service() {
             setTextColor(if (statsVisible) android.graphics.Color.WHITE else Ds.MUTED)
         }
         val dotColor = when {
-            state == ControllerState.RECORDING || state == ControllerState.RECORDING_PAUSED ->
-                Ds.RECORD
+            showRecording -> Ds.RECORD
             state == ControllerState.PLAYBACK_PAUSED -> Ds.WARN
             else -> Ds.PLAY
         }
         view.findViewById<View>(R.id.statusDot)?.backgroundTintList =
             ColorStateList.valueOf(dotColor)
-        val statusStripVisible = state != ControllerState.READY &&
+        val statusStripVisible = !showRecording &&
+            state != ControllerState.READY &&
             state != ControllerState.INACTIVE &&
             state != ControllerState.STOPPING
         view.findViewById<TextView>(R.id.tvStatus)?.apply {
@@ -3839,15 +3901,15 @@ class FloatingMenuService : Service() {
         view.findViewById<TextView>(R.id.tvRecState).text = when {
             startingPassive -> "STARTING"
             state == ControllerState.RECORDING_PAUSED -> "PAUSED"
-            activeRecordingMode == RecordingMode.PASSIVE -> "REC PASSIVE"
             else -> "REC"
         }
         view.findViewById<Button>(R.id.btnRecPause).apply {
             text = if (state == ControllerState.RECORDING_PAUSED) "Resume" else "Pause"
             isEnabled = !startingPassive
         }
-        view.findViewById<TextView>(R.id.tvRecTimer).text =
-            if (startingPassive) "00:00" else formatClock(elapsedRecordingMs())
+        val timerText = if (startingPassive) "00:00" else formatClock(elapsedRecordingMs())
+        view.findViewById<TextView>(R.id.tvRecTimer).text = timerText
+        view.findViewById<TextView>(R.id.tvRecPillTimer).text = timerText
 
         view.findViewById<TextView>(R.id.tvReviewInfo).text =
             "$count gesture(s) · ${formatDuration(MacroTimeline.totalDuration(recorded))}"
@@ -3866,9 +3928,8 @@ class FloatingMenuService : Service() {
         val countdown = BotState.repeatCountdown.value
         val bubbleStatus = view.findViewById<TextView>(R.id.bubbleStatus)
         bubbleStatus.text = when {
+            showRecording -> ""
             manualWatch -> "WATCH"
-            state == ControllerState.RECORDING -> "REC"
-            state == ControllerState.RECORDING_PAUSED -> "PAUSED"
             state == ControllerState.PLAYBACK_PAUSED -> "II"
             state == ControllerState.PLAYING && startCountdown != null -> "${startCountdown}s"
             state == ControllerState.PLAYING && countdown != null -> "${countdown}s"
@@ -3876,7 +3937,7 @@ class FloatingMenuService : Service() {
             else -> ""
         }
 
-        if (collapsed) {
+        if (collapsed && !showRecording) {
             view.findViewById<View>(R.id.panel).visibility = View.GONE
             view.findViewById<View>(R.id.bubble).visibility = View.VISIBLE
         }
@@ -4120,7 +4181,6 @@ class FloatingMenuService : Service() {
         stopPlayback()
         stopRecording(silent = true)
         stopPassiveRecorder()
-        removeIndicator()
         removeCapture()
         removeController()
         BotState.clearActiveMacro()

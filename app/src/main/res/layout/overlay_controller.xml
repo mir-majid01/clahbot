@@ -205,38 +205,47 @@
                 android:background="@drawable/bg_recording"
                 android:gravity="center_vertical"
                 android:orientation="horizontal"
-                android:paddingHorizontal="10dp"
+                android:paddingHorizontal="8dp"
                 android:visibility="gone">
 
-                <View
-                    android:layout_width="9dp"
-                    android:layout_height="9dp"
-                    android:background="@drawable/bg_rec_dot" />
-
-                <TextView
-                    android:id="@+id/tvRecState"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="6dp"
-                    android:text="REC"
-                    android:textColor="#FECACA"
-                    android:textSize="11sp"
-                    android:textStyle="bold" />
-
-                <TextView
-                    android:id="@+id/tvRecTimer"
+                <LinearLayout
+                    android:id="@+id/recDragBar"
                     android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_marginStart="8dp"
+                    android:layout_height="48dp"
                     android:layout_weight="1"
-                    android:text="00:00"
-                    android:textColor="#FFFFFF"
-                    android:textSize="13sp" />
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <View
+                        android:layout_width="9dp"
+                        android:layout_height="9dp"
+                        android:background="@drawable/bg_rec_dot" />
+
+                    <TextView
+                        android:id="@+id/tvRecState"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="6dp"
+                        android:text="REC"
+                        android:textColor="#FECACA"
+                        android:textSize="11sp"
+                        android:textStyle="bold" />
+
+                    <TextView
+                        android:id="@+id/tvRecTimer"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="8dp"
+                        android:text="00:00"
+                        android:textColor="#FFFFFF"
+                        android:textSize="14sp"
+                        android:fontFamily="monospace" />
+                </LinearLayout>
 
                 <Button
                     android:id="@+id/btnRecPause"
-                    android:layout_width="58dp"
-                    android:layout_height="36dp"
+                    android:layout_width="54dp"
+                    android:layout_height="48dp"
                     android:backgroundTint="#F59E0B"
                     android:minWidth="0dp"
                     android:padding="0dp"
@@ -245,14 +254,24 @@
 
                 <Button
                     android:id="@+id/btnRecFinish"
-                    android:layout_width="58dp"
-                    android:layout_height="36dp"
-                    android:layout_marginStart="6dp"
+                    android:layout_width="54dp"
+                    android:layout_height="48dp"
+                    android:layout_marginStart="4dp"
                     android:backgroundTint="#22C55E"
                     android:minWidth="0dp"
                     android:padding="0dp"
                     android:text="Finish"
                     android:textSize="10sp" />
+
+                <ImageButton
+                    android:id="@+id/btnRecMinimize"
+                    android:layout_width="44dp"
+                    android:layout_height="48dp"
+                    android:background="?android:attr/selectableItemBackground"
+                    android:contentDescription="Minimize recording bar"
+                    android:padding="10dp"
+                    android:scaleType="fitCenter"
+                    android:src="@drawable/ic_minimize" />
             </LinearLayout>
 
             <!-- REVIEW -->
@@ -447,6 +466,32 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:visibility="gone" />
+
+        <LinearLayout
+            android:id="@+id/recPill"
+            android:layout_width="wrap_content"
+            android:layout_height="44dp"
+            android:background="@drawable/bg_recording"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingHorizontal="12dp"
+            android:visibility="gone">
+
+            <View
+                android:layout_width="9dp"
+                android:layout_height="9dp"
+                android:background="@drawable/bg_rec_dot" />
+
+            <TextView
+                android:id="@+id/tvRecPillTimer"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:fontFamily="monospace"
+                android:text="00:00"
+                android:textColor="#FFFFFF"
+                android:textSize="13sp" />
+        </LinearLayout>
     </LinearLayout>
 
     <FrameLayout
