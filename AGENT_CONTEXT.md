@@ -1556,3 +1556,11 @@ run the device tests; no install was done in this round.
   results screens, the full record-pause-resume-finish device flow, and V6's
   end-of-run timing/animation. All are code-verified only.
 
+
+### 2.7.0 install (2026-10-30)
+
+Installed the final 2.7.0 APK in place over 2.6.1 on the Infinix X6876.
+Before and after install: macros `d1278460…`, attacks `08e0e154…`, sessions
+`8f2c9888…` were byte-identical. `versionCode=22`, `versionName=2.7.0`.
+The phone was in use (Free Fire in the foreground), so no UI test or
+navigation was attempted after the install. The user is testing Batch B.
