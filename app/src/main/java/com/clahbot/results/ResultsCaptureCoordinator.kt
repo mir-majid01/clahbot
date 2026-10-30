@@ -17,6 +17,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -277,10 +278,8 @@ class ResultsCaptureCoordinator(
                 var settleBitmap: Bitmap? = null
                 var cleanCheck: AppResultsReader.ScreenCheck? = null
                 try {
-                    withContext(Dispatchers.Main) { hideOverlay() }
-                    delay(CLEAN_CAPTURE_DELAY_MS)
                     val cleanShotStart = System.nanoTime()
-                    cleanBitmap = ClahAccessibilityService.captureScreenshot()
+                    cleanBitmap = captureWithOverlayHidden(OVERLAY_CAPTURE_DELAY_MS)
                     val cleanShotMs = (System.nanoTime() - cleanShotStart) / 1_000_000L
                     val clean = cleanBitmap
                     event(
@@ -333,8 +332,7 @@ class ResultsCaptureCoordinator(
                     while (stableRead == null && stableAttempts < STABLE_READ_ATTEMPTS) {
                         stableAttempts++
                         delay(STABLE_READ_DELAY_MS)
-                        val shot = ClahAccessibilityService.captureScreenshot()
-                        if (shot == null) continue
+                        val shot = captureWithOverlayHidden(STABLE_CAPTURE_DELAY_MS) ?: continue
                         val next = withTimeoutOrNull(READ_TIMEOUT_MS) { reader.read(shot) }
                         if (next == null) {
                             shot.recycle()
@@ -480,8 +478,7 @@ class ResultsCaptureCoordinator(
         state.refineAttempts++
         var bitmap: Bitmap? = null
         try {
-            withContext(Dispatchers.Main) { hideOverlay() }
-            val shot = ClahAccessibilityService.captureScreenshot() ?: return
+            val shot = captureWithOverlayHidden(OVERLAY_CAPTURE_DELAY_MS) ?: return
             bitmap = shot
             val result = withTimeoutOrNull(READ_TIMEOUT_MS) {
                 reader.read(shot, ReaderStrategy.ALL)
@@ -652,6 +649,18 @@ class ResultsCaptureCoordinator(
         withContext(Dispatchers.Main) { onRecordSaved(added) }
     }
 
+    private suspend fun captureWithOverlayHidden(delayMs: Long): Bitmap? {
+        withContext(Dispatchers.Main) { runCatching { hideOverlay() } }
+        return try {
+            if (delayMs > 0L) delay(delayMs)
+            ClahAccessibilityService.captureScreenshot()
+        } finally {
+            withContext(NonCancellable + Dispatchers.Main) {
+                runCatching { showOverlay() }
+            }
+        }
+    }
+
     private fun presence(value: Long?): String = if (value == null) "missing" else "ok"
 
     private suspend fun status(message: String) {
@@ -681,7 +690,8 @@ class ResultsCaptureCoordinator(
         private const val DUPLICATE_WINDOW_MS = 10 * 60_000L
         private const val RETRY_DELAY_MS = 1_000L
         private const val READ_TIMEOUT_MS = 25_000L
-        private const val CLEAN_CAPTURE_DELAY_MS = 600L
+        private const val OVERLAY_CAPTURE_DELAY_MS = 140L
+        private const val STABLE_CAPTURE_DELAY_MS = 80L
         private const val STABLE_READ_ATTEMPTS = 3
         private const val STABLE_READ_DELAY_MS = 800L
         private const val REFINE_ATTEMPTS = 3

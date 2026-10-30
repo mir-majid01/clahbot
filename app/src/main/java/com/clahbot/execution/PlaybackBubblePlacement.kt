@@ -3,7 +3,7 @@ package com.clahbot.execution
 import com.clahbot.data.models.GesturePoint
 import kotlin.math.hypot
 
-enum class BubbleCorner { TOP_LEFT, TOP_RIGHT }
+typealias BubbleCorner = com.clahbot.overlay.BubbleCorner
 
 object PlaybackBubblePlacement {
 
