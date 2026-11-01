@@ -1,20 +1,119 @@
-# AutoClash 2.10.0 — v6 batch report
+# AutoClash 2.10.1 — v6 batch and follow-up report
 
 Date: 2026-11-01  
-Version: **2.10.0 (versionCode 26)**  
-APK: `app/build/outputs/apk/debug/app-debug.apk`  
-SHA-256: `dc576cecfb087f63195205da1f9d0f0027b7a0b78cdc1fd90ac8a31e25404655`
+Release: **2.10.1 (versionCode 27)**  
+GitHub release: <https://github.com/mir-majid01/clahbot/releases/tag/v27>  
+CI-built APK: `AutoClash-2.10.1.apk` (51,067,753 bytes)  
+SHA-256: `94792176f02f058a1c3fcb23b878710f92f5912acad5eb80cf4f8aafc0c47051`
 
-Automated checks: **228 app unit tests, 2 skipped, 0 failures**; lint **0 errors**
-(146 warnings, all pre-existing hardcoded-text/style warnings). The single APK
-was built once with the stable release key.
+The release was built and signed by **GitHub Actions** (debug run
+`41334582010`, release run `41335015586`), not on this machine. The downloaded
+release was installed in place on the Infinix X6876; the installed
+`/data/app/.../base.apk` hash matches the asset above, `versionCode=27`,
+`versionName=2.10.1`, and the package no longer has the `DEBUGGABLE` flag.
 
-**Device status:** The APK was installed in place on the Infinix X6876 at
-2026-11-01 (versionCode 26 / versionName 2.10.0; installed APK SHA-256 matches
-`dc576cecfb087f63195205da1f9d0f0027b7a0b78cdc1fd90ac8a31e25404655`). App data
-was preserved (`macros.json` 91,593 bytes, `attacks.json` 14,922 bytes before
-and after). The interactive device pass, launcher/splash screenshots and the
-20-attack loot run are still pending.
+Automated checks: **231 app unit tests, 2 skipped, 0 failures**; lint
+**0 errors**. Art data is preserved by the in-place update.
+
+## 2.10.1 follow-up fixes (this round)
+
+### Splash
+
+The old splash stretched the 900×780 mark into a square and cropped its dark
+edges. A generated 512×512 tile now keeps a 26 px transparent margin, clips the
+art to a smooth squircle and preserves its aspect ratio; the drawable is
+`gravity="fill"` only because the tile itself is square. Verified with a
+cold-start capture on the phone (`release-splash.png`): the old hard square is
+gone, replaced by a centred rounded app tile on the dark background.
+
+### Playback strip
+
+Two separate root causes were reproduced:
+
+1. `placeControllerForPlayback` used to set `collapsed=true`, hide the panel and
+   show only the bubble *before* playback. `enterPlaybackChrome` then changed
+   the strip size but never made the panel visible or hid the bubble, so the
+   user saw the icon until tapping it.
+2. After minimize/reopen the `contentFrame` still had its 4 dp controller top
+   margin and the window was clamped against the old 32 dp pill height, which
+   could cut the expanded 44 dp strip.
+
+The strip position is now chosen before play and stored; `refreshUi` enters the
+chrome only once the player is actually PLAYING, makes the panel visible, hides
+the bubble, removes the content margin, makes the playing row fill the 44 dp
+panel, forces WRAP_CONTENT window params, and re-clamps after layout. The strip
+now appears immediately after play, and minimize → pill → reopen produces the
+full-height strip. Playback that stops because Clash left the foreground now
+sets READY, ends the capture session and restores the controller instead of
+leaving the strip frozen.
+
+### Accessibility state
+
+Device evidence showed the exact confusing state: `enabled_accessibility_services`
+listed AutoClash while `accessibility_enabled` was `0`, and the settings list
+could still show “On”. The old boolean treated this as a binary permission.
+There are now three states — disabled, enabled-not-connected, connected — with
+a resume/4 s refresh. The dashboard and Settings show “Not connected” plus
+“Open Accessibility, turn AutoClash off, then on”, and explain Android’s
+“Allow restricted settings” path with an App info button. Service startup is
+wrapped so a session-tracker failure cannot crash the accessibility service;
+connect/unbind/destroy are logged.
+
+On the phone: after `am force-stop` Android cleared the accessibility master
+(so the app correctly showed Enable); enabling the service showed the standard
+Android “Allow AutoClash to have full control?” consent, and after Allow the
+system reported a Bound service and the app showed Connected. That consent
+dialog is an Android security prompt and cannot be removed by the app.
+
+### Trust / installation warnings
+
+- Final APK is the **R8-minified, non-debuggable release** signed with the
+  stable release key, not the debug APK used for iteration.
+- Removed the unused `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` and
+  `REQUEST_INSTALL_PACKAGES` permissions. In-app updates now open the system
+  package installer with `ACTION_VIEW`; the app no longer asks for the
+  “install unknown apps” permission itself.
+- Added `usesCleartextTraffic="false"` and a local-only disclosure in the
+  permission card/Settings.
+- Play Protect/Antivirus may still warn about a sideloaded automation app, and
+  Android always shows the accessibility consent; those are OS security
+  behaviours, not something an app can silently bypass.
+
+### Scroll performance
+
+The slow frames were UI-thread composition (10–36 ms), not GPU. Statistics was
+one monolithic LazyColumn item; it is now split into header, banner, totals,
+session header, each session box, and the history link as separate lazy items.
+The 15 s dashboard clock tick became 60 s because session cards show whole
+minutes.
+
+Release measurements on the X6876 (`dumpsys gfxinfo`):
+
+- Dashboard: 682 frames, **0.15 % janky**, legacy 1.17 %, p50 10 ms,
+  **p95 11 ms**, p99 13 ms.
+- Settings: 670 frames, **0 % janky**, p50 9 ms, **p95 10 ms**, p99 12 ms.
+
+Debug warm measurements before the split were 1.36 % jank / 44 ms p95; the
+release is the number that matters and is now within the 10 ms p95 class on
+this phone.
+
+### Other UI
+
+- Dashboard pinned macros now show the pin icon instead of the literal
+  `PIN ·` prefix.
+- Notification recording counts use Android plurals.
+
+## Previous 2.10.0 evidence (retained)
+
+The sections below document the earlier v6 batch. The current release includes
+those changes plus the follow-up fixes above.
+
+### Device status
+
+The 2.10.1 release was installed in place on the Infinix X6876; app data is
+preserved by `adb install -r`. The 20-real-attack loot measurement and the full
+launcher/notification screenshot set are still pending manual testing and are
+not claimed as passed.
 
 Reference 09c/09d were compared as images. The `autoclash-logo-pack-v2.zip`
 logo pack is not present on disk (`Desktop/refpack-logo2` is empty), so the

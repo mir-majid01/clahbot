@@ -40,8 +40,15 @@ Last updated: 2026-11-01
   tick is now 60 s. Warm debug scroll on the X6876 improved from 1.36 % jank /
   44 ms p95 to 0.16 % / 23 ms; release measurement is pending the CI artifact.
 - Dashboard pin text became the pin icon; notification counts use plurals.
-- 231 app unit tests pass (2 skipped); lint 0 errors. The release APK and its
-  hash are being produced by the GitHub `Publish APK release` workflow.
+- 231 app unit tests pass (2 skipped); lint 0 errors.
+- GitHub Actions release run `41335015586` succeeded for tag `v27`:
+  `AutoClash-2.10.1.apk`, SHA-256
+  `94792176f02f058a1c3fcb23b878710f92f5912acad5eb80cf4f8aafc0c47051`.
+  The downloaded release was installed in place; the installed base APK hash
+  matches, the package is non-debuggable, and app data was preserved.
+- Release scroll on the X6876: dashboard 0.15 % jank / 11 ms p95; Settings
+  0 % jank / 10 ms p95. Splash and playback-strip screenshots were checked on
+  device; the 20-attack loot run remains pending.
 
 Scope: Feature 1 results-screen loot OCR and its integration into AutoClash.
 Ranked is untouched. Product Features 2-5 have not been started.
