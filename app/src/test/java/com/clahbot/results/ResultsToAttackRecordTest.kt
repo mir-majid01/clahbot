@@ -129,7 +129,7 @@ class ResultsToAttackRecordTest {
         assertEquals(AttackRecord.LOOT_OCR, record.lootSource)
         assertFalse(record.verified)
         assertTrue(record.needsReview)
-        assertTrue(record.reviewReason!!.contains("not captured"))
+        assertTrue(record.reviewReason!!.contains("Elixir unreadable"))
         assertTrue(record.note.contains("Needs review"))
         assertTrue(record.note.contains("stopped before the macro ended"))
     }

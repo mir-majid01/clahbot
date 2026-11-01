@@ -7,6 +7,9 @@ package com.clahbot.input
 interface InputEventSource {
     val label: String
 
+    /** Specific reason for the last discovery/start failure, for the UI. */
+    val lastFailure: String?
+
     /** Runs `getevent -lp` and returns its raw text, or null on failure. */
     fun discover(): String?
 

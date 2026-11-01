@@ -18,3 +18,4 @@ rootProject.name = "AutoClash"
 include(":app")
 include(":ocr")
 include(":ocrlab")
+include(":benchmark")

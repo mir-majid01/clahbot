@@ -1,0 +1,4 @@
+HSPLcom/clahbot/ui/MainActivity;->onCreate(Landroid/os/Bundle;)V
+HSPLcom/clahbot/ui/SettingsActivity;->onCreate(Landroid/os/Bundle;)V
+HSPLcom/clahbot/service/FloatingMenuService;->onCreate()V
+HSPLcom/clahbot/ui/MainActivity;->onResume()V

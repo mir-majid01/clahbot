@@ -51,6 +51,10 @@ data class AttackRecord(
     val hasBonus: Boolean get() = bonusGold != null || bonusElixir != null || bonusDarkElixir != null
     val needsReview: Boolean get() = reviewReason != null
 
+    /** The single definition used by badges, banners, totals and re-scan. */
+    val needsReviewDefinition: Boolean
+        get() = confirmed && (needsReview || !complete || bonusState == BONUS_NOT_CAPTURED)
+
     companion object {
         const val LOOT_NONE = "none"
         const val LOOT_MANUAL = "manual"

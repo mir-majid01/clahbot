@@ -5,12 +5,17 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
-import android.os.PowerManager
 import android.provider.Settings
 import android.view.accessibility.AccessibilityManager
 import com.clahbot.service.ClahAccessibilityService
 
 object PermissionHelper {
+
+    enum class AccessibilityStatus {
+        DISABLED,
+        ENABLED_NOT_CONNECTED,
+        CONNECTED
+    }
 
     fun canDrawOverlays(context: Context): Boolean {
         return Settings.canDrawOverlays(context)
@@ -25,30 +30,58 @@ object PermissionHelper {
     }
 
     /**
-     * True when our exact component is enabled in Settings, even if the service
-     * has not connected yet. AccessibilityManager lags behind Settings, which is
-     * what produced the "granted but still asked" loop.
+     * Settings can list the service while the accessibility master switch is
+     * off (a common stale state on XOS), and a just-enabled service takes a
+     * moment to connect. Keep those cases distinct so the UI can explain what
+     * is actually wrong instead of asking for a permission that is already on.
      */
-    fun isAccessibilityEnabled(context: Context): Boolean {
-        if (ClahAccessibilityService.isEnabled()) return true
+    fun accessibilityStatus(context: Context): AccessibilityStatus {
+        if (ClahAccessibilityService.isEnabled()) return AccessibilityStatus.CONNECTED
         val resolver = context.contentResolver
         val master = Settings.Secure.getInt(
             resolver,
             Settings.Secure.ACCESSIBILITY_ENABLED,
             0
         ) == 1
-        if (!master) return false
-        val list = Settings.Secure.getString(
+        val secureList = Settings.Secure.getString(
             resolver,
             Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
         ).orEmpty()
-        return list.split(':').any {
+        val listedInSecure = secureList.split(':').any {
             it.equals(ACCESSIBILITY_COMPONENT, ignoreCase = true) ||
                 it.equals(ACCESSIBILITY_COMPONENT_SHORT, ignoreCase = true)
         }
+        val listedByManager = runCatching {
+            val manager = context.getSystemService(Context.ACCESSIBILITY_SERVICE)
+                as? AccessibilityManager
+            manager?.getEnabledAccessibilityServiceList(
+                AccessibilityServiceInfo.FEEDBACK_ALL_MASK
+            )?.any { info ->
+                info.resolveInfo?.serviceInfo?.let { service ->
+                    service.packageName == context.packageName &&
+                        service.name.endsWith("ClahAccessibilityService")
+                } == true
+            } == true
+        }.getOrDefault(false)
+        return if (master && (listedInSecure || listedByManager)) {
+            AccessibilityStatus.ENABLED_NOT_CONNECTED
+        } else {
+            AccessibilityStatus.DISABLED
+        }
     }
 
+    fun isAccessibilityEnabled(context: Context): Boolean =
+        accessibilityStatus(context) != AccessibilityStatus.DISABLED
+
     fun isAccessibilityConnected(): Boolean = ClahAccessibilityService.isEnabled()
+
+    fun openAppDetails(context: Context) {
+        val intent = Intent(
+            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+            Uri.parse("package:${context.packageName}")
+        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        context.startActivity(intent)
+    }
 
     private const val ACCESSIBILITY_COMPONENT =
         "com.clahbot/com.clahbot.service.ClahAccessibilityService"
@@ -57,19 +90,6 @@ object PermissionHelper {
 
     fun openAccessibilitySettings(context: Context) {
         val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        }
-        context.startActivity(intent)
-    }
-
-    fun isBatteryOptimizationIgnored(context: Context): Boolean {
-        val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
-        return pm.isIgnoringBatteryOptimizations(context.packageName)
-    }
-
-    fun requestBatteryOptimizationExemption(context: Context) {
-        val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
-            data = Uri.parse("package:${context.packageName}")
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         context.startActivity(intent)
@@ -86,16 +106,6 @@ object PermissionHelper {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         context.startActivity(intent)
-    }
-
-    fun hasAllPermissions(context: Context): Boolean {
-        return canDrawOverlays(context) &&
-            isAccessibilityEnabled(context) &&
-            isBatteryOptimizationIgnored(context)
-    }
-
-    fun hasRequiredPermissions(context: Context): Boolean {
-        return canDrawOverlays(context) && isAccessibilityEnabled(context)
     }
 
     fun showToast(context: Context, message: String) {

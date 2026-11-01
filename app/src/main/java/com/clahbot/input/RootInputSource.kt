@@ -9,6 +9,9 @@ class RootInputSource : InputEventSource {
     override val label: String = "Root"
 
     @Volatile
+    override var lastFailure: String? = null
+
+    @Volatile
     private var generation = 0
 
     @Volatile
@@ -23,7 +26,17 @@ class RootInputSource : InputEventSource {
     }
 
     override fun discover(): String? {
-        return runCommand("/system/bin/getevent -lp", 5)?.first?.takeIf { it.isNotBlank() }
+        val result = runCommand("/system/bin/getevent -lp", 5)
+        if (result == null) {
+            lastFailure = "Root getevent did not answer. Passive recording cannot start."
+            return null
+        }
+        if (result.first.isBlank()) {
+            lastFailure = "Root getevent returned no touchscreen list."
+            return null
+        }
+        lastFailure = null
+        return result.first
     }
 
     override fun start(
@@ -32,7 +45,8 @@ class RootInputSource : InputEventSource {
         onFatal: (String) -> Unit
     ): Boolean {
         if (!DEVICE_PATH.matches(devicePath)) {
-            onFatal("Invalid touchscreen path")
+            lastFailure = "Root touchscreen path is invalid."
+            onFatal(lastFailure!!)
             return false
         }
         stop()
@@ -47,7 +61,8 @@ class RootInputSource : InputEventSource {
                 .redirectErrorStream(true)
                 .start()
         } catch (t: Throwable) {
-            onFatal("Could not start root getevent: ${t.message ?: "su unavailable"}")
+            lastFailure = "Could not start root getevent: ${t.message ?: "su unavailable"}"
+            onFatal(lastFailure!!)
             return false
         }
         synchronized(this) {
@@ -111,11 +126,13 @@ class RootInputSource : InputEventSource {
                 -1
             }
             if (session == generation) {
-                onFatal("getevent exited (code $exit)")
+                lastFailure = "Root getevent exited (code $exit)"
+                onFatal(lastFailure!!)
             }
         } catch (t: Throwable) {
             if (session == generation) {
-                onFatal("Root input failed: ${t.message ?: "unknown error"}")
+                lastFailure = "Root input failed: ${t.message ?: "unknown error"}"
+                onFatal(lastFailure!!)
             }
         } finally {
             try {

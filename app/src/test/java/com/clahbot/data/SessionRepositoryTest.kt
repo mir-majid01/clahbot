@@ -243,6 +243,7 @@ class SessionRepositoryTest {
         bonusGold = bonusGold,
         bonusElixir = bonusElixir,
         bonusDarkElixir = bonusDark,
-        bonusState = bonusState
+        bonusState = bonusState,
+        complete = gold != null && elixir != null && dark != null
     )
 }

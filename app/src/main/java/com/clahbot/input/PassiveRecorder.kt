@@ -9,7 +9,8 @@ class PassiveRecorder(
     private val geometry: () -> ScreenGeometry?,
     private val controllerBounds: () -> ScreenRect?,
     private val onGesture: (BuiltGesture) -> Unit,
-    private val onError: (String) -> Unit
+    private val onError: (String) -> Unit,
+    private val onTouch: (Int, ScreenPoint, Boolean) -> Unit = { _, _, _ -> }
 ) {
     @Volatile
     private var running = false
@@ -19,29 +20,37 @@ class PassiveRecorder(
 
     private var sourceStarted = false
     private var errorReported = false
+
+    @Volatile
+    private var starting = false
+
+    @Volatile
+    private var startFailure: String? = null
     private var parser: GetEventParser? = null
     private var builder: PassiveGestureBuilder? = null
 
     val isRunning: Boolean get() = running
 
-    @Synchronized
-    fun start(): Boolean {
-        if (running) return true
+    /**
+     * Runs discovery and starts the getevent stream. Returns null on success or
+     * a human-readable reason on failure. Errors raised while starting are
+     * returned here and never reported through [onError], so the caller can
+     * restore its UI instead of showing an empty recording.
+     */
+    fun start(preferredDevice: TouchscreenDevice? = null): String? {
+        if (running) return null
 
-        errorReported = false
-        val discovery = try {
-            source.discover()
-        } catch (t: Throwable) {
-            null
+        synchronized(this) {
+            errorReported = false
+            starting = true
+            startFailure = null
         }
-        if (discovery.isNullOrBlank()) {
-            fail("Could not read the touchscreen device list.")
-            return false
-        }
-        val device = GetEventDiscovery.pickTouchscreen(discovery)
+        val device = preferredDevice ?: discoverDevice()
         if (device == null) {
-            fail("No touchscreen found. Passive recording is unavailable on this device.")
-            return false
+            val reason = source.lastFailure
+                ?: "No touchscreen found. Passive recording is unavailable on this device."
+            synchronized(this) { starting = false }
+            return reason
         }
 
         val newBuilder = PassiveGestureBuilder(
@@ -50,14 +59,17 @@ class PassiveRecorder(
             controllerBounds = controllerBounds,
             onGesture = { gesture ->
                 if (running && !paused) onGesture(gesture)
-            }
+            },
+            onTouch = onTouch
         )
         newBuilder.setEnabled(!paused)
         val newParser = GetEventParser(device) { frame -> newBuilder.onFrame(frame) }
-        parser = newParser
-        builder = newBuilder
-        running = true
-        sourceStarted = true
+        synchronized(this) {
+            parser = newParser
+            builder = newBuilder
+            running = true
+            sourceStarted = true
+        }
 
         val started = try {
             source.start(
@@ -75,21 +87,56 @@ class PassiveRecorder(
                         }
                     }
                 },
-                onFatal = { message -> fail(message) }
+                onFatal = { message ->
+                    val report = synchronized(this) {
+                        if (starting) {
+                            // Startup failures must go back to start()'s caller.
+                            startFailure = message
+                            running = false
+                            false
+                        } else {
+                            failLocked(message)
+                        }
+                    }
+                    if (report) onError(message)
+                }
             )
         } catch (t: Throwable) {
-            fail("Could not start touch capture: ${t.message ?: "source error"}")
+            synchronized(this) {
+                startFailure = "Could not start touch capture: ${t.message ?: "source error"}"
+                running = false
+            }
             false
         }
 
-        if (!started || !running) {
-            if (running) fail("Could not start touch capture.")
-            source.stop()
-            sourceStarted = false
-            clearState()
-            return false
+        synchronized(this) {
+            starting = false
         }
-        return true
+        val failure = synchronized(this) { startFailure }
+        if (!started || !running || failure != null) {
+            val reason = failure
+                ?: source.lastFailure
+                ?: "Could not start touch capture."
+            source.stop()
+            synchronized(this) {
+                errorReported = true
+                running = false
+                sourceStarted = false
+                clearState()
+            }
+            return reason
+        }
+        return null
+    }
+
+    private fun discoverDevice(): TouchscreenDevice? {
+        val discovery = try {
+            source.discover()
+        } catch (t: Throwable) {
+            null
+        }
+        if (discovery.isNullOrBlank()) return null
+        return GetEventDiscovery.pickTouchscreen(discovery)
     }
 
     @Synchronized
@@ -102,6 +149,7 @@ class PassiveRecorder(
     fun stop() {
         val hadSource = sourceStarted
         running = false
+        starting = false
         errorReported = true
         parser?.reset()
         builder?.cancel()
@@ -116,15 +164,26 @@ class PassiveRecorder(
     }
 
     private fun fail(message: String) {
-        synchronized(this) {
+        val report = synchronized(this) {
             if (errorReported) return
             errorReported = true
             running = false
             parser?.reset()
             builder?.cancel()
             clearState()
+            true
         }
-        onError(message)
+        if (report) onError(message)
+    }
+
+    private fun failLocked(message: String): Boolean {
+        if (errorReported) return false
+        errorReported = true
+        running = false
+        parser?.reset()
+        builder?.cancel()
+        clearState()
+        return true
     }
 
     private fun clearState() {

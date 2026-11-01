@@ -181,6 +181,18 @@ class SessionRepository(private val file: File) {
             }
         }
 
+    suspend fun setActiveStopReason(reason: String?, now: Long = System.currentTimeMillis()) =
+        withContext(Dispatchers.IO) {
+            mutex.withLock {
+                val all = readLocked().toMutableList()
+                val index = all.indexOfFirst { it.active }
+                if (index < 0) return@withLock
+                all[index] = all[index].copy(stopReason = reason, lastUpdatedAt = now)
+                writeLocked(all)
+                publish(all)
+            }
+        }
+
     suspend fun closeActive(
         status: String = GameSession.CLOSED,
         now: Long = System.currentTimeMillis()

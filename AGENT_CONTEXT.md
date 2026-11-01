@@ -1,6 +1,25 @@
 # Agent Context — AutoClash Feature 1
 
-Last updated: 2026-10-27
+Last updated: 2026-11-01
+
+## 2.10.0 (versionCode 26) — v6 batch
+
+- Built one APK with the stable key:
+  `app/build/outputs/apk/debug/app-debug.apk`,
+  SHA-256 `dc576cecfb087f63195205da1f9d0f0027b7a0b78cdc1fd90ac8a31e25404655`.
+  228 app unit tests pass (2 skipped); lint 0 errors.
+- Installed in place on the Infinix X6876 on 2026-11-01; the installed APK hash
+  matches the built APK. App data was preserved (`macros.json` 91,593 bytes,
+  `attacks.json` 14,922 bytes). The interactive device pass, pack screenshots
+  and the 20-attack measurement are pending.
+- Delivered: original logo restoration and dock ring; saved-toast restore fix;
+  44 dp one-row playing strip; boxed floating list; no implicit overlay
+  Activity launches; full History page + dashboard session boxes; shared
+  "needs review" definition and plural wording; floating loot-row root-cause
+  fix with a 96-screenshot clipping matrix uploaded by CI; Return Home tap held
+  up to 10 s while a result episode is active.
+- Detail and the honest acceptance table: `BATCH3_REPORT.md`.
+- The earlier 2.8.1 report remains in `POLISH_REPORT.md`.
 
 Scope: Feature 1 results-screen loot OCR and its integration into AutoClash.
 Ranked is untouched. Product Features 2-5 have not been started.
@@ -1564,3 +1583,60 @@ Before and after install: macros `d1278460…`, attacks `08e0e154…`, sessions
 `8f2c9888…` were byte-identical. `versionCode=22`, `versionName=2.7.0`.
 The phone was in use (Free Fire in the foreground), so no UI test or
 navigation was attempted after the install. The user is testing Batch B.
+
+## 2026-10-31 — Polish round (2.8.1, versionCode 24)
+
+Implemented A–G as one batch and installed one APK; manual acceptance was left to
+the user. Full change list and manual checklist: `POLISH_REPORT.md`.
+
+### Diagnosis (live 2.8.0 data, 12 attacks)
+- 7 incomplete (`complete=false`) + 1 complete-but-review. All 7 logged
+  `loot did not stabilize`; the old path hid the overlay for 140 ms, took a
+  “clean” frame during the transition, then required two complete reads 800 ms
+  apart (≥1.6 s) before saving. Four clean frames also missed anchors. No
+  static-screen anchor failure and no logged reader-disagreement root cause.
+- The all-values review record (`1793388007023`) passed a bonus gold of
+  2,697,000 from one frame; the bonus was not part of the old stability gate and
+  `LootSanity` capped it after acceptance.
+
+### Loot capture
+- One episode per screen: 250 ms (first 2 s) / 500 ms polling, first frame’s
+  OCR page reused, loot+bonus rows only, main stable after 2 equal reads, bonus
+  after 3 equal reads with stopped panel boxes, 4 s no-panel window, 12 s cap,
+  one write, 1.5 s cooldown. Closed screen keeps confirmed values with
+  `Closed early`.
+- No overlay hiding: `takeScreenshotOfWindow` on API 34+, display+mask fallback.
+  Every detection/frame logs the method.
+- Review reasons are specific and shown on the dashboard row and edit detail.
+  Re-scan uses the saved PNG and repairs only complete plausible reads.
+- `Save results screenshots` is enabled on the phone. The previous 7 incomplete
+  records have no PNG and cannot be repaired from frames.
+
+### UI
+- 07a strip: 368/328 dp, narrow icon Finish, touch counter with 120 ms pulse,
+  Restart/Cancel inline discard confirm (3 s), minimized pill.
+- 07b library: outlined Import/Delete, selection checkboxes, pinned action bar,
+  confirm, automatic backup, 5 s Undo; shared 36 dp play button.
+- 07d sheet and floating settings share `MacroSettingsDraft` and `toMacro`.
+- 07c logo: glyph-only vector on a 30% gradient squircle; 26/52/40/96 dp uses.
+- Icon size now depends only on bubble scale/display density; auto-dock setting
+  with disabled corner picker when off.
+- Totals stack/fit instead of clipping; 8 dp scroll fades on dashboard and
+  Settings.
+
+### Performance
+- Stable now provider, memoized stats scope, cached date formatters, no per-row
+  totals list, strong skipping, R8 + baseline profile, lighter episode reads and
+  no OCR while a recorded screen is visible.
+- Added `benchmark/` with Macrobenchmark scroll tests, a gfxinfo gate
+  (jank <2%, p95 <10 ms) and a baseline-profile generator. Numbers are pending
+  the user’s manual run.
+
+### Verification
+- 208 app unit tests + 50 ocrlab tests pass (2 skipped), lint 0 errors /
+  137 warnings, debug and R8 release builds succeed, benchmark module compiles.
+- Final installed APK: 2.8.1 (24), SHA-256
+  `c97756607fa31564bd228124498f0c91343ac3bb96ac0fb7258f5203b7cc6b16`;
+  R8 release `b56b0f651385c0bf16ec8bc08dd69378cf867c97168773561bad2faad632250b`.
+- Backups before install in `.ocr-work/backups/20261030_polish/`. Live data
+  changed afterwards because the user used the app; nothing was restored.

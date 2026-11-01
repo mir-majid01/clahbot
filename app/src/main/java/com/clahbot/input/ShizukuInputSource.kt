@@ -16,6 +16,9 @@ class ShizukuInputSource(context: Context) : InputEventSource {
 
     override val label: String = "Shizuku"
 
+    @Volatile
+    override var lastFailure: String? = null
+
     private val appContext = context.applicationContext
     private val args = Shizuku.UserServiceArgs(
         ComponentName(appContext, ShizukuInputService::class.java)
@@ -38,14 +41,51 @@ class ShizukuInputSource(context: Context) : InputEventSource {
     private var callback: IInputEventCallback.Stub? = null
 
     @Synchronized
-    fun ensureBound(timeoutMs: Long = 8_000L): Boolean {
+    fun ensureBound(timeoutMs: Long = BIND_TIMEOUT_MS): Boolean {
         if (service != null) return true
-        if (!shizukuReady()) return false
+        val state = shizukuState()
+        Log.i(
+            TAG,
+            "Shizuku binder=${runCatching { Shizuku.pingBinder() }.getOrDefault(false)} " +
+                "version=${runCatching { Shizuku.getVersion() }.getOrNull()} " +
+                "permission=${runCatching { Shizuku.checkSelfPermission() }.getOrNull()} " +
+                "state=$state"
+        )
+        if (state != ShizukuState.READY) {
+            lastFailure = state.message
+            return false
+        }
 
+        repeat(BIND_ATTEMPTS) { attempt ->
+            if (attempt > 0) {
+                Log.w(TAG, "Retrying Shizuku user service bind (attempt ${attempt + 1})")
+                Thread.sleep(BIND_RETRY_DELAY_MS)
+            }
+            if (bindOnce(timeoutMs)) {
+                Log.i(TAG, "Shizuku user service connected")
+                lastFailure = null
+                return true
+            }
+        }
+        lastFailure =
+            "Shizuku did not start its input service. Open Shizuku, restart it, then try again."
+        return false
+    }
+
+    private fun bindOnce(timeoutMs: Long): Boolean {
         val latch = CountDownLatch(1)
+        val accepted = AtomicBoolean(false)
+        val abandoned = AtomicBoolean(false)
         val newConnection = object : ServiceConnection {
             override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
-                service = binder?.let { IInputEventService.Stub.asInterface(it) }
+                if (abandoned.get()) return
+                val proxy = binder?.let { IInputEventService.Stub.asInterface(it) }
+                if (proxy == null) {
+                    latch.countDown()
+                    return
+                }
+                service = proxy
+                accepted.set(true)
                 latch.countDown()
             }
 
@@ -57,8 +97,9 @@ class ShizukuInputSource(context: Context) : InputEventSource {
         connection = newConnection
         try {
             Shizuku.bindUserService(args, newConnection)
-        } catch (_: Throwable) {
+        } catch (t: Throwable) {
             connection = null
+            lastFailure = "Shizuku bind failed: ${t.message ?: "binder error"}"
             return false
         }
 
@@ -68,7 +109,10 @@ class ShizukuInputSource(context: Context) : InputEventSource {
             Thread.currentThread().interrupt()
             false
         }
-        if (!bound || service == null) {
+        if (!bound || !accepted.get() || service == null) {
+            abandoned.set(true)
+            service = null
+            Log.w(TAG, "Shizuku user service bind timed out after ${timeoutMs}ms")
             connection = null
             try {
                 Shizuku.unbindUserService(args, newConnection, true)
@@ -83,8 +127,16 @@ class ShizukuInputSource(context: Context) : InputEventSource {
     override fun discover(): String? {
         if (!ensureBound()) return null
         return try {
-            service?.getTouchscreenInfo()?.takeIf { it.isNotBlank() }
-        } catch (_: Throwable) {
+            val info = service?.getTouchscreenInfo()
+            if (info.isNullOrBlank()) {
+                lastFailure = "Shizuku could not list input devices."
+                null
+            } else {
+                lastFailure = null
+                info
+            }
+        } catch (t: Throwable) {
+            lastFailure = "Shizuku input service failed: ${t.message ?: "binder error"}"
             null
         }
     }
@@ -95,11 +147,12 @@ class ShizukuInputSource(context: Context) : InputEventSource {
         onFatal: (String) -> Unit
     ): Boolean {
         if (!DEVICE_PATH.matches(devicePath)) {
-            onFatal("Invalid touchscreen path")
+            lastFailure = "Shizuku touchscreen path is invalid."
+            onFatal(lastFailure!!)
             return false
         }
         if (!ensureBound()) {
-            onFatal("Shizuku input service is unavailable")
+            onFatal(lastFailure ?: "Shizuku input service is unavailable")
             return false
         }
 
@@ -107,7 +160,7 @@ class ShizukuInputSource(context: Context) : InputEventSource {
         val newCallback = object : IInputEventCallback.Stub() {
             override fun onLines(lines: String) {
                 if (firstBatch.compareAndSet(false, true)) {
-                    Log.i("AutoClashInput", "First getevent batch received (${lines.length} chars)")
+                    Log.i(TAG, "First getevent batch received (${lines.length} chars)")
                 }
                 onLines(lines)
             }
@@ -116,7 +169,7 @@ class ShizukuInputSource(context: Context) : InputEventSource {
                 onFatal(message)
             }
         }
-        Log.i("AutoClashInput", "Starting Shizuku getevent for $devicePath")
+        Log.i(TAG, "Starting Shizuku getevent for $devicePath")
         fatal = onFatal
         callback = newCallback
         streaming = true
@@ -124,7 +177,8 @@ class ShizukuInputSource(context: Context) : InputEventSource {
             val current = service
             if (current == null) {
                 streaming = false
-                onFatal("Shizuku input service is unavailable")
+                lastFailure = "Shizuku input service is unavailable."
+                onFatal(lastFailure!!)
                 false
             } else {
                 current.start(devicePath, newCallback)
@@ -134,7 +188,8 @@ class ShizukuInputSource(context: Context) : InputEventSource {
             streaming = false
             fatal = null
             callback = null
-            onFatal("Could not start Shizuku input: ${t.message ?: "binder error"}")
+            lastFailure = "Could not start Shizuku input: ${t.message ?: "binder error"}"
+            onFatal(lastFailure!!)
             false
         }
     }
@@ -164,18 +219,36 @@ class ShizukuInputSource(context: Context) : InputEventSource {
         }
     }
 
-    private fun shizukuReady(): Boolean {
+    private fun shizukuState(): ShizukuState {
         return try {
-            if (!Shizuku.pingBinder()) return false
-            if (Shizuku.isPreV11()) return false
-            Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED
-        } catch (_: Throwable) {
-            false
+            if (!Shizuku.pingBinder()) {
+                ShizukuState.NOT_RUNNING
+            } else if (Shizuku.isPreV11()) {
+                ShizukuState.TOO_OLD
+            } else if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
+                ShizukuState.NO_PERMISSION
+            } else {
+                ShizukuState.READY
+            }
+        } catch (t: Throwable) {
+            ShizukuState.ERROR
         }
+    }
+
+    private enum class ShizukuState(val message: String?) {
+        READY(null),
+        NOT_RUNNING("Shizuku is not running. Start Shizuku, then try again."),
+        TOO_OLD("Shizuku version is too old. Update Shizuku, then try again."),
+        NO_PERMISSION("Shizuku access is not granted. Grant it in Settings, then try again."),
+        ERROR("Shizuku is unavailable. Restart it, then try again.")
     }
 
     companion object {
         const val SERVICE_VERSION = 1
+        private const val TAG = "AutoClashInput"
+        private const val BIND_TIMEOUT_MS = 4_000L
+        private const val BIND_ATTEMPTS = 2
+        private const val BIND_RETRY_DELAY_MS = 350L
         private val DEVICE_PATH = Regex("""^/dev/input/event\d+$""")
     }
 }

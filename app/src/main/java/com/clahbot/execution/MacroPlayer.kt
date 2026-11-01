@@ -31,7 +31,8 @@ import kotlin.coroutines.resume
 class MacroPlayer(
     private val screenWidth: Int,
     private val screenHeight: Int,
-    private val resultGate: ResultCaptureGate? = null
+    private val resultGate: ResultCaptureGate? = null,
+    private val onGesturePath: ((List<GesturePoint>, Long, Long) -> Unit)? = null
 ) {
 
     private var job: Job? = null
@@ -41,6 +42,18 @@ class MacroPlayer(
 
     @Volatile
     private var stopped = false
+
+    @Volatile
+    private var pausedSince: Long = 0L
+
+    @Volatile
+    private var pausedAccumMs: Long = 0L
+
+    @Volatile
+    private var runStartedAt: Long = 0L
+
+    @Volatile
+    private var stopReason: String? = null
 
     fun play(macro: Macro, scope: CoroutineScope, onFinished: (() -> Unit)? = null) {
         active?.let { if (it !== this) it.stop() }
@@ -70,27 +83,37 @@ class MacroPlayer(
         val newJob = scope.launch {
             val self = coroutineContext[Job]
             var iteration = 0
-            var timedOut = false
+            stopReason = null
             val plan = PlaybackSettings.planFor(macro)
+            BotState.beginRunAttacks()
             try {
                 if (!startingCountdown(plan)) return@launch
                 val startedAt = SystemClock.elapsedRealtime()
-                val deadlineReached = {
-                    PlaybackSettings.deadlineReached(
-                        plan,
-                        SystemClock.elapsedRealtime() - startedAt
-                    )
-                }
+                runStartedAt = startedAt
 
                 while (isActive && !stopped && iteration < plan.iterations) {
-                    if (deadlineReached()) {
-                        timedOut = true
-                        break
+                    if (iteration > 0) {
+                        val before = PlaybackStopPolicy.atRunEnd(
+                            repeatRuns = plan.iterations,
+                            runsCompleted = iteration,
+                            attacks = BotState.runAttackCount.value,
+                            attackLimit = plan.stopAfterAttacks,
+                            runningMs = runningMs(startedAt),
+                            minuteLimit = plan.stopAfterMinutes
+                        )
+                        if (before.stop) {
+                            stopReason = before.reason
+                            break
+                        }
                     }
                     iteration++
+                    BotState.setPlaybackElapsed(runningMs(startedAt))
                     AppEventLog.log(
                         "macro iteration=$iteration " +
                             "iterations=${if (plan.infinite) "infinite" else plan.iterations}"
+                    )
+                    BotState.setPlaybackRunLabel(
+                        if (plan.infinite) "Loop $iteration" else "Run $iteration/${plan.iterations}"
                     )
                     BotState.setStatus(
                         if (plan.infinite) "Loop $iteration" else "Run $iteration/${plan.iterations}"
@@ -99,11 +122,8 @@ class MacroPlayer(
                     var lastTimestamp = 0L
                     for (gesture in gestures) {
                         if (!isActive || stopped) break
-                        if (deadlineReached()) {
-                            timedOut = true
-                            break
-                        }
-                        if (plan.stopOnBackground) ensureForeground()
+                        if (!pauseIfRequested()) break
+                        if (plan.stopOnBackground && !ensureForeground()) break
 
                         val gap = MacroTimeline.gapMillis(
                             (gesture.timestampMs - lastTimestamp).coerceAtLeast(0L),
@@ -118,10 +138,12 @@ class MacroPlayer(
                             return@launch
                         }
 
-                        if (shouldGateTap(macro, gesture)) {
+                        val gateHeld = resultGate?.isHeld() == true
+                        if (gateHeld || shouldGateTap(macro, gesture)) {
                             val engaged = resultGate?.awaitClearance() ?: false
                             AppEventLog.log(
-                                "gate tap at ${gesture.timestampMs}ms engaged=$engaged " +
+                                "gate ${gesture.gestureType} at ${gesture.timestampMs}ms " +
+                                    "held=$gateHeld engaged=$engaged " +
                                     "(${resultGate?.snapshot() ?: "-"})"
                             )
                         }
@@ -132,30 +154,43 @@ class MacroPlayer(
                         lastTimestamp = gesture.timestampMs
                     }
 
+                    if (!stopped) {
+                        val decision = PlaybackStopPolicy.atRunEnd(
+                            repeatRuns = plan.iterations,
+                            runsCompleted = iteration,
+                            attacks = BotState.runAttackCount.value,
+                            attackLimit = plan.stopAfterAttacks,
+                            runningMs = runningMs(startedAt),
+                            minuteLimit = plan.stopAfterMinutes
+                        )
+                        if (decision.stop) {
+                            stopReason = decision.reason
+                            break
+                        }
+                    }
                     if (iteration < plan.iterations && !stopped) {
-                        if (plan.stopOnBackground) ensureForeground()
+                        if (plan.stopOnBackground && !ensureForeground()) break
                         waitBetweenRepeats(
                             totalMs = macro.effectiveRepeatDelayMs,
                             infinite = plan.infinite,
-                            stopOnBackground = plan.stopOnBackground,
-                            deadlineReached = deadlineReached
-                        ) { timedOut = true }
+                            stopOnBackground = plan.stopOnBackground
+                        )
                     }
                 }
 
                 if (!stopped) {
                     BotState.clearActiveMacro()
                     BotState.setState(ControllerState.READY)
-                    BotState.setStatus(
-                        if (timedOut) "Stopped after ${plan.stopAfterMinutes} min"
-                        else "Playback complete"
-                    )
+                    BotState.setStatus(stopReason ?: "Playback complete")
+                    AppEventLog.log("playback stop reason=${stopReason ?: "complete"}")
                     onFinished?.invoke()
                 }
             } catch (_: CancellationException) {
                 // Stopping is a normal exit path.
             } finally {
                 AppEventLog.log("macro loop exit iteration=$iteration stopped=$stopped")
+                BotState.setPlaybackRunLabel(null)
+                BotState.setPlaybackElapsed(0L)
                 BotState.setRepeatCountdown(null)
                 BotState.setStartCountdown(null)
                 if (job === null || job === self) {
@@ -191,16 +226,40 @@ class MacroPlayer(
             gesture.gestureType == "tap" &&
             gesture.timestampMs >= macro.durationMs - LATE_TAP_WINDOW_MS
 
-    private suspend fun ensureForeground() {
-        if (!ClahAccessibilityService.isGameForeground()) {
-            if (!paused) {
-                BotState.setInterrupted(true)
-                paused = true
-                BotState.setState(ControllerState.PLAYBACK_PAUSED)
-                BotState.setStatus(pauseReason())
-            }
-        }
+    /** Returns false when the run must stop because Clash left the foreground. */
+    private suspend fun pauseIfRequested(): Boolean {
+        if (!paused) return !stopped
+        if (pausedSince <= 0L) pausedSince = SystemClock.elapsedRealtime()
         awaitResume()
+        if (!paused && pausedSince > 0L) {
+            pausedAccumMs += (SystemClock.elapsedRealtime() - pausedSince).coerceAtLeast(0L)
+            pausedSince = 0L
+        }
+        return !stopped
+    }
+
+    private suspend fun ensureForeground(): Boolean {
+        if (!ClahAccessibilityService.isGameForeground()) {
+            stopReason = "Clash left the foreground"
+            stopped = true
+            BotState.setStatus(stopReason ?: "Playback stopped")
+            BotState.setState(ControllerState.READY)
+            AppEventLog.log("playback stop reason=Clash left the foreground")
+            return false
+        }
+        if (!paused) return true
+        awaitResume()
+        if (!paused && pausedSince > 0L) {
+            pausedAccumMs += (SystemClock.elapsedRealtime() - pausedSince).coerceAtLeast(0L)
+            pausedSince = 0L
+        }
+        return !stopped
+    }
+
+    private fun runningMs(startedAt: Long): Long {
+        val now = SystemClock.elapsedRealtime()
+        val pausedNow = if (paused && pausedSince > 0L) now - pausedSince else 0L
+        return (now - startedAt - pausedAccumMs - pausedNow).coerceAtLeast(0L)
     }
 
     /**
@@ -210,20 +269,14 @@ class MacroPlayer(
     private suspend fun waitBetweenRepeats(
         totalMs: Long,
         infinite: Boolean,
-        stopOnBackground: Boolean,
-        deadlineReached: () -> Boolean,
-        onDeadline: () -> Unit
+        stopOnBackground: Boolean
     ) {
         if (totalMs <= 0L) return
         var remaining = totalMs
         try {
             while (remaining > 0L && !stopped) {
-                if (deadlineReached()) {
-                    onDeadline()
-                    break
-                }
-                if (stopOnBackground) ensureForeground()
-                if (stopped) break
+                if (!pauseIfRequested()) break
+                if (stopOnBackground && !ensureForeground()) break
                 if (totalMs >= COUNTDOWN_MIN_MS) {
                     val seconds = ((remaining + 999L) / 1000L).toInt()
                     BotState.setRepeatCountdown(seconds)
@@ -282,6 +335,11 @@ class MacroPlayer(
             return false
         }
         val totalDuration = paths.maxOf { it.startOffsetMs + it.durationMs }
+        if (onGesturePath != null) {
+            for (path in paths) {
+                onGesturePath.invoke(path.points, path.startOffsetMs, path.durationMs)
+            }
+        }
 
         // A cancelled or never-answered dispatch must not stall the loop forever.
         val result = withTimeoutOrNull(totalDuration + DISPATCH_TIMEOUT_SLACK_MS) {
@@ -315,6 +373,7 @@ class MacroPlayer(
 
     fun pause() {
         if (job == null) return
+        if (!paused) pausedSince = SystemClock.elapsedRealtime()
         paused = true
         BotState.setState(ControllerState.PLAYBACK_PAUSED)
         BotState.setStatus("Paused")
@@ -322,6 +381,10 @@ class MacroPlayer(
 
     fun resume() {
         if (job == null) return
+        if (pausedSince > 0L) {
+            pausedAccumMs += (SystemClock.elapsedRealtime() - pausedSince).coerceAtLeast(0L)
+            pausedSince = 0L
+        }
         paused = false
         BotState.setState(ControllerState.PLAYING)
         BotState.setStatus("Playing")
@@ -330,6 +393,9 @@ class MacroPlayer(
     fun isPaused(): Boolean = paused
 
     fun isRunning(): Boolean = job != null
+
+    fun runningElapsedMs(): Long =
+        if (job == null || runStartedAt <= 0L) 0L else runningMs(runStartedAt)
 
     fun stop() {
         stopInternal()

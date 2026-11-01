@@ -23,6 +23,14 @@ data class SavedCapture(
  */
 class ResultsScreenshotStore(private val context: Context) {
 
+    data class FrameEvidence(
+        val atMs: Long,
+        val method: String?,
+        val resultsScreen: Boolean,
+        val read: ResultsRead?,
+        val readMs: Long
+    )
+
     private data class Sidecar(
         val capturedAt: Long,
         val attackId: Long,
@@ -44,8 +52,91 @@ class ResultsScreenshotStore(private val context: Context) {
         val source: String,
         val timingsMs: Map<String, Long>,
         val read: ResultsRead?,
-        val evidence: List<RowReading>
+        val evidence: List<RowReading>,
+        val reviewReason: String? = null,
+        val bonusState: String? = null,
+        val closedEarly: Boolean = false,
+        val method: String? = null,
+        val frames: List<FrameEvidence> = emptyList()
     )
+
+    /**
+     * Saves the best frame of one episode plus every analysed frame's reading.
+     * A closed-early screen keeps its first/last frames and the confirmed
+     * values in the sidecar, so Re-scan can repair the record later.
+     */
+    fun saveEpisode(
+        bitmap: Bitmap,
+        session: CaptureSession,
+        episode: EpisodeResult,
+        frames: List<FrameEvidence>
+    ): SavedCapture {
+        val directory = captureDirectory()
+        val capturedAt = System.currentTimeMillis()
+        val outcome = episode.outcome?.name?.lowercase(Locale.US) ?: "unknown"
+        val base = buildString {
+            append(capturedAt)
+            append('_').append(outcome)
+            append("_G").append(episode.gold?.toString() ?: "x")
+            append("_E").append(episode.elixir?.toString() ?: "x")
+            append("_D").append(episode.darkElixir?.toString() ?: "x")
+            if (episode.closedEarly) append("_closed")
+        }
+        val png = File(directory, "$base.png")
+        val json = File(directory, "$base.json")
+        val txt = File(directory, "$base.txt")
+        val lootStatus = when {
+            episode.gold == null && episode.elixir == null && episode.darkElixir == null ->
+                "loot not captured"
+
+            episode.hasMain -> "loot captured"
+            else -> "partial loot; missing values are not captured"
+        }
+        val sidecar = Sidecar(
+            capturedAt = capturedAt,
+            attackId = session.id,
+            macroName = session.macroName,
+            outcome = outcome,
+            lootStatus = lootStatus,
+            gold = episode.gold,
+            elixir = episode.elixir,
+            darkElixir = episode.darkElixir,
+            bonusGold = episode.bonusGold,
+            bonusElixir = episode.bonusElixir,
+            bonusDarkElixir = episode.bonusDarkElixir,
+            balanceGold = null,
+            balanceElixir = null,
+            balanceDarkElixir = null,
+            confidence = episode.read?.confidence ?: 0.0,
+            needsReview = episode.needsReview,
+            issues = episode.reasons,
+            source = "accessibility-screenshot",
+            timingsMs = emptyMap(),
+            read = episode.read,
+            evidence = emptyList(),
+            reviewReason = episode.reasons.joinToString("; ").takeIf { it.isNotBlank() },
+            bonusState = episode.bonusState,
+            closedEarly = episode.closedEarly,
+            method = frames.firstOrNull { it.method != null }?.method,
+            frames = frames
+        )
+        return SavedCapture(
+            png = writePng(png, bitmap),
+            json = writeText(
+                json,
+                GsonBuilder().setPrettyPrinting().create().toJson(sidecar)
+            ),
+            txt = writeText(txt, textSummary(session, sidecar, episode))
+        ).also { cleanup(directory, base) }
+    }
+
+    private fun captureDirectory(): File {
+        val directory = context.getExternalFilesDir("results_captures")
+            ?: File(context.filesDir, "results_captures").apply { mkdirs() }
+        directory.mkdirs()
+        return directory
+    }
+
 
     fun save(
         bitmap: Bitmap,
@@ -187,7 +278,11 @@ class ResultsScreenshotStore(private val context: Context) {
         Log.i(TAG, "Capture retention removed $removed old files (${delete.size} captures)")
     }
 
-    private fun textSummary(session: CaptureSession, sidecar: Sidecar): String = buildString {
+    private fun textSummary(
+        session: CaptureSession,
+        sidecar: Sidecar,
+        episode: EpisodeResult? = null
+    ): String = buildString {
         appendLine("AutoClash result capture")
         appendLine("Macro: ${session.macroName}")
         appendLine("Outcome: ${sidecar.outcome}")
@@ -203,6 +298,15 @@ class ResultsScreenshotStore(private val context: Context) {
         appendLine("Status: ${sidecar.lootStatus}")
         appendLine("Confidence: ${"%.2f".format(Locale.US, sidecar.confidence)}")
         appendLine("Needs review: ${sidecar.needsReview}")
+        sidecar.reviewReason?.let { appendLine("Review reason: $it") }
+        sidecar.bonusState?.let { appendLine("Bonus state: $it") }
+        if (episode != null) {
+            appendLine("Main stable: ${episode.mainStable}")
+            appendLine("Bonus resolved: ${episode.bonusResolved}")
+            appendLine("Closed early: ${episode.closedEarly}")
+            appendLine("Episode length: ${episode.elapsedMs} ms")
+            appendLine("Frames analysed: ${sidecar.frames.size}")
+        }
         if (sidecar.issues.isNotEmpty()) {
             appendLine("Issues: ${sidecar.issues.joinToString("; ")}")
         }

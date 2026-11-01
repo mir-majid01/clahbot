@@ -50,6 +50,10 @@ class CaptureCycleTracker {
         clearStreak = 0
     }
 
+    /** True while the frame still looks like the screen that was just recorded. */
+    fun isRecordedScreen(hash: String?): Boolean =
+        !screenClear && isSameScreen(hash)
+
     private fun isSameScreen(hash: String?): Boolean {
         val distance = ScreenHash.distance(hash, lastRecordedHash) ?: return false
         return distance <= SIMILAR_SCREEN_BITS

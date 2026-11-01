@@ -59,8 +59,21 @@ object BotState {
     private val _startCountdown = MutableStateFlow<Int?>(null)
     val startCountdown: StateFlow<Int?> = _startCountdown.asStateFlow()
 
+    private val _runAttackCount = MutableStateFlow(0)
+    val runAttackCount: StateFlow<Int> = _runAttackCount.asStateFlow()
+
+    private val _playbackRunLabel = MutableStateFlow<String?>(null)
+    val playbackRunLabel: StateFlow<String?> = _playbackRunLabel.asStateFlow()
+
+    private val _playbackElapsedMs = MutableStateFlow(0L)
+    val playbackElapsedMs: StateFlow<Long> = _playbackElapsedMs.asStateFlow()
+
     fun setState(value: ControllerState) {
+        val old = _state.value
         _state.value = value
+        if (old != value) {
+            android.util.Log.i("AutoClashState", "state $old -> $value (${Thread.currentThread().name})")
+        }
     }
 
     fun setStatus(value: String) {
@@ -99,6 +112,22 @@ object BotState {
 
     fun clearRecording() {
         setRecordedCount(0)
+    }
+
+    fun beginRunAttacks() {
+        _runAttackCount.value = 0
+    }
+
+    fun noteRunAttack() {
+        _runAttackCount.value = _runAttackCount.value + 1
+    }
+
+    fun setPlaybackRunLabel(value: String?) {
+        _playbackRunLabel.value = value
+    }
+
+    fun setPlaybackElapsed(ms: Long) {
+        _playbackElapsedMs.value = ms.coerceAtLeast(0L)
     }
 }
 

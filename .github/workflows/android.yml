@@ -40,6 +40,15 @@ jobs:
           chmod +x ./gradlew
           ./gradlew --no-daemon --stacktrace :app:testDebugUnitTest :ocrlab:testDebugUnitTest
 
+      - name: Upload loot clipping screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: loot-clipping-matrix
+          path: app/build/reports/loot-matrix
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: Assemble debug APK
         run: ./gradlew --no-daemon --stacktrace :app:assembleDebug :ocrlab:assembleDebug :ocrlab:assembleDebugAndroidTest
 
