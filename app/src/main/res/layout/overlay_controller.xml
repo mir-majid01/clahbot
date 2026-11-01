@@ -489,7 +489,7 @@
             <LinearLayout
                 android:id="@+id/playingPanel"
                 android:layout_width="match_parent"
-                android:layout_height="44dp"
+                android:layout_height="52dp"
                 android:background="@drawable/bg_playback_strip"
                 android:orientation="horizontal"
                 android:gravity="center_vertical"
@@ -500,7 +500,7 @@
                 <LinearLayout
                     android:id="@+id/playDragBar"
                     android:layout_width="0dp"
-                    android:layout_height="44dp"
+                    android:layout_height="52dp"
                     android:layout_weight="1"
                     android:gravity="center_vertical"
                     android:orientation="horizontal">
@@ -520,13 +520,13 @@
 
                     <TextView
                         android:id="@+id/tvPlayingName"
-                        android:layout_width="wrap_content"
+                        android:layout_width="0dp"
                         android:layout_height="wrap_content"
+                        android:layout_weight="1"
                         android:layout_marginStart="6dp"
                         android:ellipsize="end"
                         android:maxLines="1"
                         android:singleLine="true"
-                        android:maxWidth="96dp"
                         android:text="Macro"
                         android:textColor="#E6EBF5"
                         android:textSize="13sp"
@@ -566,9 +566,9 @@
 
                 <ImageButton
                     android:id="@+id/btnPlayPause"
-                    android:layout_width="32dp"
-                    android:layout_height="32dp"
-                    android:layout_marginStart="6dp"
+                    android:layout_width="36dp"
+                    android:layout_height="36dp"
+                    android:layout_marginStart="8dp"
                     android:background="@drawable/bg_play_button"
                     android:contentDescription="Pause playback"
                     android:padding="8dp"
@@ -577,9 +577,9 @@
 
                 <ImageButton
                     android:id="@+id/btnStopPlayback"
-                    android:layout_width="32dp"
-                    android:layout_height="32dp"
-                    android:layout_marginStart="6dp"
+                    android:layout_width="36dp"
+                    android:layout_height="36dp"
+                    android:layout_marginStart="8dp"
                     android:background="@drawable/bg_play_stop"
                     android:contentDescription="Stop playback"
                     android:padding="9dp"
@@ -588,9 +588,9 @@
 
                 <ImageButton
                     android:id="@+id/btnPlayMinimize"
-                    android:layout_width="32dp"
-                    android:layout_height="32dp"
-                    android:layout_marginStart="6dp"
+                    android:layout_width="36dp"
+                    android:layout_height="36dp"
+                    android:layout_marginStart="8dp"
                     android:background="?android:attr/selectableItemBackgroundBorderless"
                     android:contentDescription="Minimize playback strip"
                     android:padding="8dp"
@@ -653,42 +653,6 @@
                 </LinearLayout>
             </LinearLayout>
 
-            <LinearLayout
-                android:id="@+id/countdownPanel"
-                android:layout_width="match_parent"
-                android:layout_height="match_parent"
-                android:gravity="center"
-                android:orientation="vertical"
-                android:visibility="gone">
-
-                <TextView
-                    android:id="@+id/tvStartCountdown"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:gravity="center"
-                    android:text="5"
-                    android:textColor="#F1F5F9"
-                    android:textSize="44sp"
-                    android:textStyle="bold" />
-
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="2dp"
-                    android:gravity="center"
-                    android:text="Switch to Clash of Clans"
-                    android:textColor="#94A3B8"
-                    android:textSize="11sp" />
-
-                <Button
-                    android:id="@+id/btnStopCountdown"
-                    android:layout_width="match_parent"
-                    android:layout_height="40dp"
-                    android:layout_marginTop="10dp"
-                    android:backgroundTint="#DC2626"
-                    android:text="Stop"
-                    android:textSize="12sp" />
-            </LinearLayout>
         </FrameLayout>
 
         <LinearLayout
