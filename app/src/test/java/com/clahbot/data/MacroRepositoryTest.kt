@@ -256,6 +256,36 @@ class MacroRepositoryTest {
         assertEquals(0, repository.macros.value.size)
     }
 
+    @Test
+    fun deleteManyRemovesOnlyTheSelectionAndBacksUpFirst() = runBlocking {
+        repository.save(sampleMacro(id = 1, name = "One"))
+        repository.save(sampleMacro(id = 2, name = "Two"))
+        repository.save(sampleMacro(id = 3, name = "Three"))
+        val backup = repository.backup("test")
+        assertNotNull(backup)
+        assertTrue(backup!!.isFile)
+        assertTrue(backup.readText().contains("One"))
+        assertTrue(backup.readText().contains("Three"))
+
+        val removed = repository.deleteMany(setOf(1L, 3L))
+        assertEquals(listOf("One", "Three"), removed.map { it.name }.sorted())
+        assertEquals(listOf("Two"), repository.load().map { it.name })
+
+        val restored = repository.restoreMany(removed)
+        assertEquals(2, restored)
+        assertEquals(
+            listOf("One", "Three", "Two"),
+            repository.load().map { it.name }.sorted()
+        )
+    }
+
+    @Test
+    fun deletingAnEmptySelectionNeverWritesTheLibrary() = runBlocking {
+        repository.save(sampleMacro(id = 1, name = "One"))
+        assertTrue(repository.deleteMany(emptySet()).isEmpty())
+        assertEquals(1, repository.load().size)
+    }
+
     private fun sampleMacro(
         id: Long = 1,
         name: String = "Test macro",

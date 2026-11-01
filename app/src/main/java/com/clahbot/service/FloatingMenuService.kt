@@ -28,6 +28,7 @@ import android.text.TextWatcher
 import android.util.DisplayMetrics
 import android.util.Log
 import android.util.TypedValue
+import android.view.Choreographer
 import android.view.GestureDetector
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
@@ -35,14 +36,17 @@ import android.view.LayoutInflater
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.WindowInsets
 import android.view.WindowManager
 import android.view.animation.DecelerateInterpolator
+import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.ImageButton
+import android.widget.ProgressBar
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.PopupWindow
@@ -72,21 +76,27 @@ import com.clahbot.data.models.totalGold
 import com.clahbot.data.models.GesturePath
 import com.clahbot.data.models.GesturePoint
 import com.clahbot.data.models.Macro
+import com.clahbot.data.models.MacroSettingsDraft
 import com.clahbot.data.models.RecordedGesture
 import com.clahbot.execution.MacroPlayer
 import com.clahbot.execution.MacroTimeline
+import com.clahbot.execution.StopSummary
 import com.clahbot.execution.PlaybackBubblePlacement
 import com.clahbot.overlay.BubbleCorner
 import com.clahbot.overlay.OverlayBounds
 import com.clahbot.overlay.OverlayPlacement
 import com.clahbot.overlay.OverlayPoint
 import com.clahbot.overlay.OverlayPositionStore
+import com.clahbot.overlay.TouchTargets
+import com.clahbot.overlay.TouchEffectsView
 import com.clahbot.input.BuiltGesture
+import com.clahbot.input.GetEventDiscovery
 import com.clahbot.input.InputAccessManager
 import com.clahbot.input.InputEventSource
 import com.clahbot.input.PassiveRecorder
 import com.clahbot.input.ScreenGeometry
 import com.clahbot.input.ScreenRect
+import com.clahbot.input.TouchscreenDevice
 import com.clahbot.results.AppResultsReader
 import com.clahbot.results.CaptureSession
 import com.clahbot.results.ResultCaptureGate
@@ -97,10 +107,14 @@ import com.clahbot.ui.MacroInputRelay
 import com.clahbot.ui.MainActivity
 import com.clahbot.ui.SettingsActivity
 import com.clahbot.ui.design.Ds
+import com.clahbot.ui.widget.LootRowLayout
+import com.clahbot.util.Haptics
 import com.clahbot.util.PermissionHelper
+import com.clahbot.util.Plural
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -112,6 +126,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
+import kotlin.math.hypot
 import kotlin.math.roundToInt
 import kotlin.math.roundToLong
 
@@ -129,7 +144,8 @@ class FloatingMenuService : Service() {
     private enum class PlacementKind(val key: String) {
         CONTROLLER("controller"),
         BUBBLE("bubble"),
-        RECORDING("recording")
+        RECORDING("recording"),
+        PLAYING("playing")
     }
 
     private lateinit var windowManager: WindowManager
@@ -139,18 +155,32 @@ class FloatingMenuService : Service() {
     private lateinit var sessionRepository: SessionRepository
     private var statsScope = STATS_SESSION
     private var autoScanChip: TextView? = null
-    private var scanNowLink: TextView? = null
+    private var scanNowLink: Button? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val handler = Handler(Looper.getMainLooper())
+
+    /** Context with the controller size applied; every overlay dp/sp uses it. */
+    private var uiContext: Context = this
 
     private var controllerView: View? = null
     private var controllerParams: WindowManager.LayoutParams? = null
     private var overlayPositions: OverlayPositionStore? = null
     private var snapAnimator: ValueAnimator? = null
+    private var collapseAnimator: ValueAnimator? = null
+    private var dragFrameCallback: Choreographer.FrameCallback? = null
+    private var pendingDragPoint: OverlayPoint? = null
+    private var pendingDragKind: PlacementKind? = null
+    private val touchTargetsRunnable = Runnable { installTouchTargetsNow() }
     private var lastBubbleCorner: BubbleCorner? = null
+    private var lastBubbleScale: Float = 1f
+    private var lastAutoDock: Boolean = true
     private var recordingMinimized = false
     private var lastRecordingMinimized = false
     private var recordingChromeActive = false
+    private var reviewChromeActive = false
+    private var playbackChromeActive = false
+    private var playbackMinimized = false
+    private var pendingPlaybackPoint: OverlayPoint? = null
     private var playbackRunActive = false
     private var pendingAutoOpen = false
     private var autoOpenTimeout: Runnable? = null
@@ -158,8 +188,13 @@ class FloatingMenuService : Service() {
     private var serviceDestroying = false
     private var captureView: View? = null
     private var captureParams: WindowManager.LayoutParams? = null
+    private var effectsView: TouchEffectsView? = null
     private var passiveRecorder: PassiveRecorder? = null
     private var startingPassive = false
+    private var preparingPassive = false
+    private var prepareJob: Job? = null
+    private var prepareSource: InputEventSource? = null
+    private var prepareToken = 0
     private var activeRecordingMode: RecordingMode? = null
 
     @Volatile
@@ -175,7 +210,7 @@ class FloatingMenuService : Service() {
     private var selectedId: Long = -1L
     private var settingsView: View? = null
     private var settingsMacroId: Long = -1L
-    private var settingsDraft: SettingsDraft? = null
+    private var settingsDraft: MacroSettingsDraft? = null
     private var pendingDelete: Macro? = null
     private var undoTicker: Runnable? = null
 
@@ -191,6 +226,19 @@ class FloatingMenuService : Service() {
     private var pausedAccumMs: Long = 0L
     private var pausedAtMs: Long = 0L
     private var gestureSeq: Int = 0
+    private var lastPulseCount: Int = -1
+    private var reviewName: String = ""
+    private var saveToastAt: Long = 0L
+    private var savePending = false
+    private var savedMacro: Macro? = null
+    private var discardedGestures: List<RecordedGesture>? = null
+    private var saveAutoRunnable: Runnable? = null
+    private var saveUndoRunnable: Runnable? = null
+    private var saveTickRunnable: Runnable? = null
+    private var pendingRecAction: RecConfirmAction? = null
+    private var confirmRevert: Runnable? = null
+
+    private enum class RecConfirmAction { RESTART, CANCEL }
 
     private var downTime: Long = 0L
     private var pathPoints = mutableListOf<GesturePoint>()
@@ -205,15 +253,13 @@ class FloatingMenuService : Service() {
     private lateinit var resultsReader: AppResultsReader
     private lateinit var resultsCapture: ResultsCaptureCoordinator
 
-    @Volatile
-    private var captureOverlayHidden = false
-
     private val timerRunnable = object : Runnable {
         override fun run() {
             if (!recording) return
             val timer = formatClock(elapsedRecordingMs())
             controllerView?.findViewById<TextView>(R.id.tvRecTimer)?.text = timer
             controllerView?.findViewById<TextView>(R.id.tvRecPillTimer)?.text = timer
+            updateTouchCounter(animate = false)
             handler.postDelayed(this, 500L)
         }
     }
@@ -226,6 +272,8 @@ class FloatingMenuService : Service() {
         settingsStore = SettingsStore.get(this)
         overlayPositions = OverlayPositionStore.get(this)
         lastBubbleCorner = settingsStore.settings.value.bubbleCorner
+        lastBubbleScale = settingsStore.settings.value.bubbleScale
+        lastAutoDock = settingsStore.settings.value.autoDockIcon
         attackRepository = AttackRepository.get(this)
         sessionRepository = SessionRepository.get(this)
         val versionName = runCatching {
@@ -233,6 +281,18 @@ class FloatingMenuService : Service() {
         }.getOrNull() ?: "?"
         AppEventLog.init(this, versionName)
         resultsReader = AppResultsReader(this)
+        ClahAccessibilityService.overlayMaskProvider = {
+            controllerBoundsSnapshot?.let { bounds ->
+                listOf(
+                    Rect(
+                        bounds.left.toInt(),
+                        bounds.top.toInt(),
+                        bounds.right.toInt(),
+                        bounds.bottom.toInt()
+                    )
+                )
+            } ?: emptyList()
+        }
         resultsCapture = ResultsCaptureCoordinator(
             context = this,
             scope = scope,
@@ -240,12 +300,15 @@ class FloatingMenuService : Service() {
             settingsStore = settingsStore,
             reader = resultsReader,
             gate = resultGate,
-            hideOverlay = { setCaptureOverlayHidden(true) },
-            showOverlay = { setCaptureOverlayHidden(false) },
             onStatus = { message -> BotState.setStatus(message) },
+            onEpisodeActive = { active -> effectsView?.suppressed = active },
             onRecordSaved = { record ->
+                if (playbackRunActive || BotState.state.value.isPlayback) {
+                    BotState.noteRunAttack()
+                }
                 AppEventLog.log(
                     "record callback playerRunning=${player?.isRunning() == true} " +
+                        "runAttacks=${BotState.runAttackCount.value} " +
                         "repeat=${captureSession?.repeat ?: "-"} captureId=${captureSession?.id ?: "-"} " +
                         "manual=$manualWatch"
                 )
@@ -294,7 +357,10 @@ class FloatingMenuService : Service() {
                 if (state == ControllerState.PLAYBACK_PAUSED) {
                     updateNotification(getString(R.string.notification_paused))
                 }
-                if (state == ControllerState.ERROR && playbackRunActive) {
+                if ((state == ControllerState.ERROR || state == ControllerState.READY) &&
+                    playbackRunActive
+                ) {
+                    endAttackSession(interrupted = false)
                     onPlaybackRunEnded()
                 }
                 refreshUi()
@@ -337,7 +403,57 @@ class FloatingMenuService : Service() {
                         applyWindowPoint(params, point, PlacementKind.BUBBLE)
                     }
                 }
+                effectsView?.setRecordingConfig(settings.recordingEffect)
+                effectsView?.setPlayingConfig(settings.playingEffect)
                 lastBubbleCorner = settings.bubbleCorner
+                if (lastAutoDock != settings.autoDockIcon) {
+                    lastAutoDock = settings.autoDockIcon
+                    if (collapsed && !recording && !startingPassive) {
+                        val size = currentBubbleSizePx()
+                        val point = if (settings.autoDockIcon) {
+                            defaultBubblePoint()
+                        } else {
+                            savedPosition(PlacementKind.BUBBLE)
+                                ?: bubblePointFromLogo(view, size)
+                        }
+                        applyWindowPoint(
+                            params,
+                            OverlayPlacement.clamp(
+                                point.x, point.y, size, size, safeBounds(), dp(8)
+                            ),
+                            PlacementKind.BUBBLE,
+                            save = false
+                        )
+                    }
+                }
+                if (lastBubbleScale != settings.bubbleScale) {
+                    lastBubbleScale = settings.bubbleScale
+                    applyBubbleSize(view, uiContext, settings.bubbleScale)
+                    lastBubbleRing = Int.MIN_VALUE
+                    if (collapsed && !recording && !startingPassive) {
+                        val size = currentBubbleSizePx()
+                        val point = if (settings.autoDockIcon) {
+                            defaultBubblePoint()
+                        } else {
+                            savedPosition(PlacementKind.BUBBLE)
+                                ?: bubblePointFromLogo(view, size)
+                        }
+                        applyWindowPoint(
+                            params,
+                            OverlayPlacement.clamp(
+                                point.x,
+                                point.y,
+                                size,
+                                size,
+                                safeBounds(),
+                                dp(8)
+                            ),
+                            PlacementKind.BUBBLE,
+                            save = false
+                        )
+                    }
+                    refreshUi()
+                }
                 refreshUi()
             }
         }
@@ -376,8 +492,15 @@ class FloatingMenuService : Service() {
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
         cancelAutoOpen()
+        if (recording) {
+            updateScreenSize()
+            stopRecording()
+            BotState.setStatus("Screen changed — recording stopped")
+            toast("Recording stopped: screen changed")
+            return
+        }
         val previousParams = controllerParams
-        if (previousParams != null && settingsView == null && !recording && !startingPassive) {
+        if (previousParams != null && settingsView == null && !startingPassive) {
             savePosition(
                 if (collapsed) PlacementKind.BUBBLE else PlacementKind.CONTROLLER,
                 previousParams
@@ -419,8 +542,9 @@ class FloatingMenuService : Service() {
                     applyPanelWidth(settings = false)
                     val panel = view.findViewById<View>(R.id.panel)
                     val panelWidth = panel?.width?.takeIf { it > 0 }
-                        ?: controllerPanelWidthPx(false)
-                    val panelHeight = panel?.height?.takeIf { it > 0 } ?: dp(260)
+                        ?: controllerPanelWidthPx()
+                    val panelHeight = panel?.height?.takeIf { it > 0 }
+                        ?: controllerPanelHeightPx()
                     val point = savedPosition(PlacementKind.CONTROLLER)
                         ?: defaultControllerPoint(panelWidth, panelHeight)
                     applyWindowPoint(
@@ -438,17 +562,24 @@ class FloatingMenuService : Service() {
                 }
             }
         }
-        if (!recording) return
-        stopRecording()
-        BotState.setStatus("Screen changed — recording stopped")
-        toast("Recording stopped: screen changed")
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
         serviceDestroying = true
+        ClahAccessibilityService.overlayMaskProvider = { emptyList() }
         cancelAutoOpen()
+        prepareToken++
+        prepareJob?.cancel()
+        prepareJob = null
+        preparingPassive = false
+        prepareSource?.let { source ->
+            scope.launch(Dispatchers.IO) { source.close() }
+        }
+        prepareSource = null
+        stopPlaybackTicker()
+        stopSaveCountdown()
         handler.removeCallbacksAndMessages(null)
         MacroInputRelay.pending = null
         BotState.setInterrupted(true)
@@ -462,6 +593,7 @@ class FloatingMenuService : Service() {
         stopRecording(silent = true)
         stopPassiveRecorder()
         removeCapture()
+        removeEffectsOverlay()
         removeController()
         scope.cancel()
         super.onDestroy()
@@ -524,21 +656,24 @@ class FloatingMenuService : Service() {
         updateScreenSize()
         val prefs = settingsStore.settings.value
         val controllerContext = scaledControllerContext(prefs.controllerScale)
+        uiContext = controllerContext
         val view = LayoutInflater.from(controllerContext)
             .inflate(R.layout.overlay_controller, null)
         view.findViewById<LinearLayout>(R.id.panel)?.let { panel ->
-            panel.layoutParams.width = controllerPanelWidthPx(settings = false)
+            panel.layoutParams = panel.layoutParams.apply {
+                width = controllerPanelWidthPx()
+                height = controllerPanelHeightPx()
+            }
         }
         view.findViewById<ScrollView>(R.id.macroScroll)?.apply {
             isVerticalScrollBarEnabled = false
             clipToPadding = false
             setPadding(0, 0, 0, dp(2))
-            layoutParams = layoutParams.apply { height = dp(192) }
         }
         applyBubbleSize(view, controllerContext, prefs.bubbleScale)
         val initialPosition = overlayPositions?.get(
             "controller_${currentOrientation()}"
-        ) ?: defaultControllerPoint(controllerPanelWidthPx(false), dp(260))
+        ) ?: defaultControllerPoint(controllerPanelWidthPx(), controllerPanelHeightPx())
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -562,6 +697,7 @@ class FloatingMenuService : Service() {
         }
         controllerView = view
         controllerParams = params
+        ensureEffectsOverlay()
         bindController(view)
         view.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
             clampControllerToScreen()
@@ -586,6 +722,45 @@ class FloatingMenuService : Service() {
         scope.launch { attackRepository.refresh() }
     }
 
+    private fun ensureEffectsOverlay() {
+        if (effectsView != null) return
+        if (!Settings.canDrawOverlays(this)) return
+        val view = TouchEffectsView(this)
+        val prefs = settingsStore.settings.value
+        view.setRecordingConfig(prefs.recordingEffect)
+        view.setPlayingConfig(prefs.playingEffect)
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
+            overlayType(),
+            WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = 0
+            y = 0
+        }
+        try {
+            windowManager.addView(view, params)
+            effectsView = view
+        } catch (_: Exception) {
+            // Overlay not available; effects are optional.
+        }
+    }
+
+    private fun removeEffectsOverlay() {
+        val view = effectsView ?: return
+        effectsView = null
+        try {
+            windowManager.removeView(view)
+        } catch (_: Exception) {
+            // Already detached.
+        }
+    }
+
     private fun removeController() {
         val view = controllerView ?: return
         controllerView = null
@@ -600,6 +775,17 @@ class FloatingMenuService : Service() {
 
     private fun bindController(view: View) {
         val params = controllerParams ?: return
+        listOf(R.id.logoFrame, R.id.bubbleLogoFrame).forEach { id ->
+            view.findViewById<View>(id)?.apply {
+                clipToOutline = true
+                outlineProvider = object : android.view.ViewOutlineProvider() {
+                    override fun getOutline(source: View, outline: android.graphics.Outline) {
+                        val radius = minOf(source.width, source.height) * 0.30f
+                        outline.setRoundRect(0, 0, source.width, source.height, radius)
+                    }
+                }
+            }
+        }
 
         view.findViewById<View>(R.id.controllerHeader)
             .setOnTouchListener(dragListener(params, PlacementKind.CONTROLLER, onTap = {}))
@@ -621,15 +807,54 @@ class FloatingMenuService : Service() {
             haptic()
             undoDelete()
         }
+        scanNowLink = view.findViewById<Button>(R.id.btnScanNow).apply {
+            setOnClickListener {
+                haptic()
+                if (manualWatch) stopManualWatch() else startManualWatch()
+            }
+        }
+        view.findViewById<Button>(R.id.btnSeeHistory).setOnClickListener {
+            haptic()
+            showOpenAppConfirm(
+                "Open AutoClash?",
+                "This leaves Clash of Clans. Your game stays open in the background.",
+                "Open app"
+            ) {
+                startActivity(
+                    Intent(this, MainActivity::class.java)
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                        .putExtra(MainActivity.EXTRA_OPEN_HISTORY, true)
+                )
+            }
+        }
 
-        view.findViewById<Button>(R.id.btnRecPause).setOnClickListener { toggleRecordingPause() }
-        view.findViewById<Button>(R.id.btnRecFinish).setOnClickListener {
+        view.findViewById<ImageButton>(R.id.btnRecPause).setOnClickListener {
+            haptic()
+            toggleRecordingPause()
+        }
+        view.findViewById<View>(R.id.btnRecFinish).setOnClickListener {
             haptic()
             stopRecording()
         }
         view.findViewById<ImageButton>(R.id.btnRecMinimize).setOnClickListener {
             haptic()
             minimizeRecordingBar()
+        }
+        view.findViewById<ImageButton>(R.id.btnRecRestart).setOnClickListener {
+            haptic()
+            requestRecordingRestart()
+        }
+        view.findViewById<ImageButton>(R.id.btnRecCancel).setOnClickListener {
+            haptic()
+            requestRecordingCancel()
+        }
+        view.findViewById<Button>(R.id.btnRecKeep).setOnClickListener {
+            haptic()
+            dismissRecConfirm()
+        }
+        view.findViewById<Button>(R.id.btnRecDiscard).setOnClickListener {
+            haptic()
+            confirmRecAction()
         }
         view.findViewById<View>(R.id.recDragBar)
             .setOnTouchListener(dragListener(params, PlacementKind.RECORDING, onTap = {}))
@@ -638,16 +863,53 @@ class FloatingMenuService : Service() {
                 dragListener(params, PlacementKind.RECORDING, onTap = { expandRecordingBar() })
             )
 
-        view.findViewById<Button>(R.id.btnRecordAgain).setOnClickListener {
+        view.findViewById<View>(R.id.btnSaveNameSave).setOnClickListener {
             haptic()
-            discardRecording(quiet = true)
-            startRecording()
+            saveRecording()
         }
-        view.findViewById<Button>(R.id.btnDiscard).setOnClickListener {
+        view.findViewById<View>(R.id.btnSaveNameDiscard).setOnClickListener {
             haptic()
-            discardRecording()
+            discardReviewedRecording()
         }
-        view.findViewById<Button>(R.id.btnSave).setOnClickListener { saveRecording() }
+        view.findViewById<View>(R.id.btnSavedUndo).setOnClickListener {
+            haptic()
+            undoSavedMacro()
+        }
+        view.findViewById<View>(R.id.btnDiscardedUndo).setOnClickListener {
+            haptic()
+            undoDiscardedRecording()
+        }
+        view.findViewById<EditText>(R.id.etMacroName)?.apply {
+            setOnClickListener { setSaveTyping(true) }
+            setOnTouchListener { _, event ->
+                if (event.actionMasked == MotionEvent.ACTION_DOWN) setSaveTyping(true)
+                false
+            }
+            setOnFocusChangeListener { _, focused ->
+                if (focused) setSaveTyping(true) else setSaveTyping(false)
+            }
+            setOnEditorActionListener { _, actionId, event ->
+                if (actionId == EditorInfo.IME_ACTION_DONE ||
+                    (event != null && event.keyCode == KeyEvent.KEYCODE_ENTER &&
+                        event.action == KeyEvent.ACTION_DOWN)
+                ) {
+                    saveRecording()
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+        view.findViewById<View>(R.id.playDragBar)
+            .setOnTouchListener(dragListener(params, PlacementKind.PLAYING, onTap = {}))
+        view.findViewById<View>(R.id.playPill)
+            .setOnTouchListener(
+                dragListener(params, PlacementKind.PLAYING, onTap = { expandPlaybackStrip() })
+            )
+        view.findViewById<ImageButton>(R.id.btnPlayMinimize).setOnClickListener {
+            haptic()
+            minimizePlaybackStrip()
+        }
 
         view.findViewById<Button>(R.id.btnStopCountdown).setOnClickListener {
             haptic()
@@ -655,8 +917,11 @@ class FloatingMenuService : Service() {
             BotState.setState(ControllerState.READY)
             BotState.setStatus("Playback stopped")
         }
-        view.findViewById<Button>(R.id.btnPlayPause).setOnClickListener { togglePlaybackPause() }
-        view.findViewById<Button>(R.id.btnStopPlayback).setOnClickListener {
+        view.findViewById<ImageButton>(R.id.btnPlayPause).setOnClickListener {
+            haptic()
+            togglePlaybackPause()
+        }
+        view.findViewById<ImageButton>(R.id.btnStopPlayback).setOnClickListener {
             haptic()
             stopPlayback()
             BotState.setState(ControllerState.READY)
@@ -669,67 +934,151 @@ class FloatingMenuService : Service() {
         kind: PlacementKind,
         onTap: () -> Unit
     ): View.OnTouchListener {
+        var activePointer = MotionEvent.INVALID_POINTER_ID
         var startX = 0
         var startY = 0
-        var touchX = 0f
-        var touchY = 0f
+        var downX = 0f
+        var downY = 0f
         var moved = false
-        val slop = dp(6)
+        val slop = ViewConfiguration.get(uiContext).scaledTouchSlop.toFloat()
+
+        fun resetBubbleScale() {
+            controllerView?.findViewById<View>(R.id.bubbleVisual)?.apply {
+                animate().cancel()
+                scaleX = 1f
+                scaleY = 1f
+            }
+        }
+
+        fun finishDrag(cancelled: Boolean) {
+            flushDragFrame()
+            if (moved) {
+                if (kind == PlacementKind.BUBBLE) {
+                    snapBubbleToEdge(params)
+                } else {
+                    savePosition(kind, params)
+                }
+            } else if (!cancelled) {
+                onTap()
+            }
+            resetBubbleScale()
+            activePointer = MotionEvent.INVALID_POINTER_ID
+            updateControllerPassthrough()
+        }
 
         return View.OnTouchListener { _, event ->
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     snapAnimator?.cancel()
+                    collapseAnimator?.cancel()
+                    autoOpenAnimator?.cancel()
+                    activePointer = event.getPointerId(0)
                     startX = params.x
                     startY = params.y
-                    touchX = event.rawX
-                    touchY = event.rawY
+                    downX = event.rawX
+                    downY = event.rawY
                     moved = false
-                    true
-                }
-
-                MotionEvent.ACTION_MOVE -> {
-                    val dx = (event.rawX - touchX).toInt()
-                    val dy = (event.rawY - touchY).toInt()
-                    if (!moved && (abs(dx) > slop || abs(dy) > slop)) moved = true
-                    if (moved) {
-                        val point = clampCurrentWindow(startX + dx, startY + dy, kind)
-                        params.x = point.x
-                        params.y = point.y
-                        val view = controllerView
-                        if (view != null) {
-                            try {
-                                windowManager.updateViewLayout(view, params)
-                                refreshControllerBoundsSnapshot()
-                            } catch (_: Exception) {
-                                // Window detached mid drag.
-                            }
+                    if (kind == PlacementKind.BUBBLE) {
+                        controllerView?.findViewById<View>(R.id.bubbleVisual)?.apply {
+                            animate().cancel()
+                            animate().scaleX(0.96f).scaleY(0.96f).setDuration(90L).start()
                         }
                     }
                     true
                 }
 
-                MotionEvent.ACTION_UP -> {
-                    if (!moved) {
-                        onTap()
-                    } else if (kind == PlacementKind.BUBBLE) {
-                        snapBubbleToEdge(params)
+                MotionEvent.ACTION_POINTER_DOWN -> {
+                    // A second finger never starts a second drag; keep following
+                    // the original pointer until it lifts.
+                    true
+                }
+
+                MotionEvent.ACTION_MOVE -> {
+                    val index = event.findPointerIndex(activePointer)
+                    if (index < 0) return@OnTouchListener true
+                    val pointerX = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        event.getRawX(index)
                     } else {
-                        savePosition(kind, params)
+                        event.getX(index) + params.x
                     }
-                    updateControllerPassthrough()
+                    val pointerY = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        event.getRawY(index)
+                    } else {
+                        event.getY(index) + params.y
+                    }
+                    val dx = pointerX - downX
+                    val dy = pointerY - downY
+                    if (!moved && hypot(dx, dy) > slop) moved = true
+                    if (moved) {
+                        val point = clampCurrentWindow(
+                            (startX + dx).roundToInt(),
+                            (startY + dy).roundToInt(),
+                            kind
+                        )
+                        scheduleDragFrame(point, kind)
+                    }
+                    true
+                }
+
+                MotionEvent.ACTION_POINTER_UP -> {
+                    if (event.getPointerId(event.actionIndex) == activePointer) {
+                        finishDrag(cancelled = false)
+                    }
+                    true
+                }
+
+                MotionEvent.ACTION_UP -> {
+                    if (activePointer == MotionEvent.INVALID_POINTER_ID) return@OnTouchListener true
+                    finishDrag(cancelled = false)
                     true
                 }
 
                 MotionEvent.ACTION_CANCEL -> {
+                    if (activePointer == MotionEvent.INVALID_POINTER_ID) return@OnTouchListener true
+                    finishDrag(cancelled = true)
+                    activePointer = MotionEvent.INVALID_POINTER_ID
                     savePosition(kind, params)
-                    updateControllerPassthrough()
                     true
                 }
 
                 else -> true
             }
         }
+    }
+
+    private fun scheduleDragFrame(point: OverlayPoint, kind: PlacementKind) {
+        pendingDragPoint = point
+        pendingDragKind = kind
+        if (dragFrameCallback != null) return
+        val callback = object : Choreographer.FrameCallback {
+            override fun doFrame(frameTimeNanos: Long) {
+                dragFrameCallback = null
+                applyPendingDragFrame()
+            }
+        }
+        dragFrameCallback = callback
+        Choreographer.getInstance().postFrameCallback(callback)
+    }
+
+    private fun applyPendingDragFrame() {
+        val point = pendingDragPoint ?: return
+        val view = controllerView ?: return
+        val params = controllerParams ?: return
+        params.x = point.x
+        params.y = point.y
+        try {
+            windowManager.updateViewLayout(view, params)
+        } catch (_: Exception) {
+            // Window detached mid drag.
+        }
+    }
+
+    private fun flushDragFrame() {
+        dragFrameCallback?.let { Choreographer.getInstance().removeFrameCallback(it) }
+        dragFrameCallback = null
+        applyPendingDragFrame()
+        pendingDragPoint = null
+        pendingDragKind = null
     }
 
     private fun safeBounds(): OverlayBounds {
@@ -835,18 +1184,23 @@ class FloatingMenuService : Service() {
     private fun snapBubbleToEdge(params: WindowManager.LayoutParams) {
         val size = currentBubbleSizePx()
         val safe = safeBounds()
-        val targetX = OverlayPlacement.snapX(params.x, size, safe, dp(8))
-        val targetY = OverlayPlacement.clamp(
+        val target = OverlayPlacement.snapToEdges(
             params.x,
             params.y,
             size,
             size,
             safe,
-            dp(8)
-        ).y
+            dp(8),
+            dp(24)
+        )
+        if (target.x == params.x && target.y == params.y) {
+            savePosition(PlacementKind.BUBBLE, params)
+            refreshControllerBoundsSnapshot()
+            return
+        }
         snapAnimator?.cancel()
         if (!ValueAnimator.areAnimatorsEnabled()) {
-            applyWindowPoint(params, OverlayPoint(targetX, targetY), PlacementKind.BUBBLE)
+            applyWindowPoint(params, target, PlacementKind.BUBBLE)
             return
         }
         val startX = params.x
@@ -856,8 +1210,8 @@ class FloatingMenuService : Service() {
             interpolator = DecelerateInterpolator()
             addUpdateListener { animation ->
                 val t = animation.animatedFraction
-                params.x = (startX + (targetX - startX) * t).roundToInt()
-                params.y = (startY + (targetY - startY) * t).roundToInt()
+                params.x = (startX + (target.x - startX) * t).roundToInt()
+                params.y = (startY + (target.y - startY) * t).roundToInt()
                 controllerView?.let { view ->
                     try {
                         windowManager.updateViewLayout(view, params)
@@ -881,38 +1235,129 @@ class FloatingMenuService : Service() {
     private fun collapseController() {
         val view = controllerView ?: return
         val params = controllerParams ?: return
-        if (recording || startingPassive) return
+        if (recording || startingPassive || preparingPassive) return
         savePosition(PlacementKind.CONTROLLER, params)
-        collapsed = true
-        view.findViewById<View>(R.id.panel).visibility = View.GONE
-        view.findViewById<View>(R.id.bubble).visibility = View.VISIBLE
-        val point = savedPosition(PlacementKind.BUBBLE) ?: defaultBubblePoint()
         val size = currentBubbleSizePx()
+        val hadSavedIcon = savedPosition(PlacementKind.BUBBLE)
+        val autoDock = settingsStore.settings.value.autoDockIcon
+        val target = if (autoDock) {
+            defaultBubblePoint()
+        } else {
+            hadSavedIcon ?: bubblePointFromLogo(view, size)
+        }
         val clamped = OverlayPlacement.clamp(
-            point.x,
-            point.y,
+            target.x,
+            target.y,
             size,
             size,
             safeBounds(),
             dp(8)
         )
-        applyWindowPoint(params, clamped, PlacementKind.BUBBLE)
-        refreshUi()
+        val panel = view.findViewById<View>(R.id.panel)
+        val bubble = view.findViewById<View>(R.id.bubble)
+        collapseAnimator?.cancel()
+        snapAnimator?.cancel()
+        val animate = ValueAnimator.areAnimatorsEnabled()
+        if (!animate) {
+            collapsed = true
+            panel.visibility = View.GONE
+            panel.scaleX = 1f
+            panel.scaleY = 1f
+            panel.alpha = 1f
+            bubble.visibility = View.VISIBLE
+            applyWindowPoint(params, clamped, PlacementKind.BUBBLE, save = false)
+            if (!autoDock && hadSavedIcon != null) savePosition(PlacementKind.BUBBLE, params)
+            refreshUi()
+            return
+        }
+        val logo = view.findViewById<View>(R.id.logoFrame)
+        val panelLoc = IntArray(2)
+        val logoLoc = IntArray(2)
+        panel.getLocationOnScreen(panelLoc)
+        (logo ?: panel).getLocationOnScreen(logoLoc)
+        panel.pivotX = (logoLoc[0] - panelLoc[0] + (logo?.width ?: 0) / 2f)
+        panel.pivotY = (logoLoc[1] - panelLoc[1] + (logo?.height ?: 0) / 2f)
+        val baseFlags = params.flags
+        params.flags = baseFlags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        try {
+            windowManager.updateViewLayout(view, params)
+        } catch (_: Exception) {
+            // Window detached.
+        }
+        val animator = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = COLLAPSE_MS
+            interpolator = DecelerateInterpolator()
+            addUpdateListener { animation ->
+                val t = animation.animatedFraction
+                val scale = 1f - 0.82f * t
+                panel.scaleX = scale
+                panel.scaleY = scale
+                panel.alpha = 1f - t
+            }
+            var cancelled = false
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationCancel(animation: android.animation.Animator) {
+                    cancelled = true
+                }
+
+                override fun onAnimationEnd(animation: android.animation.Animator) {
+                    collapseAnimator = null
+                    panel.scaleX = 1f
+                    panel.scaleY = 1f
+                    panel.alpha = 1f
+                    if (cancelled) {
+                        panel.visibility = View.VISIBLE
+                        params.flags = baseFlags
+                        try {
+                            windowManager.updateViewLayout(view, params)
+                        } catch (_: Exception) {
+                            // Window detached.
+                        }
+                        return
+                    }
+                    collapsed = true
+                    panel.visibility = View.GONE
+                    bubble.visibility = View.VISIBLE
+                    params.flags = baseFlags
+                    applyWindowPoint(params, clamped, PlacementKind.BUBBLE, save = false)
+                    if (!autoDock && hadSavedIcon != null) savePosition(PlacementKind.BUBBLE, params)
+                    refreshUi()
+                }
+            })
+        }
+        collapseAnimator = animator
+        animator.start()
+    }
+
+    private fun bubblePointFromLogo(view: View, size: Int): OverlayPoint {
+        val anchor = view.findViewById<View>(R.id.logoFrame)
+            ?: view.findViewById<View>(R.id.panel)
+            ?: return defaultBubblePoint()
+        val location = IntArray(2)
+        anchor.getLocationOnScreen(location)
+        return OverlayPoint(
+            location[0] + anchor.width / 2 - size / 2,
+            location[1] + anchor.height / 2 - size / 2
+        )
     }
 
     private fun expandController() {
         val view = controllerView ?: return
         val params = controllerParams ?: return
         cancelAutoOpen()
-        view.findViewById<View>(R.id.panel).alpha = 1f
-        if (!recording) savePosition(PlacementKind.BUBBLE, params)
+        collapseAnimator?.cancel()
+        collapseAnimator = null
+        val panelView = view.findViewById<View>(R.id.panel)
+        panelView.scaleX = 1f
+        panelView.scaleY = 1f
+        panelView.alpha = 1f
         collapsed = false
         view.findViewById<View>(R.id.bubble).visibility = View.GONE
         val panel = view.findViewById<View>(R.id.panel)
         panel.visibility = View.VISIBLE
         applyPanelWidth(settings = false)
-        val panelWidth = panel.width.takeIf { it > 0 } ?: controllerPanelWidthPx(false)
-        val panelHeight = panel.height.takeIf { it > 0 } ?: dp(260)
+        val panelWidth = panel.width.takeIf { it > 0 } ?: controllerPanelWidthPx()
+        val panelHeight = panel.height.takeIf { it > 0 } ?: controllerPanelHeightPx()
         val saved = savedPosition(PlacementKind.CONTROLLER)
             ?: defaultControllerPoint(panelWidth, panelHeight)
         val clamped = OverlayPlacement.clamp(
@@ -941,7 +1386,7 @@ class FloatingMenuService : Service() {
         } else {
             val panel = view.findViewById<View>(R.id.panel)
             defaultControllerPoint(
-                panel?.width?.takeIf { it > 0 } ?: controllerPanelWidthPx(false),
+                panel?.width?.takeIf { it > 0 } ?: controllerPanelWidthPx(),
                 panel?.height?.takeIf { it > 0 } ?: dp(260)
             )
         }
@@ -956,7 +1401,7 @@ class FloatingMenuService : Service() {
     // -------------------------------------------------------------- recording
 
     private fun startRecording() {
-        if (recording || startingPassive) return
+        if (recording || startingPassive || preparingPassive) return
         cancelAutoOpen()
         if (BotState.state.value.isPlayback) stopPlayback()
         cancelAutoOpen()
@@ -965,18 +1410,9 @@ class FloatingMenuService : Service() {
         // The always-on watcher must not poll or hide the overlay while the
         // user is recording a macro.
         abortCaptureSession()
-
-        if (settingsStore.settings.value.recordingMode == RecordingMode.PASSIVE) {
-            val access = InputAccessManager.status(this)
-            if (!access.ready) {
-                toast(InputAccessManager.unavailableMessage(this))
-                startActivity(
-                    Intent(this, SettingsActivity::class.java)
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                )
-                return
-            }
-        }
+        val mode = settingsStore.settings.value.recordingMode
+        hapticEvent()
+        AppEventLog.log("recording: press mode=$mode access=${BotState.state.value}")
 
         updateScreenSize()
         refreshControllerBoundsSnapshot()
@@ -996,7 +1432,7 @@ class FloatingMenuService : Service() {
         recordStartMs = SystemClock.uptimeMillis()
         BotState.clearRecording()
 
-        when (settingsStore.settings.value.recordingMode) {
+        when (mode) {
             RecordingMode.CAPTURE_ONLY -> startCaptureOnlyRecording()
             RecordingMode.PASSIVE -> startPassiveRecording()
         }
@@ -1023,30 +1459,63 @@ class FloatingMenuService : Service() {
 
     private fun startPassiveRecording() {
         activeRecordingMode = RecordingMode.PASSIVE
-        startingPassive = true
-        recording = true
+        preparingPassive = true
+        startingPassive = false
+        recording = false
         BotState.clearRecording()
         BotState.setState(ControllerState.READY)
-        BotState.setStatus("Starting capture — wait for REC")
-        handler.removeCallbacks(timerRunnable)
-        handler.post(timerRunnable)
-        scope.launch { runPassiveStart() }
+        BotState.setStatus("Checking Shizuku…")
+        AppEventLog.log("recording: prepare requested")
+        val token = ++prepareToken
+        prepareJob = scope.launch { preparePassiveCapture(token) }
     }
 
-    private suspend fun runPassiveStart() {
+    private suspend fun preparePassiveCapture(token: Int) {
         var source: InputEventSource? = null
         var recorder: PassiveRecorder? = null
+        var adopted = false
         try {
+            AppEventLog.log("recording: creating input source")
             source = withContext(Dispatchers.IO) {
                 InputAccessManager.createSource(this@FloatingMenuService)
             }
             if (source == null) {
-                onPassiveStartFailed(
-                    InputAccessManager.unavailableMessage(this@FloatingMenuService)
+                val reason = InputAccessManager.unavailableMessage(this@FloatingMenuService)
+                AppEventLog.log("recording: refused before start: $reason")
+                failPassiveStart(token, reason)
+                showOpenAppConfirm(
+                    "Recording access needed",
+                    "$reason Open AutoClash settings?",
+                    "Open app"
+                ) {
+                    startActivity(
+                        Intent(this@FloatingMenuService, SettingsActivity::class.java)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    )
+                }
+                return
+            }
+            prepareSource = source
+            if (token != prepareToken || !preparingPassive) return
+
+            BotState.setStatus("Reading touchscreen…")
+            AppEventLog.log("recording: ${source.label} ready, discovering touchscreen")
+            val discovery = withContext(Dispatchers.IO) { source.discover() }
+            val device: TouchscreenDevice? = discovery?.let {
+                GetEventDiscovery.pickTouchscreen(it)
+            }
+            if (device == null) {
+                failPassiveStart(
+                    token,
+                    source.lastFailure ?: "Could not find the touchscreen."
                 )
                 return
             }
-            if (!recording || activeRecordingMode != RecordingMode.PASSIVE) return
+            AppEventLog.log(
+                "recording: touchscreen ${device.path} ${device.maxX}x${device.maxY} " +
+                    "slots=${device.maxSlots}"
+            )
+            if (token != prepareToken || !preparingPassive) return
 
             val newRecorder = PassiveRecorder(
                 source = source,
@@ -1059,40 +1528,52 @@ class FloatingMenuService : Service() {
                 },
                 onError = { message ->
                     handler.post { onPassiveError(message) }
+                },
+                onTouch = { pointerId, point, active ->
+                    handler.post {
+                        effectsView?.recordingTouch(pointerId, point.x, point.y, active)
+                    }
                 }
             )
             recorder = newRecorder
-            passiveRecorder = newRecorder
-
-            val started = withContext(Dispatchers.IO) { newRecorder.start() }
-            if (!started) {
-                passiveRecorder = null
-                onPassiveStartFailed(
-                    "Passive capture could not start. Check Recording access in Settings."
-                )
+            BotState.setStatus("Starting capture…")
+            AppEventLog.log("recording: starting getevent on ${device.path}")
+            val failure = withContext(Dispatchers.IO) { newRecorder.start(device) }
+            if (failure != null) {
+                failPassiveStart(token, failure)
                 return
             }
-            if (!recording || activeRecordingMode != RecordingMode.PASSIVE) return
+            if (token != prepareToken || !preparingPassive) return
 
+            adopted = true
+            passiveRecorder = newRecorder
+            preparingPassive = false
             startingPassive = false
+            recording = true
+            prepareSource = null
+            prepareJob = null
             recordStartMs = SystemClock.uptimeMillis()
             setControllerKeepScreenOn(true)
+            enterRecordingChrome()
             BotState.setState(ControllerState.RECORDING)
             BotState.setStatus("Recording passive — touches reach the game")
-            Log.i(TAG, "Passive source started via ${source.label}")
+            handler.removeCallbacks(timerRunnable)
+            handler.post(timerRunnable)
+            AppEventLog.log(
+                "recording: started via ${source.label} ${device.path}"
+            )
             toast("Passive recording started. Swipe now.")
             updateRecordingNotification()
             refreshUi()
         } catch (t: CancellationException) {
             throw t
         } catch (t: Throwable) {
-            passiveRecorder = null
-            onPassiveStartFailed(
-                "Passive capture could not start: ${t.message ?: "unknown error"}"
+            failPassiveStart(
+                token,
+                "Passive capture failed: ${t.message ?: "unknown error"}"
             )
         } finally {
-            if (!recording || activeRecordingMode != RecordingMode.PASSIVE) {
-                passiveRecorder = null
+            if (!adopted) {
                 withContext(NonCancellable + Dispatchers.IO) {
                     recorder?.stop()
                     recorder?.close()
@@ -1102,17 +1583,48 @@ class FloatingMenuService : Service() {
         }
     }
 
-    private fun onPassiveStartFailed(message: String) {
-        if (activeRecordingMode != RecordingMode.PASSIVE) return
+    private fun failPassiveStart(token: Int, message: String) {
+        if (token != prepareToken) return
+        preparingPassive = false
         startingPassive = false
         recording = false
         activeRecordingMode = null
+        prepareSource = null
+        prepareJob = null
         handler.removeCallbacks(timerRunnable)
         setControllerKeepScreenOn(false)
-        updateNotification(getString(R.string.notification_idle))
         BotState.setState(ControllerState.READY)
         BotState.setStatus(message)
+        AppEventLog.log("recording: start failed: $message")
         toast(message)
+        refreshUi()
+        if (autoWatchEnabled) {
+            scope.launch {
+                delay(1_000)
+                startAutoWatch()
+            }
+        }
+    }
+
+    private fun cancelPassivePrepare(reason: String) {
+        if (!preparingPassive && prepareJob == null) return
+        prepareToken++
+        preparingPassive = false
+        startingPassive = false
+        recording = false
+        activeRecordingMode = null
+        prepareJob?.cancel()
+        prepareJob = null
+        val source = prepareSource
+        prepareSource = null
+        if (source != null) {
+            scope.launch(Dispatchers.IO) { source.close() }
+        }
+        handler.removeCallbacks(timerRunnable)
+        setControllerKeepScreenOn(false)
+        BotState.setState(ControllerState.READY)
+        BotState.setStatus("Capture cancelled")
+        AppEventLog.log("recording: prepare $reason")
         refreshUi()
     }
 
@@ -1124,12 +1636,14 @@ class FloatingMenuService : Service() {
     }
 
     private fun onPassiveError(message: String) {
+        if (preparingPassive) {
+            failPassiveStart(prepareToken, message)
+            return
+        }
         if (!recording || activeRecordingMode != RecordingMode.PASSIVE) return
         Log.e(TAG, "Passive recording stopped: $message")
-        stopRecording()
-        BotState.setStatus("Recording stopped: $message")
-        toast(message)
-        refreshUi()
+        AppEventLog.log("recording: runtime error: $message")
+        stopRecording(failure = message)
     }
 
     private fun commitPassiveGesture(built: BuiltGesture) {
@@ -1193,7 +1707,7 @@ class FloatingMenuService : Service() {
         val now = SystemClock.uptimeMillis()
         if (now - lastStatusMs > STATUS_THROTTLE_MS) {
             lastStatusMs = now
-            BotState.setStatus("Recording passive — ${recorded.size} gesture(s)")
+            BotState.setStatus("Recording passive — ${Plural.of(recorded.size, "gesture")}")
         }
         if (now - lastNotificationMs > NOTIFICATION_THROTTLE_MS) {
             lastNotificationMs = now
@@ -1219,6 +1733,10 @@ class FloatingMenuService : Service() {
     }
 
     private fun toggleRecordingPause() {
+        if (preparingPassive) {
+            toast("Capture is starting…")
+            return
+        }
         if (startingPassive) {
             toast("Capture is starting…")
             return
@@ -1228,6 +1746,7 @@ class FloatingMenuService : Service() {
             ControllerState.RECORDING -> {
                 pausedAtMs = SystemClock.uptimeMillis()
                 BotState.setState(ControllerState.RECORDING_PAUSED)
+                AppEventLog.log("recording: paused gestures=${recorded.size}")
                 BotState.setStatus(
                     if (passive) "Recording paused — game responds normally"
                     else "Recording paused"
@@ -1245,6 +1764,7 @@ class FloatingMenuService : Service() {
                 pausedAccumMs += SystemClock.uptimeMillis() - pausedAtMs
                 pausedAtMs = 0L
                 BotState.setState(ControllerState.RECORDING)
+                AppEventLog.log("recording: resumed gestures=${recorded.size}")
                 BotState.setStatus(
                     if (passive) "Recording passive — touches reach the game"
                     else "Recording (blocks game input)"
@@ -1293,11 +1813,12 @@ class FloatingMenuService : Service() {
     }
 
     private fun applyBubbleSize(view: View, context: Context, bubbleScale: Float) {
-        val density = context.resources.displayMetrics.density
+        val density = resources.displayMetrics.density
         val visualPx = (BUBBLE_SIZE_DP * bubbleScale * density)
             .roundToInt()
             .coerceAtLeast(1)
-        val touchPx = maxOf(dp(BUBBLE_SIZE_DP), visualPx)
+        val minTouch = (MIN_TOUCH_DP * density).roundToInt()
+        val touchPx = maxOf(bubbleDp(BUBBLE_SIZE_DP), minTouch, visualPx) + bubbleDp(8)
         view.findViewById<View>(R.id.bubble)?.let { bubble ->
             bubble.layoutParams = bubble.layoutParams.apply {
                 width = touchPx
@@ -1310,24 +1831,109 @@ class FloatingMenuService : Service() {
                 height = visualPx
             }
         }
-        view.findViewById<View>(R.id.bubbleIcon)?.let { icon ->
-            icon.layoutParams = icon.layoutParams.apply {
-                val iconPx = (BUBBLE_ICON_DP * bubbleScale * density).roundToInt().coerceAtLeast(1)
-                width = minOf(iconPx, visualPx - dp(2).coerceAtLeast(1))
-                height = minOf(iconPx, visualPx - dp(2).coerceAtLeast(1))
+        view.findViewById<View>(R.id.bubbleGlow)?.let { glow ->
+            val glowPx = visualPx + bubbleDp(8)
+            glow.layoutParams = glow.layoutParams.apply {
+                width = glowPx
+                height = glowPx
             }
         }
+        view.findViewById<View>(R.id.bubbleLogoFrame)?.let { logo ->
+            val tile = (visualPx * 0.85f).roundToInt().coerceAtLeast(1)
+            logo.layoutParams = logo.layoutParams.apply {
+                width = tile
+                height = tile
+                if (this is android.widget.FrameLayout.LayoutParams) gravity = Gravity.CENTER
+            }
+        }
+        view.findViewById<ImageView>(R.id.bubbleIcon)?.setPadding(0, 0, 0, 0)
         view.findViewById<TextView>(R.id.bubbleStatus)?.textSize =
             (6f * bubbleScale).coerceAtLeast(4.5f)
+    }
+
+    private fun currentBubbleVisualPx(): Int {
+        val prefs = settingsStore.settings.value
+        val density = resources.displayMetrics.density
+        return (BUBBLE_SIZE_DP * prefs.bubbleScale * density).roundToInt().coerceAtLeast(1)
     }
 
     private fun currentBubbleSizePx(): Int {
         val prefs = settingsStore.settings.value
         val density = resources.displayMetrics.density
-        val visual = (BUBBLE_SIZE_DP * prefs.controllerScale * prefs.bubbleScale * density)
+        val visual = (BUBBLE_SIZE_DP * prefs.bubbleScale * density)
             .roundToInt()
             .coerceAtLeast(1)
-        return maxOf(dp(BUBBLE_SIZE_DP), visual)
+        val minTouch = (MIN_TOUCH_DP * density).roundToInt()
+        return maxOf(bubbleDp(BUBBLE_SIZE_DP), minTouch, visual) + bubbleDp(8)
+    }
+
+    private fun bubbleDp(value: Int): Int =
+        (value * resources.displayMetrics.density).roundToInt()
+
+    private var lastBubbleRing = Int.MIN_VALUE
+    private var lastBubbleBadge = ""
+    private var ringPulseAnimator: ValueAnimator? = null
+
+    private fun applyBubbleChrome(view: View) {
+        val state = BotState.state.value
+        val recordingNow = state == ControllerState.RECORDING
+        val ringColor = when {
+            recordingNow -> Ds.RECORD
+            state == ControllerState.RECORDING_PAUSED ||
+                state == ControllerState.PLAYBACK_PAUSED -> Ds.WARN
+            else -> Ds.PLAY
+        }
+        if (lastBubbleRing != ringColor) {
+            lastBubbleRing = ringColor
+            val visual = currentBubbleVisualPx()
+            view.findViewById<View>(R.id.bubbleRing)?.background =
+                GradientDrawable().apply {
+                    shape = GradientDrawable.RECTANGLE
+                    cornerRadius = visual * 0.30f
+                    setColor(android.graphics.Color.TRANSPARENT)
+                    setStroke(
+                        (visual * 0.045f).roundToInt().coerceAtLeast(2),
+                        ringColor
+                    )
+                }
+            view.findViewById<View>(R.id.bubbleGlow)?.visibility =
+                if (recordingNow) View.VISIBLE else View.GONE
+        }
+        val ring = view.findViewById<View>(R.id.bubbleRing)
+        if (recordingNow && ValueAnimator.areAnimatorsEnabled()) {
+            if (ringPulseAnimator == null) {
+                ringPulseAnimator = ValueAnimator.ofFloat(1f, 0.55f).apply {
+                    duration = 700L
+                    repeatMode = ValueAnimator.REVERSE
+                    repeatCount = ValueAnimator.INFINITE
+                    addUpdateListener { ring?.alpha = it.animatedValue as Float }
+                    start()
+                }
+            }
+        } else {
+            ringPulseAnimator?.cancel()
+            ringPulseAnimator = null
+            ring?.alpha = 1f
+        }
+        val badge = view.findViewById<TextView>(R.id.bubbleBadge)
+        val today = System.currentTimeMillis()
+        val count = if (collapsed) {
+            attackRepository.records.value.count {
+                it.confirmed && Math.abs(today - it.startedAt) < 24 * 60 * 60 * 1000L
+            }
+        } else {
+            0
+        }
+        val label = if (count > 0) (if (count > 9) "9+" else count.toString()) else ""
+        if (label != lastBubbleBadge) {
+            lastBubbleBadge = label
+            if (label.isNotEmpty() && collapsed) {
+                badge?.text = label
+                badge?.visibility = View.VISIBLE
+            } else {
+                badge?.visibility = View.GONE
+            }
+        }
     }
 
     private fun clampControllerToScreen() {
@@ -1348,6 +1954,10 @@ class FloatingMenuService : Service() {
     }
 
     private fun refreshControllerBoundsSnapshot() {
+        if (recordingChromeActive) {
+            refreshRecordingBounds()
+            return
+        }
         val bounds = controllerVisibleBounds()
         controllerBoundsSnapshot = bounds?.let {
             ScreenRect(
@@ -1563,7 +2173,7 @@ class FloatingMenuService : Service() {
         val now = SystemClock.uptimeMillis()
         if (now - lastStatusMs > STATUS_THROTTLE_MS) {
             lastStatusMs = now
-            BotState.setStatus("Recording (blocks game input) — ${recorded.size} gesture(s)")
+            BotState.setStatus("Recording (blocks game input) — ${Plural.of(recorded.size, "gesture")}")
         }
         if (now - lastNotificationMs > NOTIFICATION_THROTTLE_MS) {
             lastNotificationMs = now
@@ -1571,16 +2181,23 @@ class FloatingMenuService : Service() {
         }
     }
 
-    private fun stopRecording(silent: Boolean = false) {
+    private fun stopRecording(silent: Boolean = false, failure: String? = null) {
         if (!recording) return
+        dismissRecConfirm()
         val wasStarting = startingPassive
         val recorder = passiveRecorder
         passiveRecorder = null
         startingPassive = false
+        preparingPassive = false
         recording = false
         activeRecordingMode = null
+        hapticEvent()
         Log.i(TAG, "Recording stopped with ${recorded.size} gesture(s)")
-        if (recorded.isEmpty()) rejectedGestures++
+        AppEventLog.log(
+            "recording: finish gestures=${recorded.size}" +
+                (failure?.let { " failure=$it" } ?: "")
+        )
+        if (recorded.isEmpty() && failure == null) rejectedGestures++
         pathPoints.clear()
         handler.removeCallbacks(timerRunnable)
         removeCapture()
@@ -1610,14 +2227,23 @@ class FloatingMenuService : Service() {
         page = PAGE_CONTROLLER
         if (collapsed) expandController()
         BotState.setRecordedCount(recorded.size)
+        if (failure != null) {
+            BotState.setState(ControllerState.READY)
+            BotState.setStatus("Recording stopped: $failure")
+            toast(failure)
+            updateNotification(getString(R.string.notification_idle))
+            refreshUi()
+            return
+        }
         if (recorded.isEmpty()) {
             BotState.setState(ControllerState.READY)
             BotState.setStatus("Nothing recorded")
             toast("No gestures recorded")
         } else {
             BotState.setState(ControllerState.REVIEW)
-            BotState.setStatus("Review recording")
-            haptic()
+            BotState.setStatus("Name this macro")
+            hapticEvent()
+            beginSaveToast()
         }
         updateNotification(getString(R.string.notification_idle))
         refreshUi()
@@ -1630,6 +2256,7 @@ class FloatingMenuService : Service() {
     }
 
     private fun discardRecording(quiet: Boolean = false) {
+        dismissRecConfirm()
         stopPassiveRecorder()
         removeCapture()
         setControllerKeepScreenOn(false)
@@ -1651,6 +2278,10 @@ class FloatingMenuService : Service() {
     // -------------------------------------------------------------- playback
 
     private fun startPlayback(macro: Macro) {
+        if (preparingPassive) {
+            toast("Capture is starting…")
+            return
+        }
         if (recording) {
             toast("Finish the recording first")
             return
@@ -1711,8 +2342,16 @@ class FloatingMenuService : Service() {
         )
         captureSession = capture
         resultsCapture.begin(capture)
-        val newPlayer = MacroPlayer(screenWidth, screenHeight, resultGate)
+        val newPlayer = MacroPlayer(
+            screenWidth,
+            screenHeight,
+            resultGate,
+            onGesturePath = { pathPoints, delayMs, durationMs ->
+                effectsView?.playPath(pathPoints, delayMs, durationMs)
+            }
+        )
         player = newPlayer
+        hapticEvent()
         newPlayer.play(adjusted, scope) {
             endAttackSession(interrupted = false)
             onPlaybackRunEnded()
@@ -1725,12 +2364,11 @@ class FloatingMenuService : Service() {
     }
 
     /**
-     * While a macro is running, keep only the small icon and place it in the
-     * top corner farthest from the macro's own touch points.
+     * Chooses where the playback strip will appear and stores it. The strip is
+     * entered by refreshUi once the player state is PLAYING, so a repository
+     * update between this call and play() cannot collapse it back to the icon.
      */
     private fun placeControllerForPlayback(macro: Macro) {
-        val view = controllerView ?: return
-        val params = controllerParams ?: return
         if (screenWidth <= 0 || screenHeight <= 0) return
 
         val landscape = screenWidth > screenHeight
@@ -1739,32 +2377,28 @@ class FloatingMenuService : Service() {
         } else {
             dp(BUBBLE_TOP_DP)
         }
-        val bubbleSize = currentBubbleSizePx()
+        val stripWidth = playbackStripWidthPx()
         val corner = PlaybackBubblePlacement.chooseCorner(
             points = macroTouchPoints(macro),
             width = screenWidth,
             height = screenHeight,
-            bubbleSizePx = bubbleSize.toFloat(),
+            bubbleSizePx = stripWidth.toFloat(),
             sideMarginPx = dp(BUBBLE_MARGIN_DP).toFloat(),
             topMarginPx = topMargin.toFloat()
         )
-
-        collapsed = true
-        view.findViewById<View>(R.id.panel).visibility = View.GONE
-        view.findViewById<View>(R.id.bubble).visibility = View.VISIBLE
-        params.x = if (corner == BubbleCorner.TOP_RIGHT) {
-            screenWidth - bubbleSize - dp(BUBBLE_MARGIN_DP)
+        val x = if (corner == BubbleCorner.TOP_RIGHT) {
+            screenWidth - stripWidth - dp(BUBBLE_MARGIN_DP)
         } else {
             dp(BUBBLE_MARGIN_DP)
         }
-        params.y = topMargin
-        try {
-            windowManager.updateViewLayout(view, params)
-        } catch (_: Exception) {
-            // Window detached.
-        }
-        view.post { refreshControllerBoundsSnapshot() }
-        refreshUi()
+        pendingPlaybackPoint = OverlayPlacement.clamp(
+            x,
+            topMargin,
+            stripWidth,
+            dp(PLAY_STRIP_HEIGHT),
+            safeBounds(),
+            dp(8)
+        )
     }
 
     private fun macroTouchPoints(macro: Macro): List<GesturePoint> {
@@ -1797,6 +2431,8 @@ class FloatingMenuService : Service() {
     }
 
     private fun stopPlayback() {
+        hapticEvent()
+        pendingPlaybackPoint = null
         val interrupted = BotState.interrupted.value
         AppEventLog.log("playback stop interrupted=$interrupted")
         val wasRun = playbackRunActive
@@ -1844,9 +2480,14 @@ class FloatingMenuService : Service() {
     }
 
     private fun onPlaybackRunEnded() {
-        if (serviceDestroying) return
+        if (serviceDestroying || !playbackRunActive) return
         playbackRunActive = false
-        if (recording || startingPassive) return
+        val reason = BotState.status.value
+        if (reason.startsWith("Reached ") || reason.startsWith("Repeat finished") ||
+            reason.startsWith("Clash left")) {
+            scope.launch { sessionRepository.setActiveStopReason(reason) }
+        }
+        if (recording || startingPassive || preparingPassive) return
         pendingAutoOpen = true
         autoOpenTimeout?.let(handler::removeCallbacks)
         val timeout = Runnable { maybeAutoOpen() }
@@ -1882,7 +2523,7 @@ class FloatingMenuService : Service() {
             cancelAutoOpen()
             return
         }
-        if (settingsView != null || recording || startingPassive ||
+        if (settingsView != null || recording || startingPassive || preparingPassive ||
             player?.isRunning() == true
         ) {
             cancelAutoOpen()
@@ -1900,20 +2541,18 @@ class FloatingMenuService : Service() {
             ensureController()
             return
         }
-        if (!collapsed) {
-            refreshUi()
-            return
-        }
         animateAutoOpen()
     }
 
     private fun animateAutoOpen() {
         val view = controllerView ?: return
         val params = controllerParams ?: return
+        val wasCollapsed = collapsed
         cancelAutoOpen()
         val target = defaultControllerPoint(
-            controllerPanelWidthPx(false),
-            view.findViewById<View>(R.id.panel)?.height?.takeIf { it > 0 } ?: dp(320)
+            controllerPanelWidthPx(),
+            view.findViewById<View>(R.id.panel)?.height?.takeIf { it > 0 }
+                ?: controllerPanelHeightPx()
         )
         val startX = params.x
         val startY = params.y
@@ -1925,7 +2564,7 @@ class FloatingMenuService : Service() {
             // Window detached.
         }
         if (!ValueAnimator.areAnimatorsEnabled()) {
-            finishAutoOpen(view, params, target, baseFlags)
+            finishAutoOpen(view, params, target, baseFlags, wasCollapsed)
             return
         }
         val move = ValueAnimator.ofFloat(0f, 1f).apply {
@@ -1950,7 +2589,7 @@ class FloatingMenuService : Service() {
                 override fun onAnimationEnd(animation: android.animation.Animator) {
                     if (cancelled) return
                     autoOpenAnimator = null
-                    finishAutoOpen(view, params, target, baseFlags)
+                    finishAutoOpen(view, params, target, baseFlags, wasCollapsed)
                 }
             })
         }
@@ -1962,7 +2601,8 @@ class FloatingMenuService : Service() {
         view: View,
         params: WindowManager.LayoutParams,
         target: OverlayPoint,
-        baseFlags: Int
+        baseFlags: Int,
+        wasCollapsed: Boolean
     ) {
         params.x = target.x
         params.y = target.y
@@ -1982,6 +2622,15 @@ class FloatingMenuService : Service() {
         savePosition(PlacementKind.CONTROLLER, params)
         view.post { refreshControllerBoundsSnapshot() }
         view.post { clampControllerToScreen() }
+        if (!wasCollapsed) {
+            params.flags = baseFlags
+            try {
+                windowManager.updateViewLayout(view, params)
+            } catch (_: Exception) {
+                // Window detached.
+            }
+            return
+        }
         if (!ValueAnimator.areAnimatorsEnabled()) {
             params.flags = baseFlags
             try {
@@ -2222,8 +2871,8 @@ class FloatingMenuService : Service() {
 
         if (totals.incompleteAttacks > 0) {
             content.addView(
-                Ds.text(this, 10f, Ds.WARN).apply {
-                    text = "${totals.incompleteAttacks} attack(s) incomplete — excluded from totals"
+                Ds.text(uiContext, 10f, Ds.WARN).apply {
+                    text = Plural.needReview(totals.incompleteAttacks) + " — excluded from totals"
                     setPadding(0, dp(4), 0, 0)
                 }
             )
@@ -2232,76 +2881,35 @@ class FloatingMenuService : Service() {
         val recentHeader = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, dp(10), 0, 0)
+            setPadding(0, dp(8), 0, 0)
         }
         recentHeader.addView(
-            Ds.text(this, 11f, Ds.MUTED, caps = true).apply { text = "Recent" },
+            Ds.text(uiContext, 10.5f, Ds.MUTED, caps = true).apply { text = "Recent" },
             LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         )
-        scanNowLink = Ds.text(this, 12f, Ds.LINK, bold = true).apply {
-            text = "Scan now"
-            minHeight = dp(44)
-            gravity = Gravity.CENTER_VERTICAL
-            setOnClickListener {
-                haptic()
-                if (manualWatch) stopManualWatch() else startManualWatch()
-            }
-        }
-        recentHeader.addView(scanNowLink)
         content.addView(recentHeader)
 
-        if (scoped.isEmpty()) {
+        if (scoped.size < 3) {
             content.addView(
-                Ds.text(this, 11f, Ds.MUTED).apply {
+                Ds.text(uiContext, 10.5f, Ds.MUTED).apply {
                     text = when {
+                        scoped.isNotEmpty() -> "Only ${Plural.attacks(scoped.size)} so far."
                         statsScope == STATS_SESSION && current != null ->
                             "No attacks in this session yet."
                         statsScope == STATS_SESSION ->
                             "No session yet. Switch to All time or launch Clash."
                         else -> "No attacks yet."
                     }
-                    setPadding(0, dp(4), 0, dp(8))
+                    setPadding(0, dp(4), 0, dp(6))
                 }
             )
-        } else {
-            scoped.take(5).forEachIndexed { index, record ->
-                content.addView(recentAttackRow(record))
-                if (index < minOf(4, scoped.size - 1)) content.addView(Ds.divider(this))
-            }
         }
-
-        content.addView(
-            Ds.text(this, 12f, Ds.LINK, bold = true).apply {
-                text = "See all history"
-                gravity = Gravity.CENTER
-                minHeight = dp(48)
-                setOnClickListener {
-                    startActivity(
-                        Intent(this@FloatingMenuService, MainActivity::class.java)
-                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    )
-                }
-            }
-        )
+        scoped.take(5).forEachIndexed { index, record ->
+            content.addView(recentAttackRow(record))
+            if (index < minOf(4, scoped.size - 1)) content.addView(Ds.divider(this))
+        }
         updateWatchActions()
-        view.post {
-            val scroll = view.findViewById<ScrollView>(R.id.statsPanel) ?: return@post
-            val header = if (view.findViewById<View>(R.id.tvStatus).visibility == View.VISIBLE) {
-                dp(84)
-            } else {
-                dp(66)
-            }
-            val panelCap = minOf(
-                (screenHeight * 0.90f).toInt(),
-                screenHeight - (controllerParams?.y ?: 0) - dp(8)
-            )
-            val cap = (panelCap - header).coerceAtLeast(dp(120))
-            val natural = content.height
-            val target = if (natural > 0) minOf(natural + dp(4), cap) else cap
-            if (scroll.layoutParams.height != target) {
-                scroll.layoutParams = scroll.layoutParams.apply { height = target }
-            }
-        }
+        scheduleTouchTargets()
     }
 
     private fun scopeSegment(): LinearLayout {
@@ -2312,11 +2920,11 @@ class FloatingMenuService : Service() {
         }
         listOf(STATS_SESSION to "Session", STATS_ALL to "All time").forEach { (scope, label) ->
             val selected = statsScope == scope
-            val button = Ds.text(this, 11f, Ds.MUTED, bold = true).apply {
+            val button = Ds.text(uiContext, 11f, Ds.MUTED, bold = true).apply {
                 text = label
                 gravity = Gravity.CENTER
-                minHeight = dp(44)
-                setPadding(dp(12), 0, dp(12), 0)
+                minHeight = dp(26)
+                setPadding(dp(10), 0, dp(10), 0)
                 background = Ds.rounded(
                     if (selected) Ds.ACCENT else android.graphics.Color.TRANSPARENT,
                     8,
@@ -2330,16 +2938,16 @@ class FloatingMenuService : Service() {
                     }
                 }
             }
-            row.addView(button, LinearLayout.LayoutParams(0, dp(44), 1f))
+            row.addView(button, LinearLayout.LayoutParams(0, dp(26), 1f))
         }
         return row
     }
 
     private fun watchActionChip(): TextView {
-        val chip = Ds.text(this, 11f, Ds.MUTED, bold = true).apply {
-            minHeight = dp(44)
+        val chip = Ds.text(uiContext, 11f, Ds.MUTED, bold = true).apply {
+            minHeight = dp(26)
             gravity = Gravity.CENTER
-            setPadding(dp(10), 0, dp(10), 0)
+            setPadding(dp(9), 0, dp(9), 0)
             setOnClickListener {
                 haptic()
                 if (autoWatch) {
@@ -2372,45 +2980,29 @@ class FloatingMenuService : Service() {
             total: Long,
             bonus: Long
         ) {
-            val row = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(0, dp(8), 0, dp(8))
+            val row = LootRowLayout(this).apply {
+                setPadding(0, dp(5), 0, dp(5))
             }
-            row.addView(ImageView(this).apply {
-                setImageResource(iconRes)
-                layoutParams = LinearLayout.LayoutParams(dp(24), dp(24))
-            })
-            val text = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                setPadding(dp(8), 0, dp(6), 0)
-                layoutParams = LinearLayout.LayoutParams(
-                    0,
-                    LinearLayout.LayoutParams.WRAP_CONTENT,
-                    1f
-                )
-            }
-            text.addView(Ds.text(this, 14f, Ds.TEXT, bold = true).apply { this.text = label })
-            text.addView(Ds.text(this, 11f, Ds.MUTED).apply {
-                this.text = "loot " + String.format(Locale.US, "%,d", total - bonus) +
-                    " + bonus " + String.format(Locale.US, "%,d", bonus)
-            })
-            row.addView(text)
-            val value = Ds.text(this, 17f, Ds.TEXT, bold = true).apply {
-                this.text = String.format(Locale.US, "%,d", total)
+            row.icon.setImageResource(iconRes)
+            row.left.addView(Ds.text(uiContext, 12.5f, Ds.TEXT, bold = true).apply {
+                this.text = label
                 isSingleLine = true
                 maxLines = 1
-                gravity = Gravity.END
-                fontFeatureSettings = "tnum"
-            }
-            TextViewCompat.setAutoSizeTextTypeUniformWithConfiguration(
-                value,
-                11,
-                17,
-                1,
-                TypedValue.COMPLEX_UNIT_SP
+            })
+            row.left.addView(
+                Ds.text(uiContext, 10f, Ds.MUTED).apply {
+                    this.text = "loot " + String.format(Locale.US, "%,d", total - bonus) +
+                        " + bonus " + String.format(Locale.US, "%,d", bonus)
+                    isSingleLine = true
+                    maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                },
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                )
             )
-            row.addView(value)
+            row.total.text = String.format(Locale.US, "%,d", total)
             card.addView(row)
         }
         addLootRow(R.drawable.ic_gold, "Gold", totals.totalGold, totals.bonusGold)
@@ -2446,16 +3038,16 @@ class FloatingMenuService : Service() {
     private fun statsMetaRow(totals: com.clahbot.data.models.SessionTotals): LinearLayout {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setPadding(0, dp(10), 0, 0)
+            setPadding(0, dp(6), 0, 0)
         }
         fun cell(label: String, value: String): LinearLayout =
             LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
                 layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-                addView(Ds.text(this@FloatingMenuService, 11f, Ds.MUTED).apply {
+                addView(Ds.text(uiContext, 10f, Ds.MUTED).apply {
                     text = label
                 })
-                addView(Ds.text(this@FloatingMenuService, 15f, Ds.TEXT, bold = true).apply {
+                addView(Ds.text(uiContext, 13f, Ds.TEXT, bold = true).apply {
                     text = value
                     fontFeatureSettings = "tnum"
                 })
@@ -2475,7 +3067,7 @@ class FloatingMenuService : Service() {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            minimumHeight = dp(52)
+            minimumHeight = dp(40)
         }
         val left = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -2485,7 +3077,7 @@ class FloatingMenuService : Service() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        title.addView(Ds.text(this, 13f, Ds.TEXT, bold = true).apply {
+        title.addView(Ds.text(uiContext, 12f, Ds.TEXT, bold = true).apply {
             text = formatClockOfDay(record.startedAt)
             fontFeatureSettings = "tnum"
         })
@@ -2494,7 +3086,7 @@ class FloatingMenuService : Service() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        sub.addView(Ds.text(this, 11f, Ds.MUTED).apply {
+        sub.addView(Ds.text(uiContext, 10f, Ds.MUTED).apply {
             text = formatDuration(record.durationMs)
             setPadding(0, 0, dp(6), 0)
         })
@@ -2519,7 +3111,7 @@ class FloatingMenuService : Service() {
             !record.hasLoot -> Triple("not captured", Ds.WARN, Ds.WARN_BG)
             else -> return null
         }
-        return Ds.text(this, 9f, color, bold = true).apply {
+        return Ds.text(uiContext, 9f, color, bold = true).apply {
             this.text = text
             background = Ds.pill(bg, this@FloatingMenuService)
             setPadding(dp(7), dp(2), dp(7), dp(2))
@@ -2535,7 +3127,7 @@ class FloatingMenuService : Service() {
                 setImageResource(iconRes)
                 layoutParams = LinearLayout.LayoutParams(dp(14), dp(14))
             })
-            addView(Ds.text(this@FloatingMenuService, 10f, Ds.TEXT, bold = true).apply {
+            addView(Ds.text(uiContext, 10f, Ds.TEXT, bold = true).apply {
                 text = value?.let { Ds.compactNumber(it) } ?: "—"
                 setPadding(dp(3), 0, 0, 0)
                 fontFeatureSettings = "tnum"
@@ -2578,24 +3170,20 @@ class FloatingMenuService : Service() {
         Log.i(TAG, "Rendering ${macros.size} macro(s) in the controller")
 
         view.findViewById<TextView>(R.id.tvLibraryLabel)?.apply {
-            text = if (macros.isEmpty()) "Macros" else "Macros · ${macros.size}"
+            text = if (macros.isEmpty()) "MACROS · 0" else "MACROS · ${macros.size}"
             isAllCaps = true
             letterSpacing = 0.08f
             setTextColor(Ds.MUTED)
-            textSize = 11f
+            textSize = 10.5f
         }
 
         if (macros.isEmpty()) {
-            container.addView(TextView(this).apply {
+            container.addView(TextView(uiContext).apply {
                 text = "No macros yet. Record one to get started."
                 setTextColor(Ds.MUTED)
-                textSize = 11f
-                setPadding(dp(6), dp(12), dp(6), dp(12))
+                textSize = 10.5f
+                setPadding(dp(6), dp(10), dp(6), dp(10))
             })
-            view.findViewById<ScrollView>(R.id.macroScroll)?.layoutParams =
-                view.findViewById<ScrollView>(R.id.macroScroll)?.layoutParams?.apply {
-                    height = dp(72)
-                }
             return
         }
 
@@ -2603,20 +3191,22 @@ class FloatingMenuService : Service() {
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(10), dp(7), dp(2), dp(7))
-                minimumHeight = dp(62)
-                if (macro.id == selectedId) {
-                    background = Ds.rounded(
-                        Ds.SELECTED_ROW,
-                        Ds.RADIUS_ROW,
-                        this@FloatingMenuService,
-                        Ds.SELECTED_ROW_BORDER
-                    )
-                }
+                setPadding(dp(12), dp(8), dp(6), dp(8))
+                minimumHeight = dp(64)
+                background = Ds.rounded(
+                    if (macro.id == selectedId) Ds.SELECTED_ROW else Ds.PANEL,
+                    Ds.RADIUS_ROW,
+                    this@FloatingMenuService,
+                    if (macro.id == selectedId) Ds.SELECTED_ROW_BORDER else Ds.PANEL_BORDER
+                )
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { bottomMargin = dp(6) }
             }
             val info = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
-                setPadding(0, 0, dp(4), 0)
+                setPadding(0, 0, dp(3), 0)
                 layoutParams = LinearLayout.LayoutParams(
                     0,
                     LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -2624,32 +3214,47 @@ class FloatingMenuService : Service() {
                 )
                 setOnClickListener { selectMacro(macro) }
             }
-            info.addView(TextView(this).apply {
-                text = if (macro.pinned) "PIN · ${macro.name}" else macro.name
+            val nameRow = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            if (macro.pinned) {
+                nameRow.addView(ImageView(this).apply {
+                    setImageResource(R.drawable.ic_pin)
+                    layoutParams = LinearLayout.LayoutParams(dp(12), dp(12)).apply {
+                        marginEnd = dp(4)
+                    }
+                })
+            }
+            nameRow.addView(TextView(uiContext).apply {
+                text = macro.name
                 setTextColor(Ds.TEXT)
-                textSize = 14f
+                textSize = 12.5f
+                includeFontPadding = false
                 setTypeface(typeface, android.graphics.Typeface.BOLD)
                 maxLines = 1
                 ellipsize = android.text.TextUtils.TruncateAt.END
-            })
-            info.addView(TextView(this).apply {
-                text = "${macro.gestures.size} gestures · ${formatDuration(macro.durationMs)}"
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            info.addView(nameRow)
+            info.addView(TextView(uiContext).apply {
+                text = "${Plural.of(macro.gestures.size, "gesture")} · ${formatDuration(macro.durationMs)}"
                 setTextColor(Ds.MUTED)
-                textSize = 11f
+                textSize = 10f
+                includeFontPadding = false
                 maxLines = 1
-                setPadding(0, dp(1), 0, dp(1))
             })
-            info.addView(TextView(this).apply {
+            info.addView(TextView(uiContext).apply {
                 text = MacroTimeline.formatSpeed(macro.speedMultiplier) + " · " +
                     MacroTimeline.repeatLabel(macro.repeatMode) + " · " +
                     macroDelayLabel(macro)
                 setTextColor(Ds.META_ACCENT)
-                textSize = 11f
+                textSize = 10f
+                includeFontPadding = false
                 maxLines = 1
             })
             row.addView(info)
             val play = FrameLayout(this).apply {
-                layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
+                layoutParams = LinearLayout.LayoutParams(dp(36), dp(36))
                 setOnClickListener {
                     haptic()
                     selectedId = macro.id
@@ -2660,39 +3265,30 @@ class FloatingMenuService : Service() {
             }
             play.addView(
                 ImageView(this).apply {
-                    setImageResource(R.drawable.ic_play)
-                    imageTintList = ColorStateList.valueOf(Color.WHITE)
+                    setImageResource(R.drawable.ic_play_white)
                     background = android.graphics.drawable.GradientDrawable().apply {
                         shape = android.graphics.drawable.GradientDrawable.OVAL
                         setColor(Ds.PLAY)
                     }
                     scaleType = ImageView.ScaleType.FIT_CENTER
-                    setPadding(dp(10), dp(10), dp(10), dp(10))
-                    layoutParams = FrameLayout.LayoutParams(dp(36), dp(36), Gravity.CENTER)
+                    setPadding(dp(8), dp(8), dp(8), dp(8))
+                    layoutParams = FrameLayout.LayoutParams(dp(30), dp(30), Gravity.CENTER)
                 }
             )
             row.addView(play)
-            row.addView(plainIconButton(R.drawable.ic_gear, "Settings for ${macro.name}") {
-                haptic()
-                showMacroSettings(macro)
-            })
+            row.addView(
+                plainIconButton(R.drawable.ic_gear, "Settings for ${macro.name}") {
+                    haptic()
+                    showMacroSettings(macro)
+                }.apply {
+                    layoutParams = LinearLayout.LayoutParams(dp(36), dp(36))
+                    setPadding(dp(8), dp(8), dp(8), dp(8))
+                }
+            )
             container.addView(row)
         }
-
-        view.post {
-            val scroll = view.findViewById<ScrollView>(R.id.macroScroll) ?: return@post
-            val first = container.getChildAt(0) ?: return@post
-            val rowHeight = first.height.takeIf { it > 0 } ?: return@post
-            val undoVisible = view.findViewById<View>(R.id.undoRow)?.visibility == View.VISIBLE
-            val maxPanel = (screenHeight * 0.90f).toInt()
-            val fixed = dp(if (undoVisible) 244 else 190)
-            val available = (maxPanel - fixed).coerceAtLeast(rowHeight)
-            val rows = (available / rowHeight).coerceIn(1, 4).coerceAtMost(macros.size)
-            val target = rows * rowHeight + dp(2)
-            if (scroll.layoutParams.height != target) {
-                scroll.layoutParams = scroll.layoutParams.apply { height = target }
-            }
-        }
+        view.findViewById<TextView>(R.id.tvLibraryLabel)?.text = "MACROS · ${macros.size}"
+        scheduleTouchTargets()
     }
 
     private fun plainIconButton(
@@ -2700,7 +3296,7 @@ class FloatingMenuService : Service() {
         description: String,
         onClick: () -> Unit
     ): ImageButton =
-        ImageButton(this).apply {
+        ImageButton(uiContext).apply {
             setImageResource(iconRes)
             contentDescription = description
             background = null
@@ -2710,8 +3306,23 @@ class FloatingMenuService : Service() {
             setOnClickListener { onClick() }
         }
 
+    private fun compactIconButton(
+        iconRes: Int,
+        description: String,
+        onClick: () -> Unit
+    ): ImageButton =
+        ImageButton(uiContext).apply {
+            setImageResource(iconRes)
+            contentDescription = description
+            background = null
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            setPadding(dp(11), dp(11), dp(11), dp(11))
+            layoutParams = LinearLayout.LayoutParams(dp(40), dp(40))
+            setOnClickListener { onClick() }
+        }
+
     private fun iconButton(iconRes: Int, description: String, onClick: () -> Unit): ImageButton =
-        ImageButton(this).apply {
+        ImageButton(uiContext).apply {
             setImageResource(iconRes)
             contentDescription = description
             background = getDrawable(R.drawable.bg_icon_button)
@@ -2728,79 +3339,266 @@ class FloatingMenuService : Service() {
         return if (delay <= 0L) "no delay" else formatDelaySeconds(delay) + "s delay"
     }
 
+    private fun defaultMacroName(): String =
+        "Macro " + SimpleDateFormat("MMM dd HH:mm", Locale.US).format(Date())
+
+    private fun beginSaveToast() {
+        if (recorded.isEmpty()) return
+        if (reviewName.isBlank()) reviewName = defaultMacroName()
+        savePending = true
+        savedMacro = null
+        discardedGestures = null
+        val view = controllerView ?: return
+        view.findViewById<EditText>(R.id.etMacroName)?.apply {
+            setText(reviewName)
+            setSelection(text.length)
+        }
+        enterReviewChrome()
+        startSaveCountdown()
+        refreshUi()
+    }
+
+    private fun startSaveCountdown() {
+        stopSaveCountdown()
+        saveToastAt = SystemClock.uptimeMillis() + SAVE_AUTO_MS
+        val tick = object : Runnable {
+            override fun run() {
+                if (!savePending) return
+                val view = controllerView ?: return
+                val remaining = (saveToastAt - SystemClock.uptimeMillis()).coerceAtLeast(0L)
+                val seconds = ((remaining + 999L) / 1000L).toInt()
+                view.findViewById<TextView>(R.id.tvSaveCountdown)?.text =
+                    if (seconds <= 0) "Saving…" else "Saving in $seconds s"
+                view.findViewById<ProgressBar>(R.id.saveProgress)?.progress =
+                    ((remaining * 100L) / SAVE_AUTO_MS).toInt().coerceIn(0, 100)
+                if (remaining > 0L) handler.postDelayed(this, 250L)
+            }
+        }
+        saveTickRunnable = tick
+        handler.post(tick)
+        val auto = Runnable {
+            if (savePending) saveRecording()
+        }
+        saveAutoRunnable = auto
+        handler.postDelayed(auto, SAVE_AUTO_MS)
+    }
+
+    private fun stopSaveCountdown() {
+        saveAutoRunnable?.let { handler.removeCallbacks(it) }
+        saveAutoRunnable = null
+        saveTickRunnable?.let { handler.removeCallbacks(it) }
+        saveTickRunnable = null
+    }
+
+    private fun enterReviewChrome() {
+        val view = controllerView ?: return
+        recordingChromeActive = false
+        recordingMinimized = false
+        reviewChromeActive = true
+        view.findViewById<View>(R.id.controllerHeader).visibility = View.GONE
+        view.findViewById<View>(R.id.tvStatus).visibility = View.GONE
+        view.findViewById<View>(R.id.settingsHost).visibility = View.GONE
+        view.findViewById<View>(R.id.contentFrame).visibility = View.GONE
+        view.findViewById<View>(R.id.readyFooter).visibility = View.GONE
+        view.findViewById<View>(R.id.recordingPanel).visibility = View.GONE
+        view.findViewById<View>(R.id.recPill).visibility = View.GONE
+        view.findViewById<View>(R.id.playPill).visibility = View.GONE
+        view.findViewById<View>(R.id.reviewPanel).visibility = View.GONE
+        val panel = view.findViewById<LinearLayout>(R.id.panel)
+        panel.background = null
+        panel.setPadding(0, 0, 0, 0)
+        val reviewWidth = minOf(dp(340), (safeBounds().width - dp(16)).coerceAtLeast(dp(260)))
+        panel.layoutParams = panel.layoutParams.apply {
+            width = reviewWidth
+            height = LinearLayout.LayoutParams.WRAP_CONTENT
+        }
+        listOf(R.id.saveBox, R.id.savedBox, R.id.discardedBox).forEach { id ->
+            view.findViewById<View>(id)?.layoutParams = (view.findViewById<View>(id)?.layoutParams
+                ?: LinearLayout.LayoutParams(reviewWidth, LinearLayout.LayoutParams.WRAP_CONTENT))
+                .apply { width = reviewWidth }
+        }
+        setSaveTyping(false)
+        applyReviewChrome()
+        view.requestLayout()
+        view.post { clampControllerToScreen() }
+    }
+
+    private enum class ReviewPhase { SAVE, SAVED, DISCARDED }
+
+    private var reviewPhase = ReviewPhase.SAVE
+
+    private fun applyReviewChrome() {
+        val view = controllerView ?: return
+        view.findViewById<View>(R.id.saveBox).visibility =
+            if (reviewPhase == ReviewPhase.SAVE) View.VISIBLE else View.GONE
+        view.findViewById<View>(R.id.savedBox).visibility =
+            if (reviewPhase == ReviewPhase.SAVED) View.VISIBLE else View.GONE
+        view.findViewById<View>(R.id.discardedBox).visibility =
+            if (reviewPhase == ReviewPhase.DISCARDED) View.VISIBLE else View.GONE
+        view.requestLayout()
+        view.post { clampControllerToScreen() }
+    }
+
+    private fun setSaveTyping(typing: Boolean) {
+        val view = controllerView ?: return
+        val params = controllerParams ?: return
+        val base = WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+        params.flags = if (typing) base else base or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+        params.softInputMode = if (typing) {
+            WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE or
+                WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+        } else {
+            WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN
+        }
+        try {
+            windowManager.updateViewLayout(view, params)
+        } catch (_: Exception) {
+            // Window detached.
+        }
+        val input = view.findViewById<EditText>(R.id.etMacroName)
+        val imm = getSystemService(INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
+        if (typing) {
+            input.requestFocus()
+            imm?.showSoftInput(input, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
+        } else {
+            imm?.hideSoftInputFromWindow(input.windowToken, 0)
+        }
+    }
+
     private fun saveRecording() {
-        if (recorded.isEmpty()) {
+        if (!savePending) {
+            if (recorded.isEmpty()) {
+                toast("Nothing to save")
+            }
+            return
+        }
+        val gestures = recorded.toList()
+        if (gestures.isEmpty()) {
             toast("Nothing to save")
             return
         }
-        val defaultName = "Macro " + SimpleDateFormat("MMM dd HH:mm", Locale.US).format(Date())
+        val view = controllerView ?: return
+        val entered = view.findViewById<EditText>(R.id.etMacroName)?.text?.toString()?.trim().orEmpty()
+        val name = entered.ifBlank { reviewName.ifBlank { defaultMacroName() } }.take(40)
+        reviewName = name
+        savePending = false
+        stopSaveCountdown()
+        setSaveTyping(false)
+        val prefs = settingsStore.settings.value
+        val macro = Macro(
+            id = nextMacroId(),
+            name = name,
+            createdAt = System.currentTimeMillis(),
+            durationMs = MacroTimeline.totalDuration(gestures),
+            deviceWidth = screenWidth,
+            deviceHeight = screenHeight,
+            orientation = currentOrientation(),
+            gestures = gestures,
+            repeatMode = prefs.defaultRepeat,
+            speedMultiplier = MacroTimeline.clampSpeed(prefs.defaultSpeed)
+        )
+        AppEventLog.log("recording: saving name=\"$name\" gestures=${gestures.size}")
+        scope.launch {
+            val saved = repository.save(macro)
+            if (saved == null) {
+                savePending = true
+                toast("Could not save macro")
+                return@launch
+            }
+            hapticEvent()
+            savedMacro = saved
+            recorded.clear()
+            BotState.clearRecording()
+            selectedId = saved.id
+            BotState.setSelectedMacroId(saved.id)
+            BotState.setStatus("Saved \"${saved.name}\"")
+            reviewPhase = ReviewPhase.SAVED
+            view.findViewById<TextView>(R.id.tvSavedText).text = "Saved · ${saved.name}"
+            applyReviewChrome()
+            scheduleReviewDismiss(SAVED_UNDO_MS)
+        }
+    }
 
-        fun persist(name: String) {
-            val gestures = recorded.toList()
-            val prefs = settingsStore.settings.value
-            val macro = Macro(
-                id = nextMacroId(),
-                name = name,
-                createdAt = System.currentTimeMillis(),
-                durationMs = MacroTimeline.totalDuration(gestures),
-                deviceWidth = screenWidth,
-                deviceHeight = screenHeight,
-                orientation = currentOrientation(),
-                gestures = gestures,
-                repeatMode = prefs.defaultRepeat,
-                speedMultiplier = MacroTimeline.clampSpeed(prefs.defaultSpeed)
-            )
-            Log.i(TAG, "Saving \"$name\" with ${gestures.size} gesture(s)")
-            scope.launch {
-                val saved = repository.save(macro)
-                if (saved == null) {
-                    Log.e(TAG, "Macro save failed for \"$name\"")
-                    toast("Could not save macro")
-                    return@launch
-                }
-                Log.i(TAG, "Macro saved id=${saved.id} with ${saved.gestures.size} gesture(s)")
-                recorded.clear()
-                BotState.clearRecording()
-                selectedId = saved.id
-                BotState.setSelectedMacroId(saved.id)
+    private fun discardReviewedRecording() {
+        if (!savePending && savedMacro == null) return
+        savePending = false
+        stopSaveCountdown()
+        setSaveTyping(false)
+        discardedGestures = recorded.toList()
+        recorded.clear()
+        BotState.clearRecording()
+        hapticEvent()
+        reviewPhase = ReviewPhase.DISCARDED
+        applyReviewChrome()
+        scheduleReviewDismiss(SAVED_UNDO_MS)
+    }
+
+    private fun undoSavedMacro() {
+        val saved = savedMacro ?: return
+        saveUndoRunnable?.let { handler.removeCallbacks(it) }
+        saveUndoRunnable = null
+        scope.launch {
+            repository.delete(saved.id)
+            savedMacro = null
+            recorded.clear()
+            recorded.addAll(saved.gestures)
+            reviewName = saved.name
+            reviewPhase = ReviewPhase.SAVE
+            savePending = true
+            BotState.setState(ControllerState.REVIEW)
+            BotState.setStatus("Name this macro")
+            controllerView?.findViewById<EditText>(R.id.etMacroName)?.apply {
+                setText(reviewName)
+                setSelection(text.length)
+            }
+            applyReviewChrome()
+            startSaveCountdown()
+        }
+    }
+
+    private fun undoDiscardedRecording() {
+        val gestures = discardedGestures ?: return
+        saveUndoRunnable?.let { handler.removeCallbacks(it) }
+        saveUndoRunnable = null
+        discardedGestures = null
+        recorded.clear()
+        recorded.addAll(gestures)
+        reviewPhase = ReviewPhase.SAVE
+        savePending = true
+        BotState.setState(ControllerState.REVIEW)
+        BotState.setStatus("Name this macro")
+        controllerView?.findViewById<EditText>(R.id.etMacroName)?.apply {
+            setText(reviewName.ifBlank { defaultMacroName() })
+            setSelection(text.length)
+        }
+        applyReviewChrome()
+        startSaveCountdown()
+    }
+
+    private fun scheduleReviewDismiss(delayMs: Long) {
+        saveUndoRunnable?.let { handler.removeCallbacks(it) }
+        val runnable = Runnable {
+            if (reviewChromeActive) {
+                savedMacro = null
+                discardedGestures = null
+                restoreControllerChrome()
                 BotState.setState(ControllerState.READY)
-                BotState.setStatus("Saved \"${saved.name}\"")
+                BotState.setStatus("Ready")
                 refreshUi()
-                toast("Macro saved")
             }
         }
-
-        showInputDialog(
-            title = "Save macro",
-            initial = defaultName,
-            onFailure = {
-                // Never lose a finished recording just because the name dialog failed.
-                persist(defaultName)
-                toast("Name dialog unavailable — saved with the default name")
-            }
-        ) { name -> persist(name) }
+        saveUndoRunnable = runnable
+        handler.postDelayed(runnable, delayMs)
     }
 
     // ------------------------------------------------------ macro settings
-
-    private data class SettingsDraft(
-        var name: String,
-        var speed: Float,
-        var repeat: String,
-        var repeatCount: Int,
-        var delayMs: Long,
-        var countdownSec: Int,
-        var stopOnBackground: Boolean,
-        var stopMinutes: Int?,
-        var stopAttacks: Int?,
-        var pinned: Boolean
-    )
 
     private var settingsPage = 0
 
     private fun showMacroSettings(
         macro: Macro,
-        initialDraft: SettingsDraft? = null,
+        initialDraft: MacroSettingsDraft? = null,
         initialPage: Int = 0
     ) {
         val view = controllerView ?: return
@@ -2817,27 +3615,20 @@ class FloatingMenuService : Service() {
         }
         view.findViewById<View>(R.id.controllerHeader).visibility = View.GONE
         view.findViewById<View>(R.id.contentFrame).visibility = View.GONE
+        view.findViewById<View>(R.id.readyFooter).visibility = View.GONE
+        view.findViewById<View>(R.id.tvStatus).visibility = View.GONE
         applyPanelWidth(settings = true)
         setSettingsFocusable(true)
 
-        val draft = initialDraft ?: SettingsDraft(
-            name = macro.name,
-            speed = MacroTimeline.clampSpeed(macro.speedMultiplier),
-            repeat = macro.repeatMode,
-            repeatCount = if (MacroTimeline.isCustomRepeat(macro.repeatMode)) {
-                MacroTimeline.repeatCount(macro.repeatMode)
-            } else {
-                10
-            },
-            delayMs = macro.effectiveRepeatDelayMs,
-            countdownSec = (macro.effectiveStartCountdownMs / 1000L).toInt(),
-            stopOnBackground = macro.stopOnBackground,
-            stopMinutes = macro.effectiveStopAfterMinutes,
-            stopAttacks = macro.effectiveStopAfterAttacks,
-            pinned = macro.pinned
-        )
+        val draft = initialDraft ?: MacroSettingsDraft.from(macro)
 
-        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        }
         host.removeAllViews()
         host.addView(root)
         settingsView = root
@@ -2846,8 +3637,8 @@ class FloatingMenuService : Service() {
         host.visibility = View.VISIBLE
 
         settingsPage = initialPage.coerceIn(0, 1)
-        val error = Ds.text(this, 10f, Ds.DANGER_TEXT).apply { visibility = View.GONE }
-        val landscape = screenWidth > screenHeight
+        val error = Ds.text(uiContext, 10f, Ds.DANGER_TEXT).apply { visibility = View.GONE }
+        val landscape = false
 
         fun showError(message: String) {
             error.text = message
@@ -2858,21 +3649,7 @@ class FloatingMenuService : Service() {
             error.visibility = View.GONE
         }
 
-        fun draftMacro(): Macro = macro.copy(
-            name = draft.name.trim().take(40),
-            speedMultiplier = MacroTimeline.clampSpeed(draft.speed),
-            repeatMode = if (MacroTimeline.isCustomRepeat(draft.repeat)) {
-                MacroTimeline.customRepeatMode(draft.repeatCount)
-            } else {
-                draft.repeat
-            },
-            repeatDelayMs = draft.delayMs.coerceIn(0L, Macro.MAX_REPEAT_DELAY_MS),
-            startCountdownMs = draft.countdownSec.coerceIn(0, 30) * 1000L,
-            stopOnBackground = draft.stopOnBackground,
-            stopAfterMinutes = draft.stopMinutes,
-            stopAfterAttacks = draft.stopAttacks,
-            pinned = draft.pinned
-        )
+        fun draftMacro(): Macro = draft.toMacro(macro)
 
         fun persist(onSaved: (Macro) -> Unit) {
             clearError()
@@ -2887,7 +3664,7 @@ class FloatingMenuService : Service() {
         }
 
         fun tabButton(text: String, selected: Boolean, onClick: () -> Unit): TextView =
-            Ds.text(this, 11f, if (selected) android.graphics.Color.WHITE else Ds.MUTED, bold = true).apply {
+            Ds.text(uiContext, 11f, if (selected) android.graphics.Color.WHITE else Ds.MUTED, bold = true).apply {
                 this.text = text
                 gravity = Gravity.CENTER
                 background = Ds.rounded(
@@ -2895,7 +3672,7 @@ class FloatingMenuService : Service() {
                     8,
                     this@FloatingMenuService
                 )
-                layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f)
+                layoutParams = LinearLayout.LayoutParams(0, dp(26), 1f)
                 isClickable = true
                 setOnClickListener {
                     haptic()
@@ -2904,19 +3681,19 @@ class FloatingMenuService : Service() {
             }
 
         fun footerButton(text: String, primary: Boolean, onClick: () -> Unit): Button =
-            Button(this).apply {
+            Button(uiContext).apply {
                 this.text = text
-                textSize = 13f
+                textSize = 12f
                 isAllCaps = false
                 minWidth = 0
                 stateListAnimator = null
                 setTextColor(if (primary) android.graphics.Color.WHITE else Ds.TEXT)
                 background = Ds.rounded(
                     if (primary) Ds.ACCENT else Ds.BUTTON,
-                    10,
+                    9,
                     this@FloatingMenuService
                 )
-                layoutParams = LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+                layoutParams = LinearLayout.LayoutParams(0, dp(34), 1f).apply {
                     marginStart = if (primary) dp(8) else 0
                 }
                 setOnClickListener {
@@ -2926,7 +3703,7 @@ class FloatingMenuService : Service() {
             }
 
         fun autoLabel(text: String, size: Float): TextView {
-            val label = Ds.text(this, size, Ds.MUTED).apply {
+            val label = Ds.text(uiContext, size, Ds.MUTED).apply {
                 this.text = text
                 maxLines = 1
             }
@@ -2940,12 +3717,12 @@ class FloatingMenuService : Service() {
             return label
         }
 
-        fun row(label: String, control: View, labelSize: Float = 13f): View {
+        fun row(label: String, control: View, labelSize: Float = 12.5f): View {
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                minimumHeight = dp(44)
-                setPadding(0, dp(2), 0, dp(2))
+                minimumHeight = dp(40)
+                setPadding(0, dp(1), 0, dp(1))
             }
             row.addView(
                 autoLabel(label, labelSize),
@@ -2975,13 +3752,13 @@ class FloatingMenuService : Service() {
             }
             val value = Ds.text(
                 this,
-                14f,
+                13f,
                 if (enabled) Ds.TEXT else 0xFF5B6B8A.toInt(),
                 bold = true
             ).apply {
                 gravity = Gravity.CENTER
-                minWidth = dp(44)
-                minHeight = dp(44)
+                minWidth = dp(34)
+                minHeight = dp(40)
                 text = valueText()
                 fontFeatureSettings = "tnum"
                 setOnClickListener {
@@ -2997,16 +3774,16 @@ class FloatingMenuService : Service() {
             }
             fun stepButton(text: String, onClick: () -> Unit): FrameLayout {
                 val holder = FrameLayout(this).apply {
-                    layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
+                    layoutParams = LinearLayout.LayoutParams(dp(34), dp(40))
                 }
                 holder.addView(
-                    TextView(this).apply {
+                    TextView(uiContext).apply {
                         this.text = text
                         gravity = Gravity.CENTER
-                        textSize = 20f
+                        textSize = 18f
                         setTextColor(Ds.TEXT)
                         background = Ds.pill(Ds.BUTTON, this@FloatingMenuService)
-                        layoutParams = FrameLayout.LayoutParams(dp(32), dp(32), Gravity.CENTER)
+                        layoutParams = FrameLayout.LayoutParams(dp(26), dp(26), Gravity.CENTER)
                         setOnClickListener {
                             if (enabled) {
                                 haptic()
@@ -3028,7 +3805,7 @@ class FloatingMenuService : Service() {
         fun toggle(checked: Boolean, onChange: (Boolean) -> Unit): View {
             var value = checked
             val container = FrameLayout(this).apply {
-                layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
+                layoutParams = LinearLayout.LayoutParams(dp(42), dp(40))
             }
             val track = View(this)
             val thumb = View(this).apply { elevation = dp(1).toFloat() }
@@ -3040,17 +3817,17 @@ class FloatingMenuService : Service() {
                 )
                 thumb.background = Ds.pill(Color.WHITE, this@FloatingMenuService)
                 thumb.layoutParams = FrameLayout.LayoutParams(
-                    dp(20),
-                    dp(20),
+                    dp(18),
+                    dp(18),
                     Gravity.CENTER_VERTICAL or if (value) Gravity.END else Gravity.START
                 ).apply {
-                    marginStart = dp(3)
-                    marginEnd = dp(3)
+                    marginStart = dp(2)
+                    marginEnd = dp(2)
                 }
             }
             container.addView(
                 track,
-                FrameLayout.LayoutParams(dp(44), dp(26), Gravity.CENTER)
+                FrameLayout.LayoutParams(dp(38), dp(22), Gravity.CENTER)
             )
             container.addView(thumb)
             paint()
@@ -3088,7 +3865,7 @@ class FloatingMenuService : Service() {
                 }
             }
             options.forEach { (key, label) ->
-                val button = Ds.text(this, 11f, Ds.MUTED, bold = true).apply {
+                val button = Ds.text(uiContext, 11f, Ds.MUTED, bold = true).apply {
                     tag = key
                     text = label
                     gravity = Gravity.CENTER
@@ -3115,14 +3892,14 @@ class FloatingMenuService : Service() {
 
         var renderPage: () -> Unit = {}
 
-        fun nameField(): TextView = Ds.text(this, 13f, Ds.TEXT).apply {
+        fun nameField(): TextView = Ds.text(uiContext, 12.5f, Ds.TEXT).apply {
             text = draft.name
             maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.END
-            setPadding(dp(10), 0, dp(10), 0)
-            layoutParams = LinearLayout.LayoutParams(dp(170), dp(40))
+            setPadding(dp(9), 0, dp(9), 0)
+            layoutParams = LinearLayout.LayoutParams(dp(160), dp(34))
             gravity = Gravity.CENTER_VERTICAL
-            background = Ds.rounded(Ds.INPUT, 10, this@FloatingMenuService, Ds.PANEL_BORDER)
+            background = Ds.rounded(Ds.INPUT, 9, this@FloatingMenuService, Ds.PANEL_BORDER)
             isClickable = true
             setOnClickListener {
                 haptic()
@@ -3141,10 +3918,10 @@ class FloatingMenuService : Service() {
             gravity = Gravity.CENTER_VERTICAL
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                dp(48)
+                dp(40)
             )
         }
-        header.addView(plainIconButton(R.drawable.ic_back, "Back to macros") {
+        header.addView(compactIconButton(R.drawable.ic_back, "Back to macros") {
             if (settingsPage > 0) {
                 settingsPage = 0
                 renderPage()
@@ -3153,35 +3930,36 @@ class FloatingMenuService : Service() {
             }
         })
         header.addView(
-            Ds.text(this, 14f, Ds.TEXT, bold = true).apply {
+            Ds.text(uiContext, 13.5f, Ds.TEXT, bold = true).apply {
                 text = macro.name
                 maxLines = 1
                 ellipsize = android.text.TextUtils.TruncateAt.END
             },
             LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
         )
-        val moreButton = plainIconButton(R.drawable.ic_more, "More actions") {}
+        val moreButton = compactIconButton(R.drawable.ic_more, "More actions") {}
         moreButton.setOnClickListener {
             showSettingsMenu(moreButton, macro, draft, onDeleted = { showUndo(macro) })
         }
         header.addView(moreButton)
-        header.addView(plainIconButton(R.drawable.ic_minimize, "Minimize controller") {
+        header.addView(compactIconButton(R.drawable.ic_minimize, "Minimize controller") {
             closeMacroSettings()
             collapseController()
         })
-        header.addView(plainIconButton(R.drawable.ic_close, "Close controller") {
+        header.addView(compactIconButton(R.drawable.ic_close, "Close controller") {
             closeMacroSettings()
             requestClose()
         })
 
         val tabs = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            background = Ds.rounded(Ds.INPUT, 10, this@FloatingMenuService)
-            setPadding(dp(3), dp(3), dp(3), dp(3))
+            background = Ds.rounded(Ds.INPUT, 9, this@FloatingMenuService)
+            setPadding(dp(2), dp(2), dp(2), dp(2))
             layoutParams = LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
-                dp(50)
+                dp(40)
             ).apply { topMargin = dp(4) }
+            gravity = Gravity.CENTER_VERTICAL
         }
         var playbackTab: TextView? = null
         var stopTab: TextView? = null
@@ -3199,23 +3977,9 @@ class FloatingMenuService : Service() {
         val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val scroll = ScrollView(this).apply {
             isVerticalScrollBarEnabled = false
+            clipToPadding = false
             addView(content)
         }
-        val dots = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-            setPadding(0, dp(4), 0, 0)
-        }
-        val dotA = View(this).apply {
-            background = Ds.pill(Ds.ACCENT, this@FloatingMenuService)
-            layoutParams = LinearLayout.LayoutParams(dp(6), dp(6)).apply { marginEnd = dp(4) }
-        }
-        val dotB = View(this).apply {
-            background = Ds.pill(Ds.MUTED, this@FloatingMenuService)
-            layoutParams = LinearLayout.LayoutParams(dp(6), dp(6))
-        }
-        dots.addView(dotA)
-        dots.addView(dotB)
 
         fun updateTabs() {
             val selected = 0xFF2563EB.toInt()
@@ -3236,14 +4000,6 @@ class FloatingMenuService : Service() {
                 )
                 setTextColor(if (settingsPage == 1) android.graphics.Color.WHITE else Ds.MUTED)
             }
-            dotA.background = Ds.pill(
-                if (settingsPage == 0) Ds.ACCENT else Ds.MUTED,
-                this@FloatingMenuService
-            )
-            dotB.background = Ds.pill(
-                if (settingsPage == 1) Ds.ACCENT else Ds.MUTED,
-                this@FloatingMenuService
-            )
         }
 
         fun addDivider(column: LinearLayout) {
@@ -3564,15 +4320,39 @@ class FloatingMenuService : Service() {
             addDivider(content)
 
             addRow(content, "Pin to top", toggle(draft.pinned) { draft.pinned = it })
-            val info = Ds.text(this, 11f, Ds.MUTED).apply {
+            val summary = draft.toMacro(macro)
+            val box = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                background = Ds.rounded(0xFF14234A.toInt(), 10, this@FloatingMenuService)
+                setPadding(dp(10), dp(8), dp(10), dp(8))
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { topMargin = dp(6) }
+            }
+            box.addView(Ds.text(uiContext, 11.5f, 0xFFBFD4FF.toInt(), bold = true).apply {
+                text = "Runs until the first of:"
+            })
+            box.addView(Ds.text(uiContext, 11f, Ds.MUTED).apply {
+                text = StopSummary.summaryLine(summary)
+                setPadding(0, dp(2), 0, 0)
+            })
+            content.addView(box)
+            StopSummary.conflictHint(summary)?.let { hint ->
+                content.addView(Ds.text(uiContext, 10.5f, Ds.WARN).apply {
+                    text = hint
+                    setPadding(dp(2), dp(6), dp(2), dp(2))
+                })
+            }
+            val info = Ds.text(uiContext, 11f, Ds.MUTED).apply {
                 val lastPlayed = macro.lastPlayedAt?.let {
                     SimpleDateFormat("MM/dd HH:mm", Locale.US).format(Date(it))
                 } ?: "never"
-                text = "${macro.gestures.size} gestures · ${formatDuration(macro.durationMs)} · " +
-                    "Played ${macro.playCount} time(s)\nCreated " +
+                text = "${Plural.of(macro.gestures.size, "gesture")} · ${formatDuration(macro.durationMs)} · " +
+                    "Played ${Plural.of(macro.playCount, "time")}\nCreated " +
                     SimpleDateFormat("MM/dd HH:mm", Locale.US).format(Date(macro.createdAt)) +
                     " · Last played $lastPlayed"
-                setPadding(0, dp(8), 0, dp(8))
+                setPadding(0, dp(5), 0, dp(5))
             }
             content.addView(info)
         }
@@ -3582,21 +4362,7 @@ class FloatingMenuService : Service() {
             if (settingsPage == 0) playbackPage() else stopPage()
             updateTabs()
             content.requestLayout()
-            content.post {
-                val maxPanel = minOf(
-                    (screenHeight * 0.90f).toInt(),
-                    screenHeight - (controllerParams?.y ?: dp(48)) - dp(8)
-                )
-                val cap = (maxPanel - dp(198)).coerceAtLeast(dp(96))
-                val natural = content.height
-                if (natural > 0) {
-                    val target = minOf(natural + dp(2), cap)
-                    if (scroll.layoutParams.height != target) {
-                        scroll.layoutParams = scroll.layoutParams.apply { height = target }
-                        view.post { clampControllerToScreen() }
-                    }
-                }
-            }
+            scheduleTouchTargets()
         }
 
         val swipeDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
@@ -3628,6 +4394,7 @@ class FloatingMenuService : Service() {
         val footer = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(0, dp(6), 0, 0)
+            setMinimumHeight(dp(40))
             addView(footerButton("Cancel", primary = false) { closeMacroSettings() })
             addView(footerButton("Save", primary = true) {
                 persist { saved ->
@@ -3643,9 +4410,12 @@ class FloatingMenuService : Service() {
         root.addView(tabs)
         root.addView(
             scroll,
-            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(160))
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                0,
+                1f
+            ).apply { topMargin = dp(2) }
         )
-        root.addView(dots)
         root.addView(error)
         root.addView(footer)
 
@@ -3689,7 +4459,7 @@ class FloatingMenuService : Service() {
     private fun showSettingsMenu(
         anchor: View,
         macro: Macro,
-        draft: SettingsDraft,
+        draft: MacroSettingsDraft,
         onDeleted: () -> Unit
     ) {
         val menu = LinearLayout(this).apply {
@@ -3713,7 +4483,7 @@ class FloatingMenuService : Service() {
         }
         fun item(label: String, danger: Boolean = false, action: () -> Unit) {
             menu.addView(
-                TextView(this).apply {
+                TextView(uiContext).apply {
                     text = label
                     textSize = 13f
                     setTextColor(if (danger) Ds.DANGER_TEXT else Ds.TEXT)
@@ -3733,6 +4503,20 @@ class FloatingMenuService : Service() {
                 )
             )
         }
+        item(if (draft.pinned) "Unpin" else "Pin to top") {
+            draft.pinned = !draft.pinned
+            scope.launch {
+                val saved = repository.save(draft.toMacro(macro))
+                closeMacroSettings()
+                toast(
+                    if (saved != null) {
+                        if (saved.pinned) "Pinned to top" else "Unpinned"
+                    } else {
+                        "Could not update"
+                    }
+                )
+            }
+        }
         item("Duplicate") {
             scope.launch {
                 val copy = repository.duplicate(macro.id)
@@ -3741,20 +4525,7 @@ class FloatingMenuService : Service() {
                     return@launch
                 }
                 val updated = repository.save(
-                    copy.copy(
-                        speedMultiplier = MacroTimeline.clampSpeed(draft.speed),
-                        repeatMode = if (MacroTimeline.isCustomRepeat(draft.repeat)) {
-                            MacroTimeline.customRepeatMode(draft.repeatCount)
-                        } else {
-                            draft.repeat
-                        },
-                        repeatDelayMs = draft.delayMs.coerceIn(0L, Macro.MAX_REPEAT_DELAY_MS),
-                        startCountdownMs = draft.countdownSec.coerceIn(0, 30) * 1000L,
-                        stopOnBackground = draft.stopOnBackground,
-                        stopAfterMinutes = draft.stopMinutes,
-                        stopAfterAttacks = draft.stopAttacks,
-                        pinned = draft.pinned
-                    )
+                    draft.toMacro(copy).copy(name = copy.name)
                 )
                 closeMacroSettings()
                 toast(
@@ -3798,35 +4569,203 @@ class FloatingMenuService : Service() {
     }
 
 
+    private var inlineOverlay: View? = null
+
+    private fun setOverlayTyping(typing: Boolean) {
+        val view = controllerView ?: return
+        val params = controllerParams ?: return
+        val base = WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+        params.flags = if (typing) base else base or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+        params.softInputMode = if (typing) {
+            WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE or
+                WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+        } else {
+            WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN
+        }
+        try {
+            windowManager.updateViewLayout(view, params)
+        } catch (_: Exception) {
+            // Window detached.
+        }
+        if (!typing) {
+            val imm = getSystemService(INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
+            imm?.hideSoftInputFromWindow(view.windowToken, 0)
+        }
+    }
+
+    private fun showInlineCard(card: View) {
+        dismissInlineCard()
+        val root = controllerView as? android.view.ViewGroup ?: return
+        val dim = android.widget.FrameLayout(this).apply {
+            setBackgroundColor(0xB30A101D.toInt())
+            isClickable = true
+        }
+        dim.addView(
+            card,
+            android.widget.FrameLayout.LayoutParams(
+                dp(300),
+                android.widget.FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER
+            )
+        )
+        root.addView(
+            dim,
+            android.widget.FrameLayout.LayoutParams(
+                android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+                android.widget.FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        )
+        inlineOverlay = dim
+        setOverlayTyping(false)
+    }
+
+    private fun dismissInlineCard() {
+        val overlay = inlineOverlay ?: return
+        inlineOverlay = null
+        (overlay.parent as? android.view.ViewGroup)?.removeView(overlay)
+        setOverlayTyping(false)
+    }
+
+    private fun showOpenAppConfirm(
+        title: String,
+        message: String,
+        positive: String,
+        onOpen: () -> Unit
+    ) {
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = Ds.rounded(Ds.PANEL, 16, this@FloatingMenuService, Ds.PANEL_BORDER)
+            setPadding(dp(16), dp(14), dp(16), dp(14))
+        }
+        card.addView(Ds.text(uiContext, 15f, Ds.TEXT, bold = true).apply { text = title })
+        card.addView(Ds.text(uiContext, 12f, Ds.MUTED).apply {
+            text = message
+            setPadding(0, dp(6), 0, dp(12))
+        })
+        val buttons = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.END
+        }
+        fun button(label: String, primary: Boolean, action: () -> Unit): Button =
+            Button(uiContext).apply {
+                text = label
+                isAllCaps = false
+                textSize = 12.5f
+                minWidth = 0
+                stateListAnimator = null
+                setTextColor(Color.WHITE)
+                background = Ds.rounded(
+                    if (primary) Ds.ACCENT else Ds.BUTTON,
+                    9,
+                    this@FloatingMenuService
+                )
+                layoutParams = LinearLayout.LayoutParams(0, dp(36), 1f).apply {
+                    marginStart = if (primary) dp(8) else 0
+                }
+                setOnClickListener {
+                    haptic()
+                    dismissInlineCard()
+                    action()
+                }
+            }
+        buttons.addView(button("Stay", false) {})
+        buttons.addView(button(positive, true, onOpen))
+        card.addView(buttons)
+        showInlineCard(card)
+    }
+
     private fun openTextEditor(
         title: String,
         value: String,
         kind: String,
         onValue: (String?) -> Unit
     ) {
-        val view = controllerView
-        val timeout = Runnable { MacroInputRelay.complete(null) }
-        MacroInputRelay.pending = { result ->
-            handler.removeCallbacks(timeout)
-            view?.visibility = View.VISIBLE
-            handler.post { clampControllerToScreen() }
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = Ds.rounded(Ds.PANEL, 16, this@FloatingMenuService, Ds.PANEL_BORDER)
+            setPadding(dp(16), dp(14), dp(16), dp(14))
+        }
+        card.addView(Ds.text(uiContext, 15f, Ds.TEXT, bold = true).apply { text = title })
+        val input = EditText(uiContext).apply {
+            setText(value)
+            setSelection(text.length)
+            textSize = 14f
+            setTextColor(Ds.TEXT)
+            setHintTextColor(0xFF5B6B8A.toInt())
+            background = Ds.rounded(Ds.INPUT, 10, this@FloatingMenuService, Ds.PANEL_BORDER)
+            setPadding(dp(12), 0, dp(12), 0)
+            minHeight = dp(42)
+            inputType = when (kind) {
+                MacroInputActivity.KIND_NUMBER -> android.text.InputType.TYPE_CLASS_NUMBER
+                MacroInputActivity.KIND_DECIMAL -> android.text.InputType.TYPE_CLASS_NUMBER or
+                    android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
+                else -> android.text.InputType.TYPE_CLASS_TEXT or
+                    android.text.InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+            }
+            imeOptions = EditorInfo.IME_ACTION_DONE
+            setSingleLine(true)
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                dp(42)
+            ).apply { topMargin = dp(10) }
+            setOnClickListener { setOverlayTyping(true); requestFocus() }
+            setOnTouchListener { _, event ->
+                if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+                    setOverlayTyping(true)
+                    requestFocus()
+                }
+                false
+            }
+            setOnEditorActionListener { _, actionId, event ->
+                if (actionId == EditorInfo.IME_ACTION_DONE ||
+                    (event != null && event.keyCode == KeyEvent.KEYCODE_ENTER)
+                ) {
+                    val result = text.toString().trim()
+                    dismissInlineCard()
+                    onValue(result)
+                    true
+                } else false
+            }
+        }
+        card.addView(input)
+        val buttons = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.END
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(10) }
+        }
+        fun actionButton(label: String, primary: Boolean, onClick: () -> Unit): Button =
+            Button(uiContext).apply {
+                text = label
+                isAllCaps = false
+                textSize = 12.5f
+                minWidth = 0
+                stateListAnimator = null
+                setTextColor(Color.WHITE)
+                background = Ds.rounded(
+                    if (primary) Ds.ACCENT else Ds.BUTTON,
+                    9,
+                    this@FloatingMenuService
+                )
+                layoutParams = LinearLayout.LayoutParams(0, dp(36), 1f).apply {
+                    marginStart = if (primary) dp(8) else 0
+                }
+                setOnClickListener { haptic(); onClick() }
+            }
+        buttons.addView(actionButton("Cancel", false) {
+            dismissInlineCard()
+            onValue(null)
+        })
+        buttons.addView(actionButton("Save", true) {
+            val result = input.text.toString().trim()
+            dismissInlineCard()
             onValue(result)
-        }
-        view?.visibility = View.GONE
-        handler.postDelayed(timeout, 180_000L)
-        try {
-            startActivity(
-                Intent(this, MacroInputActivity::class.java)
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    .putExtra(MacroInputActivity.EXTRA_TITLE, title)
-                    .putExtra(MacroInputActivity.EXTRA_VALUE, value)
-                    .putExtra(MacroInputActivity.EXTRA_KIND, kind)
-            )
-        } catch (e: Exception) {
-            handler.removeCallbacks(timeout)
-            MacroInputRelay.complete(null)
-            toast("Could not open the text editor")
-        }
+        })
+        card.addView(buttons)
+        showInlineCard(card)
     }
 
     private fun closeMacroSettings() {
@@ -3910,6 +4849,192 @@ class FloatingMenuService : Service() {
 
     private fun recordingUiActive(): Boolean = recording || startingPassive
 
+    private fun playbackStripWidthPx(): Int {
+        val landscape = screenWidth > screenHeight
+        val base = if (landscape) PLAY_STRIP_LANDSCAPE_W else PLAY_STRIP_PORTRAIT_W
+        val safe = safeBounds()
+        return minOf(dp(base), (safe.width - dp(16)).coerceAtLeast(dp(260)))
+    }
+
+    private fun enterPlaybackChrome(pointOverride: OverlayPoint? = null) {
+        val view = controllerView ?: return
+        val params = controllerParams ?: return
+        playbackChromeActive = true
+        playbackMinimized = false
+        collapsed = false
+        recordingChromeActive = false
+        reviewChromeActive = false
+        val stripWidth = playbackStripWidthPx()
+        val safe = safeBounds()
+        val saved = overlayPositions?.get(positionKey(PlacementKind.PLAYING))
+        val point = pointOverride ?: pendingPlaybackPoint ?: saved ?: OverlayPoint(
+            (safe.right - stripWidth - dp(8)).coerceAtLeast(safe.left + dp(8)),
+            safe.top + dp(8)
+        )
+        pendingPlaybackPoint = null
+        applyWindowPoint(
+            params,
+            OverlayPlacement.clamp(point.x, point.y, stripWidth, dp(PLAY_STRIP_HEIGHT), safe, dp(8)),
+            PlacementKind.PLAYING,
+            save = false
+        )
+        val panel = view.findViewById<LinearLayout>(R.id.panel)
+        panel.visibility = View.VISIBLE
+        panel.background = null
+        panel.setPadding(0, 0, 0, 0)
+        view.findViewById<View>(R.id.bubble).visibility = View.GONE
+        view.findViewById<View>(R.id.controllerHeader).visibility = View.GONE
+        view.findViewById<View>(R.id.tvStatus).visibility = View.GONE
+        view.findViewById<View>(R.id.settingsHost).visibility = View.GONE
+        view.findViewById<View>(R.id.readyFooter).visibility = View.GONE
+        view.findViewById<View>(R.id.saveBox).visibility = View.GONE
+        view.findViewById<View>(R.id.savedBox).visibility = View.GONE
+        view.findViewById<View>(R.id.discardedBox).visibility = View.GONE
+        (view.findViewById<View>(R.id.contentFrame)?.layoutParams as? LinearLayout.LayoutParams)
+            ?.topMargin = 0
+        applyPlaybackChrome()
+        startPlaybackTicker()
+        view.requestLayout()
+        view.post {
+            clampControllerToScreen()
+            refreshControllerBoundsSnapshot()
+        }
+    }
+
+    private fun applyPlaybackChrome() {
+        val view = controllerView ?: return
+        val panel = view.findViewById<LinearLayout>(R.id.panel)
+        val stripWidth = playbackStripWidthPx()
+        panel.visibility = View.VISIBLE
+        view.findViewById<View>(R.id.bubble).visibility = View.GONE
+        (view.findViewById<View>(R.id.contentFrame)?.layoutParams as? LinearLayout.LayoutParams)
+            ?.topMargin = 0
+        view.findViewById<View>(R.id.playingPanel)?.layoutParams?.apply {
+            height = LinearLayout.LayoutParams.MATCH_PARENT
+        }
+        panel.layoutParams = panel.layoutParams.apply {
+            width = if (playbackMinimized) {
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            } else {
+                stripWidth
+            }
+            height = if (playbackMinimized) {
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            } else {
+                dp(PLAY_STRIP_HEIGHT)
+            }
+        }
+        view.findViewById<View>(R.id.contentFrame).visibility =
+            if (playbackMinimized) View.GONE else View.VISIBLE
+        view.findViewById<View>(R.id.playingPanel).visibility =
+            if (playbackMinimized) View.GONE else View.VISIBLE
+        view.findViewById<View>(R.id.playPill).visibility =
+            if (playbackMinimized) View.VISIBLE else View.GONE
+        val narrow = stripWidth < dp(350)
+        view.findViewById<TextView>(R.id.tvPlayingName)?.maxWidth = dp(if (narrow) 58 else 96)
+        view.findViewById<TextView>(R.id.tvPlayingRun)?.apply {
+            textSize = if (narrow) 10f else 11f
+            setPadding(dp(if (narrow) 5 else 8), 0, dp(if (narrow) 5 else 8), 0)
+        }
+        view.findViewById<TextView>(R.id.tvPlayElapsed)?.apply {
+            textSize = if (narrow) 11.5f else 13f
+            minWidth = dp(if (narrow) 42 else 46)
+        }
+        val gap = dp(if (narrow) 4 else 6)
+        view.findViewById<View>(R.id.btnPlayPause)?.layoutParams =
+            (view.findViewById<View>(R.id.btnPlayPause)?.layoutParams as? LinearLayout.LayoutParams)?.apply { marginStart = gap }
+        view.findViewById<View>(R.id.btnStopPlayback)?.layoutParams =
+            (view.findViewById<View>(R.id.btnStopPlayback)?.layoutParams as? LinearLayout.LayoutParams)?.apply { marginStart = gap }
+        view.findViewById<View>(R.id.btnPlayMinimize)?.layoutParams =
+            (view.findViewById<View>(R.id.btnPlayMinimize)?.layoutParams as? LinearLayout.LayoutParams)?.apply { marginStart = gap }
+        controllerParams?.let { params ->
+            if (params.width != WindowManager.LayoutParams.WRAP_CONTENT ||
+                params.height != WindowManager.LayoutParams.WRAP_CONTENT
+            ) {
+                params.width = WindowManager.LayoutParams.WRAP_CONTENT
+                params.height = WindowManager.LayoutParams.WRAP_CONTENT
+                try {
+                    windowManager.updateViewLayout(view, params)
+                } catch (_: Exception) {
+                    // Window detached.
+                }
+            }
+        }
+        view.requestLayout()
+        view.post {
+            clampControllerToScreen()
+            refreshControllerBoundsSnapshot()
+        }
+    }
+
+    private fun minimizePlaybackStrip() {
+        if (!playbackChromeActive) return
+        playbackMinimized = true
+        applyPlaybackChrome()
+    }
+
+    private fun expandPlaybackStrip() {
+        if (!playbackChromeActive) return
+        playbackMinimized = false
+        applyPlaybackChrome()
+    }
+
+    private fun startPlaybackTicker() {
+        handler.removeCallbacks(playbackTicker)
+        handler.post(playbackTicker)
+    }
+
+    private fun stopPlaybackTicker() {
+        handler.removeCallbacks(playbackTicker)
+    }
+
+    private val playbackTicker = object : Runnable {
+        override fun run() {
+            if (!playbackChromeActive) return
+            val view = controllerView ?: return
+            val elapsed = player?.runningElapsedMs() ?: 0L
+            val text = formatClock(elapsed)
+            view.findViewById<TextView>(R.id.tvPlayElapsed)?.text = text
+            view.findViewById<TextView>(R.id.tvPlayPillTimer)?.text = text
+            val macro = macros.firstOrNull { it.id == BotState.activeMacroId.value }
+            if (macro != null) {
+                view.findViewById<TextView>(R.id.tvPlayPillName)?.text = macro.name
+            }
+            val runLabel = BotState.playbackRunLabel.value
+            view.findViewById<TextView>(R.id.tvPlayingRun)?.apply {
+                visibility = if (runLabel.isNullOrBlank()) View.GONE else View.VISIBLE
+                if (!runLabel.isNullOrBlank()) this.text = runLabel
+            }
+            handler.postDelayed(this, 500L)
+        }
+    }
+
+    private fun applyPlaybackInfo(view: View) {
+        val macro = macros.firstOrNull { it.id == BotState.activeMacroId.value }
+        view.findViewById<TextView>(R.id.tvPlayingName)?.text =
+            macro?.name ?: BotState.activeMacroName.value ?: "Macro"
+        view.findViewById<TextView>(R.id.tvPlayPillName)?.text =
+            macro?.name ?: BotState.activeMacroName.value ?: "Macro"
+        val runLabel = BotState.playbackRunLabel.value
+        view.findViewById<TextView>(R.id.tvPlayingRun)?.apply {
+            visibility = if (runLabel.isNullOrBlank()) View.GONE else View.VISIBLE
+            text = runLabel ?: ""
+        }
+        view.findViewById<TextView>(R.id.tvPlayElapsed)?.text =
+            formatClock(player?.runningElapsedMs() ?: 0L)
+        view.findViewById<ImageButton>(R.id.btnPlayPause)?.apply {
+            setImageResource(
+                if (BotState.state.value == ControllerState.PLAYBACK_PAUSED) {
+                    R.drawable.ic_play_small
+                } else {
+                    R.drawable.ic_pause
+                }
+            )
+            contentDescription =
+                if (BotState.state.value == ControllerState.PLAYBACK_PAUSED) "Resume playback" else "Pause playback"
+        }
+    }
+
     private fun enterRecordingChrome() {
         val view = controllerView ?: return
         val params = controllerParams ?: return
@@ -3917,7 +5042,7 @@ class FloatingMenuService : Service() {
         recordingMinimized = false
         lastRecordingMinimized = false
         val safe = safeBounds()
-        val barWidth = controllerPanelWidthPx(false)
+        val barWidth = recordingStripWidthPx()
         val saved = overlayPositions?.get(positionKey(PlacementKind.RECORDING))
         val point = saved ?: OverlayPoint(
             safe.left + ((safe.width - barWidth) / 2).coerceAtLeast(0),
@@ -3927,7 +5052,7 @@ class FloatingMenuService : Service() {
             point.x,
             point.y,
             barWidth,
-            dp(48),
+            dp(REC_STRIP_HEIGHT),
             safe,
             dp(8)
         )
@@ -3937,7 +5062,7 @@ class FloatingMenuService : Service() {
             (clamped.x - pad).toFloat(),
             (clamped.y - pad).toFloat(),
             (clamped.x + barWidth + pad).toFloat(),
-            (clamped.y + dp(48) + pad).toFloat()
+            (clamped.y + dp(REC_STRIP_HEIGHT) + pad).toFloat()
         )
         applyRecordingChrome()
     }
@@ -3948,6 +5073,14 @@ class FloatingMenuService : Service() {
         view.findViewById<View>(R.id.controllerHeader).visibility = View.GONE
         view.findViewById<View>(R.id.tvStatus).visibility = View.GONE
         view.findViewById<View>(R.id.settingsHost).visibility = View.GONE
+        // Hide the controller pages in the same frame the bar appears so the
+        // two never draw on top of each other.
+        view.findViewById<View>(R.id.readyPanel).visibility = View.GONE
+        view.findViewById<View>(R.id.reviewPanel).visibility = View.GONE
+        view.findViewById<View>(R.id.playingPanel).visibility = View.GONE
+        view.findViewById<View>(R.id.statsPanel).visibility = View.GONE
+        view.findViewById<View>(R.id.countdownPanel).visibility = View.GONE
+        view.findViewById<View>(R.id.readyFooter).visibility = View.GONE
         panel.background = null
         panel.setPadding(0, 0, 0, 0)
         val content = view.findViewById<View>(R.id.contentFrame)
@@ -3959,39 +5092,60 @@ class FloatingMenuService : Service() {
             width = if (recordingMinimized) {
                 LinearLayout.LayoutParams.WRAP_CONTENT
             } else {
-                controllerPanelWidthPx(false)
+                recordingStripWidthPx()
             }
+            height = if (recordingMinimized) {
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            } else {
+                dp(REC_STRIP_HEIGHT)
+            }
+        }
+        if (!recordingMinimized) {
+            applyRecordingStripLayout(recordingStripWidthPx())
         }
         panel.requestLayout()
         view.requestLayout()
         view.post {
-            refreshControllerBoundsSnapshot()
+            refreshRecordingBounds()
             clampControllerToScreen()
         }
     }
 
     private fun restoreControllerChrome() {
-        if (!recordingChromeActive) return
+        dismissRecConfirm()
+        if (!recordingChromeActive && !reviewChromeActive && !playbackChromeActive) return
         val view = controllerView ?: return
         val panel = view.findViewById<LinearLayout>(R.id.panel) ?: return
         recordingChromeActive = false
+        reviewChromeActive = false
+        playbackChromeActive = false
+        playbackMinimized = false
+        pendingPlaybackPoint = null
+        stopPlaybackTicker()
+        stopSaveCountdown()
+        setSaveTyping(false)
+        view.findViewById<View>(R.id.saveBox).visibility = View.GONE
+        view.findViewById<View>(R.id.savedBox).visibility = View.GONE
+        view.findViewById<View>(R.id.discardedBox).visibility = View.GONE
         recordingMinimized = false
         lastRecordingMinimized = false
         panel.background = getDrawable(R.drawable.bg_panel)
         val inset = dp(10)
         panel.setPadding(inset, inset, inset, inset)
         val content = view.findViewById<View>(R.id.contentFrame)
-        (content?.layoutParams as? LinearLayout.LayoutParams)?.topMargin = dp(6)
+        (content?.layoutParams as? LinearLayout.LayoutParams)?.topMargin = dp(4)
         content?.visibility = View.VISIBLE
         view.findViewById<View>(R.id.controllerHeader).visibility = View.VISIBLE
         view.findViewById<View>(R.id.recPill).visibility = View.GONE
+        view.findViewById<View>(R.id.playPill).visibility = View.GONE
+        view.findViewById<View>(R.id.playingPanel).visibility = View.GONE
         applyPanelWidth(settingsView != null)
         view.requestLayout()
         view.post {
             val params = controllerParams
             if (params != null && !collapsed) {
                 val panelWidth = panel.width.takeIf { it > 0 }
-                    ?: controllerPanelWidthPx(false)
+                    ?: controllerPanelWidthPx()
                 val panelHeight = panel.height.takeIf { it > 0 } ?: dp(260)
                 val point = savedPosition(PlacementKind.CONTROLLER)
                     ?: defaultControllerPoint(panelWidth, panelHeight)
@@ -4015,6 +5169,7 @@ class FloatingMenuService : Service() {
 
     private fun minimizeRecordingBar() {
         if (!recordingUiActive()) return
+        dismissRecConfirm()
         recordingMinimized = true
         refreshUi()
     }
@@ -4025,22 +5180,198 @@ class FloatingMenuService : Service() {
         refreshUi()
     }
 
-    private fun setCaptureOverlayHidden(hidden: Boolean) {        captureOverlayHidden = hidden
-        val view = controllerView ?: return
-        if (hidden) {
-            view.visibility = View.GONE
-        } else {
-            view.visibility = View.VISIBLE
-            refreshUi()
+    private fun requestRecordingRestart() {
+        if (!recordingUiActive()) return
+        if (recorded.isEmpty()) {
+            restartRecordingNow()
+            return
         }
+        showRecConfirm(RecConfirmAction.RESTART)
+    }
+
+    private fun requestRecordingCancel() {
+        if (!recordingUiActive()) return
+        if (recorded.isEmpty()) {
+            discardRecording()
+            return
+        }
+        showRecConfirm(RecConfirmAction.CANCEL)
+    }
+
+    private fun showRecConfirm(action: RecConfirmAction) {
+        val view = controllerView ?: return
+        pendingRecAction = action
+        dismissConfirmTimer()
+        view.findViewById<View>(R.id.recordingStrip).visibility = View.GONE
+        view.findViewById<View>(R.id.recordingConfirm).visibility = View.VISIBLE
+        view.findViewById<TextView>(R.id.tvRecConfirm).text = "Discard this recording?"
+        val revert = Runnable {
+            if (pendingRecAction != null) dismissRecConfirm()
+        }
+        confirmRevert = revert
+        handler.postDelayed(revert, REC_CONFIRM_MS)
+        refreshRecordingBounds()
+    }
+
+    private fun dismissRecConfirm() {
+        dismissConfirmTimer()
+        pendingRecAction = null
+        val view = controllerView ?: return
+        view.findViewById<View>(R.id.recordingConfirm).visibility = View.GONE
+        view.findViewById<View>(R.id.recordingStrip).visibility = View.VISIBLE
+        view.post { refreshRecordingBounds() }
+    }
+
+    private fun dismissConfirmTimer() {
+        confirmRevert?.let { handler.removeCallbacks(it) }
+        confirmRevert = null
+    }
+
+    private fun confirmRecAction() {
+        val action = pendingRecAction
+        dismissRecConfirm()
+        when (action) {
+            RecConfirmAction.RESTART -> restartRecordingNow()
+            RecConfirmAction.CANCEL -> discardRecording()
+            null -> Unit
+        }
+    }
+
+    private fun restartRecordingNow() {
+        if (!recording && !startingPassive) return
+        recorded.clear()
+        pathPoints.clear()
+        capturedGestures = 0
+        rejectedGestures = 0
+        gestureSeq = 0
+        pausedAccumMs = 0L
+        val now = SystemClock.uptimeMillis()
+        recordStartMs = now
+        pausedAtMs = if (BotState.state.value == ControllerState.RECORDING_PAUSED) now else 0L
+        downTime = 0L
+        lastStatusMs = 0L
+        lastNotificationMs = 0L
+        lastPulseCount = -1
+        BotState.clearRecording()
+        BotState.setRecordedCount(0)
+        updateRecordingInfo()
+        updateRecordingNotification()
+        refreshUi()
+    }
+
+    private fun updateTouchCounter(animate: Boolean) {
+        val view = controllerView ?: return
+        val count = if (recordingUiActive()) BotState.recordedGestureCount.value else recorded.size
+        val label = count.toString()
+        view.findViewById<TextView>(R.id.tvRecCount)?.text = label
+        view.findViewById<TextView>(R.id.tvRecPillCount)?.text = label
+        if (animate && count != lastPulseCount) {
+            view.findViewById<View>(R.id.touchCounter)?.let { chip ->
+                chip.animate().cancel()
+                chip.animate().scaleX(1.12f).scaleY(1.12f).setDuration(60L)
+                    .withEndAction {
+                        chip.animate().scaleX(1f).scaleY(1f).setDuration(60L).start()
+                    }
+                    .start()
+            }
+        }
+        if (count != lastPulseCount) lastPulseCount = count
+    }
+
+    private fun recordingStripWidthPx(): Int {
+        val landscape = screenWidth > screenHeight
+        val base = if (landscape) REC_STRIP_LANDSCAPE_W else REC_STRIP_PORTRAIT_W
+        val safe = safeBounds()
+        return minOf(dp(base), (safe.width - dp(16)).coerceAtLeast(dp(240)))
+    }
+
+    private fun applyRecordingStripLayout(widthPx: Int) {
+        val view = controllerView ?: return
+        val strip = view.findViewById<View>(R.id.recordingStrip) ?: return
+        val finish = view.findViewById<View>(R.id.btnRecFinish) ?: return
+        val label = view.findViewById<TextView>(R.id.tvRecFinishLabel)
+        val timer = view.findViewById<TextView>(R.id.tvRecTimer)
+        val count = view.findViewById<TextView>(R.id.tvRecCount)
+        val restart = view.findViewById<View>(R.id.btnRecRestart)
+        val cancel = view.findViewById<View>(R.id.btnRecCancel)
+        val pause = view.findViewById<View>(R.id.btnRecPause)
+        val minimize = view.findViewById<View>(R.id.btnRecMinimize)
+        val narrow = widthPx < dp(
+            REC_STRIP_NARROW_BELOW +
+                (((resources.configuration.fontScale - 1f).coerceAtLeast(0f)) * 30f).roundToInt()
+        )
+        label?.visibility = if (narrow) View.GONE else View.VISIBLE
+        finish.layoutParams = finish.layoutParams.apply {
+            width = if (narrow) dp(32) else dp(88)
+            height = dp(32)
+        }
+        val finishPad = dp(if (narrow) 8 else 9)
+        finish.setPadding(finishPad, 0, dp(if (narrow) 8 else 12), 0)
+        val smallMargin = dp(if (narrow) 0 else 2)
+        val mediumMargin = dp(if (narrow) 2 else 4)
+        (restart.layoutParams as? LinearLayout.LayoutParams)?.marginEnd = smallMargin
+        (cancel.layoutParams as? LinearLayout.LayoutParams)?.marginEnd = smallMargin
+        (pause.layoutParams as? LinearLayout.LayoutParams)?.marginEnd = mediumMargin
+        (finish.layoutParams as? LinearLayout.LayoutParams)?.marginEnd = mediumMargin
+        (minimize.layoutParams as? LinearLayout.LayoutParams)?.marginEnd = 0
+        strip.setPadding(
+            dp(if (narrow) 10 else 14),
+            0,
+            dp(if (narrow) 4 else 6),
+            0
+        )
+        timer?.setTextSize(
+            android.util.TypedValue.COMPLEX_UNIT_SP,
+            if (narrow) 13.5f else 15f
+        )
+        count?.setTextSize(
+            android.util.TypedValue.COMPLEX_UNIT_SP,
+            if (narrow) 11f else 12f
+        )
+        label?.setTextSize(
+            android.util.TypedValue.COMPLEX_UNIT_SP,
+            12.5f
+        )
+        view.findViewById<TextView>(R.id.tvRecConfirm)?.let { confirm ->
+            TextViewCompat.setAutoSizeTextTypeUniformWithConfiguration(
+                confirm,
+                9,
+                13,
+                1,
+                android.util.TypedValue.COMPLEX_UNIT_SP
+            )
+        }
+        controllerView?.findViewById<View>(R.id.recordingPanel)?.let { panel ->
+            panel.layoutParams = panel.layoutParams.apply {
+                width = widthPx
+                height = dp(REC_STRIP_HEIGHT)
+            }
+        }
+        view.requestLayout()
+        view.post { refreshRecordingBounds() }
+    }
+
+    private fun refreshRecordingBounds() {
+        val view = controllerView ?: return
+        val target = if (recordingMinimized) {
+            view.findViewById<View>(R.id.recPill)
+        } else {
+            view.findViewById<View>(R.id.recordingPanel)
+        } ?: return
+        if (target.width <= 0 || target.height <= 0) return
+        val location = IntArray(2)
+        target.getLocationOnScreen(location)
+        val pad = dp(10)
+        controllerBoundsSnapshot = ScreenRect(
+            (location[0] - pad).toFloat(),
+            (location[1] - pad).toFloat(),
+            (location[0] + target.width + pad).toFloat(),
+            (location[1] + target.height + pad).toFloat()
+        )
     }
 
     private fun refreshUi() {
         val view = controllerView ?: return
-        if (captureOverlayHidden) {
-            view.visibility = View.GONE
-            return
-        }
         view.visibility = View.VISIBLE
         val state = BotState.state.value
         val count = BotState.recordedGestureCount.value
@@ -4068,14 +5399,30 @@ class FloatingMenuService : Service() {
                 lastRecordingMinimized = recordingMinimized
                 applyRecordingChrome()
             }
-        } else if (recordingChromeActive) {
+        } else if (showReview) {
+            if (!reviewChromeActive) {
+                collapsed = false
+                beginSaveToast()
+            }
+        } else if (showPlaying) {
+            if (!playbackChromeActive) {
+                collapsed = false
+                enterPlaybackChrome()
+            }
+        } else if (recordingChromeActive || reviewChromeActive || playbackChromeActive) {
             restoreControllerChrome()
         }
 
-        val statsVisible = page == PAGE_STATS
+        val statsVisible = page == PAGE_STATS &&
+            !showRecording && !showReview && !showPlaying
         val startCountdown = BotState.startCountdown.value
         val countdownVisible = startCountdown != null && !statsVisible
-        view.findViewById<View>(R.id.statsPanel).visibility = if (statsVisible) View.VISIBLE else View.GONE
+        val settingsOpen = settingsView != null
+        val readyVisible = !statsVisible && showReady && !countdownVisible && !settingsOpen
+        view.findViewById<View>(R.id.readyFooter).visibility =
+            if (readyVisible) View.VISIBLE else View.GONE
+        view.findViewById<View>(R.id.statsPanel).visibility =
+            if (statsVisible) View.VISIBLE else View.GONE
         view.findViewById<View>(R.id.readyPanel).visibility =
             if (!statsVisible && showReady && !countdownVisible) View.VISIBLE else View.GONE
         view.findViewById<View>(R.id.recordingPanel).visibility =
@@ -4090,6 +5437,20 @@ class FloatingMenuService : Service() {
             if (!statsVisible && showPlaying && !countdownVisible) View.VISIBLE else View.GONE
         view.findViewById<View>(R.id.countdownPanel).visibility =
             if (countdownVisible) View.VISIBLE else View.GONE
+        if (reviewChromeActive) {
+            view.findViewById<View>(R.id.controllerHeader).visibility = View.GONE
+            view.findViewById<View>(R.id.contentFrame).visibility = View.GONE
+            view.findViewById<View>(R.id.readyFooter).visibility = View.GONE
+            view.findViewById<View>(R.id.recordingPanel).visibility = View.GONE
+            view.findViewById<View>(R.id.reviewPanel).visibility = View.GONE
+            view.findViewById<View>(R.id.playingPanel).visibility = View.GONE
+            view.findViewById<View>(R.id.statsPanel).visibility = View.GONE
+            view.findViewById<View>(R.id.countdownPanel).visibility = View.GONE
+            view.findViewById<View>(R.id.recPill).visibility = View.GONE
+            view.findViewById<View>(R.id.playPill).visibility = View.GONE
+            view.findViewById<View>(R.id.tvStatus).visibility = View.GONE
+            applyReviewChrome()
+        }
         view.findViewById<TextView>(R.id.tvStartCountdown).text =
             startCountdown?.toString() ?: ""
         view.findViewById<TextView>(R.id.btnPageController).apply {
@@ -4115,52 +5476,63 @@ class FloatingMenuService : Service() {
         }
         view.findViewById<View>(R.id.statusDot)?.backgroundTintList =
             ColorStateList.valueOf(dotColor)
-        val statusStripVisible = !showRecording &&
+        applyBubbleChrome(view)
+        val statusStripVisible = preparingPassive || (!showRecording &&
             state != ControllerState.READY &&
             state != ControllerState.INACTIVE &&
-            state != ControllerState.STOPPING
+            state != ControllerState.STOPPING)
         view.findViewById<TextView>(R.id.tvStatus)?.apply {
             visibility = if (statusStripVisible) View.VISIBLE else View.GONE
             text = BotState.status.value
         }
 
-        view.findViewById<Button>(R.id.btnRecord).isEnabled = !startingPassive
+        view.findViewById<Button>(R.id.btnRecord).isEnabled =
+            !startingPassive && !preparingPassive
         updateWatchActions()
 
         val recordMode = activeRecordingMode ?: settingsStore.settings.value.recordingMode
         val passiveMode = recordMode == RecordingMode.PASSIVE
         view.findViewById<TextView>(R.id.tvRecordMode).apply {
-            text = if (passiveMode) "Passive · game responds"
-            else "Capture only · blocks game input"
-            setTextColor(if (passiveMode) 0xFF22C55E.toInt() else 0xFFF59E0B.toInt())
+            text = when {
+                preparingPassive -> "Starting capture…"
+                passiveMode -> "Passive · game responds"
+                else -> "Capture only · blocks game input"
+            }
+            setTextColor(
+                if (preparingPassive) Ds.MUTED
+                else if (passiveMode) 0xFF22C55E.toInt() else 0xFFF59E0B.toInt()
+            )
         }
         view.findViewById<TextView>(R.id.tvRecState).text = when {
             startingPassive -> "STARTING"
             state == ControllerState.RECORDING_PAUSED -> "PAUSED"
             else -> "REC"
         }
-        view.findViewById<Button>(R.id.btnRecPause).apply {
-            text = if (state == ControllerState.RECORDING_PAUSED) "Resume" else "Pause"
+        view.findViewById<ImageButton>(R.id.btnRecPause).apply {
             isEnabled = !startingPassive
+            setImageResource(
+                if (state == ControllerState.RECORDING_PAUSED) {
+                    R.drawable.ic_play_small
+                } else {
+                    R.drawable.ic_pause
+                }
+            )
+            contentDescription =
+                if (state == ControllerState.RECORDING_PAUSED) "Resume recording" else "Pause recording"
         }
+        view.findViewById<View>(R.id.btnRecFinish).isEnabled = !startingPassive
+        view.findViewById<TextView>(R.id.tvRecFinishLabel).text = "Finish"
+        updateTouchCounter(animate = false)
         val timerText = if (startingPassive) "00:00" else formatClock(elapsedRecordingMs())
         view.findViewById<TextView>(R.id.tvRecTimer).text = timerText
         view.findViewById<TextView>(R.id.tvRecPillTimer).text = timerText
 
         view.findViewById<TextView>(R.id.tvReviewInfo).text =
-            "$count gesture(s) · ${formatDuration(MacroTimeline.totalDuration(recorded))}"
+            "${Plural.of(count, "gesture")} · ${formatDuration(MacroTimeline.totalDuration(recorded))}"
 
         view.findViewById<TextView>(R.id.tvPlayingName).text =
             BotState.activeMacroName.value ?: "Macro"
-        view.findViewById<TextView>(R.id.tvPlayingStatus).text = BotState.status.value
-        view.findViewById<Button>(R.id.btnPlayPause).text =
-            if (state == ControllerState.PLAYBACK_PAUSED) "Resume" else "Pause"
-        val activeMacro = macros.firstOrNull { it.id == BotState.activeMacroId.value }
-        view.findViewById<TextView>(R.id.tvPlayingSpeed).text =
-            "Speed ${MacroTimeline.formatSpeed(activeMacro?.speedMultiplier ?: 1f)}"
-        view.findViewById<TextView>(R.id.tvPlayingRepeat).text =
-            MacroTimeline.repeatLabel(activeMacro?.repeatMode)
-
+        if (playbackChromeActive) applyPlaybackInfo(view)
         val countdown = BotState.repeatCountdown.value
         val bubbleStatus = view.findViewById<TextView>(R.id.bubbleStatus)
         bubbleStatus.text = when {
@@ -4177,21 +5549,22 @@ class FloatingMenuService : Service() {
             view.findViewById<View>(R.id.panel).visibility = View.GONE
             view.findViewById<View>(R.id.bubble).visibility = View.VISIBLE
         }
+        scheduleTouchTargets()
     }
 
     private fun updateRecordingInfo() {
         val view = controllerView ?: return
         val count = BotState.recordedGestureCount.value
         view.findViewById<TextView>(R.id.tvReviewInfo).text =
-            "$count gesture(s) · ${formatDuration(MacroTimeline.totalDuration(recorded))}"
+            "${Plural.of(count, "gesture")} · ${formatDuration(MacroTimeline.totalDuration(recorded))}"
         view.findViewById<TextView>(R.id.tvRecTimer).text =
             if (startingPassive) "00:00" else formatClock(elapsedRecordingMs())
+        updateTouchCounter(animate = true)
     }
 
     private fun onStatusChanged(status: String) {
         val view = controllerView ?: return
         view.findViewById<TextView>(R.id.tvStatus).text = status
-        view.findViewById<TextView>(R.id.tvPlayingStatus).text = status
         if (manualWatch && !resultsCapture.isActive()) {
             manualWatch = false
             captureSession = null
@@ -4209,12 +5582,13 @@ class FloatingMenuService : Service() {
         when (state) {
             ControllerState.RECORDING ->
                 updateNotification(
-                    getString(
+                    resources.getQuantityString(
                         if (activeRecordingMode == RecordingMode.PASSIVE) {
-                            R.string.notification_recording_passive
+                            R.plurals.notification_recording_passive
                         } else {
-                            R.string.notification_recording_capture
+                            R.plurals.notification_recording_capture
                         },
+                        count,
                         count
                     )
                 )
@@ -4233,6 +5607,7 @@ class FloatingMenuService : Service() {
         AppEventLog.log("requestClose state=$state settingsOpen=${settingsView != null}")
         val unsaved = state == ControllerState.RECORDING ||
             state == ControllerState.RECORDING_PAUSED ||
+            preparingPassive ||
             (state == ControllerState.REVIEW && recorded.isNotEmpty())
         if (!unsaved) {
             closeEverything()
@@ -4245,96 +5620,52 @@ class FloatingMenuService : Service() {
         ) { closeEverything() }
     }
 
-    private fun showInputDialog(
-        title: String,
-        initial: String,
-        onFailure: (() -> Unit)? = null,
-        onConfirm: (String) -> Unit
-    ) {
-        val view = LayoutInflater.from(this).inflate(R.layout.dialog_macro_name, null)
-        val dialog = Dialog(this).apply {
-            setContentView(view)
-            window?.setType(overlayType())
-            window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-            window?.setLayout(dp(300), WindowManager.LayoutParams.WRAP_CONTENT)
-            window?.setSoftInputMode(
-                WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE or
-                    WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE
-            )
-            setCanceledOnTouchOutside(false)
-        }
-        view.findViewById<TextView>(R.id.tvDialogTitle).text = title
-        val input = view.findViewById<EditText>(R.id.etDialogName)
-        val save = view.findViewById<Button>(R.id.btnDialogSave)
-        val counter = view.findViewById<TextView>(R.id.tvDialogCount)
-        input.setText(initial)
-        input.setSelection(input.text.length)
-        val refresh = {
-            val length = input.text.length
-            counter.text = "$length/40"
-            save.isEnabled = input.text.toString().isNotBlank()
-        }
-        input.addTextChangedListener(object : TextWatcher {
-            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
-            override fun afterTextChanged(s: Editable?) = refresh()
-        })
-        save.setOnClickListener {
-            val value = input.text.toString().trim()
-            if (value.isNotEmpty()) {
-                dialog.dismiss()
-                onConfirm(value)
-            }
-        }
-        view.findViewById<Button>(R.id.btnDialogCancel).setOnClickListener {
-            dialog.dismiss()
-        }
-        refresh()
-        try {
-            dialog.show()
-            input.requestFocus()
-        } catch (e: Exception) {
-            Log.e(TAG, "Input dialog failed", e)
-            if (onFailure != null) {
-                onFailure.invoke()
-            } else {
-                toast("Could not open dialog")
-            }
-        }
-    }
-
     private fun showConfirmDialog(
         title: String,
         message: String,
         positive: String,
         onConfirm: () -> Unit
     ) {
-        val view = LayoutInflater.from(this).inflate(R.layout.dialog_confirm, null)
-        val dialog = Dialog(this).apply {
-            setContentView(view)
-            window?.setType(overlayType())
-            window?.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
-            window?.setLayout(dp(300), WindowManager.LayoutParams.WRAP_CONTENT)
-            setCanceledOnTouchOutside(true)
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = Ds.rounded(Ds.PANEL, 16, this@FloatingMenuService, Ds.PANEL_BORDER)
+            setPadding(dp(16), dp(14), dp(16), dp(14))
         }
-        view.findViewById<TextView>(R.id.tvConfirmTitle).text = title
-        view.findViewById<TextView>(R.id.tvConfirmMessage).text = message
-        view.findViewById<Button>(R.id.btnConfirmOk).apply {
-            text = positive
-            setOnClickListener {
-                dialog.dismiss()
-                onConfirm()
+        card.addView(Ds.text(uiContext, 15f, Ds.TEXT, bold = true).apply { text = title })
+        card.addView(Ds.text(uiContext, 12f, Ds.MUTED).apply {
+            text = message
+            setPadding(0, dp(6), 0, dp(12))
+        })
+        val buttons = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.END
+        }
+        fun button(label: String, primary: Boolean, action: () -> Unit): Button =
+            Button(uiContext).apply {
+                text = label
+                isAllCaps = false
+                textSize = 12.5f
+                minWidth = 0
+                stateListAnimator = null
+                setTextColor(Color.WHITE)
+                background = Ds.rounded(
+                    if (primary) Ds.DANGER_OUTLINE else Ds.BUTTON,
+                    9,
+                    this@FloatingMenuService
+                )
+                layoutParams = LinearLayout.LayoutParams(0, dp(36), 1f).apply {
+                    marginStart = if (primary) dp(8) else 0
+                }
+                setOnClickListener {
+                    haptic()
+                    dismissInlineCard()
+                    action()
+                }
             }
-        }
-        view.findViewById<Button>(R.id.btnConfirmCancel).setOnClickListener {
-            dialog.dismiss()
-        }
-        try {
-            dialog.show()
-        } catch (e: Exception) {
-            Log.e(TAG, "Confirm dialog failed", e)
-            toast("Could not open dialog")
-        }
+        buttons.addView(button("Cancel", false) {})
+        buttons.addView(button(positive, true, onConfirm))
+        card.addView(buttons)
+        showInlineCard(card)
     }
 
     // ---------------------------------------------------------- notification
@@ -4413,6 +5744,7 @@ class FloatingMenuService : Service() {
 
     private fun closeEverything() {
         AppEventLog.log("closeEverything state=${BotState.state.value}")
+        cancelPassivePrepare("closed")
         cancelAutoOpen()
         GameSessionTracker.closeSessionAsync()
         stopPlayback()
@@ -4464,44 +5796,44 @@ class FloatingMenuService : Service() {
         return String.format(Locale.US, "%02d:%02d", minutes, seconds)
     }
 
-    private fun controllerPanelWidthPx(settings: Boolean): Int {
-        val density = resources.displayMetrics.density
-        val widthDp = screenWidth / density
+    private fun controllerPanelWidthPx(): Int {
         val landscape = screenWidth > screenHeight
-        val caps = (widthDp * 0.92f).toInt()
-        // Landscape settings needs more than the pack's 420: two 44dp steppers
-        // and unwrapped labels do not fit side by side at 420.
-        val targetDp = when {
-            settings && landscape -> minOf(480, caps)
-            settings -> minOf(320, caps)
-            landscape -> minOf(360, caps)
-            else -> minOf(320, caps)
-        }
-        return dp(targetDp)
+        val baseDp = if (landscape) PANEL_LANDSCAPE_W else PANEL_PORTRAIT_W
+        return minOf(dp(baseDp), (screenWidth * WIDTH_CAP).toInt())
     }
 
-    private fun applyPanelWidth(settings: Boolean) {
+    private fun controllerPanelHeightPx(): Int {
+        val landscape = screenWidth > screenHeight
+        val baseDp = if (landscape) PANEL_LANDSCAPE_H else PANEL_PORTRAIT_H
+        return minOf(dp(baseDp), (screenHeight * HEIGHT_CAP).toInt())
+    }
+
+    private fun applyPanelWidth(@Suppress("UNUSED_PARAMETER") settings: Boolean) {
         val view = controllerView ?: return
         val panel = view.findViewById<LinearLayout>(R.id.panel) ?: return
-        val target = controllerPanelWidthPx(settings)
-        val windowWidth = if (settings) {
-            target
-        } else {
-            WindowManager.LayoutParams.WRAP_CONTENT
-        }
+        val targetWidth = controllerPanelWidthPx()
+        val targetHeight = controllerPanelHeightPx()
         AppEventLog.log(
-            "panel width settings=$settings screen=${screenWidth}x${screenHeight} " +
-                "density=${resources.displayMetrics.density} target=$target"
+            "panel size screen=${screenWidth}x${screenHeight} " +
+                "density=${uiContext.resources.displayMetrics.density} " +
+                "target=${targetWidth}x$targetHeight"
         )
         var changed = false
-        if (panel.layoutParams.width != target) {
-            panel.layoutParams = panel.layoutParams.apply { width = target }
+        if (panel.layoutParams.width != targetWidth ||
+            panel.layoutParams.height != targetHeight
+        ) {
+            panel.layoutParams = panel.layoutParams.apply {
+                width = targetWidth
+                height = targetHeight
+            }
             changed = true
         }
         controllerParams?.let { params ->
-            if (params.width != windowWidth) {
-                params.width = windowWidth
-                changed = true
+            if (params.width != WindowManager.LayoutParams.WRAP_CONTENT ||
+                params.height != WindowManager.LayoutParams.WRAP_CONTENT
+            ) {
+                params.width = WindowManager.LayoutParams.WRAP_CONTENT
+                params.height = WindowManager.LayoutParams.WRAP_CONTENT
                 try {
                     windowManager.updateViewLayout(view, params)
                 } catch (_: Exception) {
@@ -4512,22 +5844,41 @@ class FloatingMenuService : Service() {
         if (changed) {
             panel.requestLayout()
             view.requestLayout()
-            view.post { clampControllerToScreen() }
+            view.post {
+                clampControllerToScreen()
+                refreshControllerBoundsSnapshot()
+            }
         }
     }
 
-    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+    private fun dp(value: Int): Int =
+        (value * uiContext.resources.displayMetrics.density).toInt()
+
+    private fun dp(value: Float): Int =
+        (value * uiContext.resources.displayMetrics.density).toInt()
+
+    private fun scheduleTouchTargets() {
+        handler.removeCallbacks(touchTargetsRunnable)
+        handler.postDelayed(touchTargetsRunnable, 80L)
+    }
+
+    private fun installTouchTargetsNow() {
+        val view = controllerView ?: return
+        val minPx = (MIN_TOUCH_DP * resources.displayMetrics.density).roundToInt()
+        TouchTargets.install(view, minPx)
+    }
 
     private fun dp(context: Context, value: Int): Int =
         (value * context.resources.displayMetrics.density).toInt()
 
     private fun haptic() {
         if (!settingsStore.settings.value.hapticFeedback) return
-        try {
-            controllerView?.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
-        } catch (_: Exception) {
-            // Haptics are best effort.
-        }
+        Haptics.tap(controllerView)
+    }
+
+    private fun hapticEvent() {
+        if (!settingsStore.settings.value.hapticFeedback) return
+        Haptics.event(this, settingsStore.settings.value.hapticIntensity)
     }
 
     private fun toast(message: String) {
@@ -4539,6 +5890,22 @@ class FloatingMenuService : Service() {
     }
 
     companion object {
+        private const val PANEL_LANDSCAPE_W = 340
+        private const val PANEL_LANDSCAPE_H = 300
+        private const val PANEL_PORTRAIT_W = 320
+        private const val PANEL_PORTRAIT_H = 440
+        private const val WIDTH_CAP = 0.94f
+        private const val HEIGHT_CAP = 0.86f
+        private const val REC_STRIP_LANDSCAPE_W = 368
+        private const val REC_STRIP_PORTRAIT_W = 328
+        private const val REC_STRIP_NARROW_BELOW = 362
+        private const val REC_STRIP_HEIGHT = 44
+        private const val REC_CONFIRM_MS = 3_000L
+        private const val SAVE_AUTO_MS = 8_000L
+        private const val SAVED_UNDO_MS = 5_000L
+        private const val PLAY_STRIP_LANDSCAPE_W = 368
+        private const val PLAY_STRIP_PORTRAIT_W = 328
+        private const val PLAY_STRIP_HEIGHT = 44
         private const val PAGE_CONTROLLER = 0
         private const val PAGE_STATS = 1
         private const val STATS_SESSION = 0
@@ -4550,12 +5917,13 @@ class FloatingMenuService : Service() {
         private const val NOTIFICATION_THROTTLE_MS = 900L
         private const val STATUS_THROTTLE_MS = 500L
         private const val UNDO_WINDOW_MS = 5_000L
-        private const val BUBBLE_SIZE_DP = 48
-        private const val BUBBLE_ICON_DP = 34
+        private const val BUBBLE_SIZE_DP = 52
+        private const val MIN_TOUCH_DP = 40
         private const val BUBBLE_MARGIN_DP = 8
         private const val BUBBLE_TOP_DP = 48
         private const val BUBBLE_TOP_LANDSCAPE_DP = 8
         private const val SNAP_DURATION_MS = 180L
+        private const val COLLAPSE_MS = 170L
         private const val AUTO_OPEN_MOVE_MS = 220L
         private const val AUTO_OPEN_FADE_MS = 130L
         private const val AUTO_OPEN_TIMEOUT_MS = 15_000L

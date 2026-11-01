@@ -58,13 +58,9 @@ private val LightScheme = lightColorScheme(
 
 @Composable
 fun AutoClashTheme(mode: ThemeMode, content: @Composable () -> Unit) {
-    val dark = when (mode) {
-        ThemeMode.DARK -> true
-        ThemeMode.LIGHT -> false
-        ThemeMode.SYSTEM -> isSystemInDarkTheme()
-    }
+    // Light is intentionally hidden until its surfaces are finished.
     MaterialTheme(
-        colorScheme = if (dark) DarkScheme else LightScheme,
+        colorScheme = DarkScheme,
         content = content
     )
 }

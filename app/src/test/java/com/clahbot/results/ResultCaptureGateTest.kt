@@ -3,6 +3,7 @@ package com.clahbot.results
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -10,6 +11,11 @@ import org.junit.Test
 class ResultCaptureGateTest {
 
     private val clock: () -> Long = { System.nanoTime() / 1_000_000L }
+
+    @Test
+    fun theReturnHomeTapIsHeldForAtMostTenSeconds() {
+        assertEquals(10_000L, ResultCaptureGate().holdTimeoutMs)
+    }
 
     @Test
     fun aFreshNegativeSampleDoesNotHold() = runBlocking {

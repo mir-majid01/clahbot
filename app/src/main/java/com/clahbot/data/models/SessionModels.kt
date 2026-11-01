@@ -16,7 +16,8 @@ data class GameSession(
     val darkElixir: Long = 0,
     val bonusGold: Long = 0,
     val bonusElixir: Long = 0,
-    val bonusDarkElixir: Long = 0
+    val bonusDarkElixir: Long = 0,
+    val stopReason: String? = null
 ) {
     val active: Boolean get() = status == ACTIVE
 
@@ -48,13 +49,7 @@ data class SessionTotals(
 
 object SessionAggregator {
 
-    fun isIncomplete(record: AttackRecord): Boolean {
-        if (!record.confirmed) return true
-        if (record.gold == null || record.elixir == null || record.darkElixir == null) {
-            return true
-        }
-        return record.bonusState == AttackRecord.BONUS_NOT_CAPTURED
-    }
+    fun isIncomplete(record: AttackRecord): Boolean = record.needsReviewDefinition
 
     fun totals(records: List<AttackRecord>): SessionTotals {
         var gold = 0L

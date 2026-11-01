@@ -75,6 +75,7 @@ import com.clahbot.execution.MacroTimeline
 import com.clahbot.input.InputAccessManager
 import com.clahbot.overlay.BubbleCorner
 import com.clahbot.service.FloatingMenuService
+import com.clahbot.ui.dashboard.acScrollFade
 import com.clahbot.ui.theme.AutoClashTheme
 import com.clahbot.update.GitHubUpdater
 import com.clahbot.update.UpdateRelease
@@ -84,8 +85,11 @@ import com.clahbot.ui.theme.ReadyGreen
 import com.clahbot.ui.theme.RecordRed
 import com.clahbot.ui.theme.TextMuted
 import com.clahbot.util.PermissionHelper
+import com.clahbot.util.Plural
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import rikka.shizuku.Shizuku
 import java.io.File
 import java.util.Locale
@@ -96,25 +100,55 @@ private const val GITHUB_PROFILE_URL = "https://github.com/mir-majid01"
 
 class SettingsActivity : ComponentActivity() {
 
+    private val resumeTick = kotlinx.coroutines.flow.MutableStateFlow(0)
+
+    companion object {
+        const val EXTRA_TAB = "settings_tab"
+
+        fun start(context: android.content.Context, tab: Int) {
+            context.startActivity(
+                Intent(context, SettingsActivity::class.java)
+                    .putExtra(EXTRA_TAB, tab)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val store = SettingsStore.get(this)
         setContent {
             val settings by store.settings.collectAsState()
+            val resumeToken by resumeTick.collectAsState()
             AutoClashTheme(settings.theme) {
-                SettingsScreen(
+                SettingsScreenV2(
                     settings = settings,
                     onUpdate = { transform -> store.update(transform) },
                     onBack = { finish() },
                     onOpenController = { FloatingMenuService.show(this) },
-                    onResetPosition = { FloatingMenuService.resetPosition(this) }
+                    onResetPosition = { FloatingMenuService.resetPosition(this) },
+                    initialTab = intent.getIntExtra(EXTRA_TAB, 1),
+                    resumeToken = resumeToken
                 )
             }
         }
     }
+
+    override fun onResume() {
+        super.onResume()
+        resumeTick.value++
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
+private data class SettingsProbe(
+    val overlay: Boolean,
+    val accessibility: Boolean,
+    val notifications: Boolean,
+    val access: InputAccessManager.AccessStatus,
+    val storage: Long?
+)
+
 @Composable
 fun SettingsScreen(
     settings: AppSettings,
@@ -131,7 +165,12 @@ fun SettingsScreen(
     val attacks by attackRepository.records.collectAsState()
     val controllerState by BotState.state.collectAsState()
 
-    var tick by remember { mutableStateOf(0) }
+    var refreshToken by remember { mutableStateOf(0) }
+    var overlayOk by remember { mutableStateOf(false) }
+    var accessibilityOk by remember { mutableStateOf(false) }
+    var notificationsOk by remember { mutableStateOf(false) }
+    var recordingAccess by remember { mutableStateOf(InputAccessManager.status(context)) }
+    var storageBytes by remember { mutableStateOf(0L) }
     var showClearAll by remember { mutableStateOf(false) }
     var showClearHistory by remember { mutableStateOf(false) }
     var showRemoveUnconfirmed by remember { mutableStateOf(false) }
@@ -145,22 +184,36 @@ fun SettingsScreen(
     LaunchedEffect(Unit) {
         repository.refresh()
         attackRepository.refresh()
-        while (true) {
-            delay(1500)
-            tick++
-        }
     }
 
-    val overlayOk = remember(tick) { PermissionHelper.canDrawOverlays(context) }
-    val accessibilityOk = remember(tick) { PermissionHelper.isAccessibilityEnabled(context) }
-    val notificationsOk = remember(tick) { PermissionHelper.canPostNotifications(context) }
-    val recordingAccess = remember(tick) { InputAccessManager.status(context) }
-    val storageBytes = remember(tick, macros) { repository.storageBytes() }
+    // Probe permissions and disk usage off the UI thread; publish only changes
+    // so scrolling is never interrupted by binder or filesystem work.
+    LaunchedEffect(refreshToken) {
+        var cycle = 0
+        while (true) {
+            val probe = withContext(Dispatchers.IO) {
+                SettingsProbe(
+                    overlay = PermissionHelper.canDrawOverlays(context),
+                    accessibility = PermissionHelper.isAccessibilityEnabled(context),
+                    notifications = PermissionHelper.canPostNotifications(context),
+                    access = InputAccessManager.status(context),
+                    storage = if (cycle % 3 == 0) repository.storageBytes() else null
+                )
+            }
+            overlayOk = probe.overlay
+            accessibilityOk = probe.accessibility
+            notificationsOk = probe.notifications
+            recordingAccess = probe.access
+            probe.storage?.let { storageBytes = it }
+            cycle++
+            delay(4_000)
+        }
+    }
     val controllerActive = controllerState != ControllerState.INACTIVE
 
     DisposableEffect(Unit) {
         val listener = Shizuku.OnRequestPermissionResultListener { _, _ ->
-            Handler(Looper.getMainLooper()).post { tick++ }
+            Handler(Looper.getMainLooper()).post { refreshToken++ }
         }
         try {
             Shizuku.addRequestPermissionResultListener(listener)
@@ -182,7 +235,7 @@ fun SettingsScreen(
             title = { Text("Delete all macros?") },
             text = {
                 Text(
-                    "This permanently removes ${macros.size} saved macro(s) from this device. " +
+                    "This permanently removes ${Plural.of(macros.size, "saved macro")} from this device. " +
                         "It cannot be undone."
                 )
             },
@@ -205,8 +258,9 @@ fun SettingsScreen(
             title = { Text("Remove unconfirmed sessions?") },
             text = {
                 Text(
-                    "This deletes ${unconfirmed.size} playback session(s) that were never confirmed as attacks. " +
-                        "Confirmed attacks are kept."
+                    "This deletes ${Plural.of(unconfirmed.size, "playback session")} that " +
+                        (if (unconfirmed.size == 1) "was" else "were") +
+                        " never confirmed as attacks. Confirmed attacks are kept."
                 )
             },
             confirmButton = {
@@ -227,7 +281,7 @@ fun SettingsScreen(
             title = { Text("Clear attack history?") },
             text = {
                 Text(
-                    "This deletes ${attacks.size} attack record(s). Saved macros are not affected."
+                    "This deletes ${Plural.of(attacks.size, "attack record")}. Saved macros are not affected."
                 )
             },
             confirmButton = {
@@ -307,7 +361,8 @@ fun SettingsScreen(
         }
     ) { padding ->
         LazyColumn(
-            modifier = Modifier.fillMaxSize().padding(padding),
+            modifier = Modifier.fillMaxSize().padding(padding)
+                .acScrollFade(MaterialTheme.colorScheme.background),
             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 28.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
@@ -382,7 +437,7 @@ fun SettingsScreen(
                             color = TextMuted
                         )
                     }
-                    TextButton(onClick = { tick++ }, contentPadding = PaddingValues(0.dp)) {
+                    TextButton(onClick = { refreshToken++ }, contentPadding = PaddingValues(0.dp)) {
                         Text("Check again", fontSize = 10.sp, color = ElectricBlue)
                     }
                     Text(
@@ -585,6 +640,11 @@ fun SettingsScreen(
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurface
                     )
+                    Text(
+                        "The controller size never changes the icon size.",
+                        fontSize = 9.sp,
+                        color = TextMuted
+                    )
                     Slider(
                         value = settings.bubbleScale,
                         onValueChange = { value ->
@@ -594,29 +654,65 @@ fun SettingsScreen(
                             SettingsStore.MAX_BUBBLE_SCALE,
                         steps = 15
                     )
+                    SwitchRow(
+                        title = "Auto-dock icon when minimized",
+                        subtitle = if (settings.autoDockIcon) {
+                            "Minimize sends the icon to the chosen corner."
+                        } else {
+                            "The icon appears at the panel logo or where you last dragged it."
+                        },
+                        checked = settings.autoDockIcon,
+                        onCheckedChange = { value ->
+                            onUpdate { it.copy(autoDockIcon = value) }
+                        }
+                    )
+                    Spacer(Modifier.height(8.dp))
                     Text(
                         "Floating icon corner",
                         fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurface
+                        color = if (settings.autoDockIcon) {
+                            MaterialTheme.colorScheme.onSurface
+                        } else {
+                            TextMuted
+                        }
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        CornerChip("Top left", BubbleCorner.TOP_LEFT, settings.bubbleCorner) {
+                        CornerChip(
+                            "Top left", BubbleCorner.TOP_LEFT, settings.bubbleCorner,
+                            enabled = settings.autoDockIcon
+                        ) {
                             onUpdate { it.copy(bubbleCorner = BubbleCorner.TOP_LEFT) }
                         }
-                        CornerChip("Top right", BubbleCorner.TOP_RIGHT, settings.bubbleCorner) {
+                        CornerChip(
+                            "Top right", BubbleCorner.TOP_RIGHT, settings.bubbleCorner,
+                            enabled = settings.autoDockIcon
+                        ) {
                             onUpdate { it.copy(bubbleCorner = BubbleCorner.TOP_RIGHT) }
                         }
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        CornerChip("Bottom left", BubbleCorner.BOTTOM_LEFT, settings.bubbleCorner) {
+                        CornerChip(
+                            "Bottom left", BubbleCorner.BOTTOM_LEFT, settings.bubbleCorner,
+                            enabled = settings.autoDockIcon
+                        ) {
                             onUpdate { it.copy(bubbleCorner = BubbleCorner.BOTTOM_LEFT) }
                         }
-                        CornerChip("Bottom right", BubbleCorner.BOTTOM_RIGHT, settings.bubbleCorner) {
+                        CornerChip(
+                            "Bottom right", BubbleCorner.BOTTOM_RIGHT, settings.bubbleCorner,
+                            enabled = settings.autoDockIcon
+                        ) {
                             onUpdate { it.copy(bubbleCorner = BubbleCorner.BOTTOM_RIGHT) }
                         }
                     }
+                    if (!settings.autoDockIcon) {
+                        Text(
+                            "Corner choice is off while auto-dock is disabled.",
+                            fontSize = 9.sp,
+                            color = TextMuted
+                        )
+                    }
                     Text(
-                        "Size changes apply when the controller is reopened.",
+                        "Controller size applies when reopened; icon size applies live.",
                         fontSize = 9.sp,
                         color = TextMuted
                     )
@@ -713,7 +809,7 @@ fun SettingsScreen(
                             disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant
                         )
                     ) {
-                        Text("Remove $unconfirmedCount unconfirmed session(s)", fontSize = 12.sp)
+                        Text("Remove ${Plural.of(unconfirmedCount, "unconfirmed session")}", fontSize = 12.sp)
                     }
                     Spacer(Modifier.height(8.dp))
                     Button(
@@ -860,9 +956,6 @@ fun SettingsScreen(
                                                 is GitHubUpdater.InstallResult.Started ->
                                                     updateStatus = "Android installer opened. Confirm the update."
 
-                                                is GitHubUpdater.InstallResult.NeedsPermission ->
-                                                    updateStatus = launch.message
-
                                                 is GitHubUpdater.InstallResult.Failure ->
                                                     updateStatus = launch.message
                                             }
@@ -903,11 +996,7 @@ fun SettingsScreen(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        androidx.compose.foundation.Image(
-                            painter = painterResource(R.drawable.ic_autoclash_full),
-                            contentDescription = null,
-                            modifier = Modifier.size(132.dp)
-                        )
+                        com.clahbot.ui.dashboard.AcLogo(96.dp)
                         Spacer(Modifier.height(8.dp))
                         Text(
                             "AutoClash",
@@ -1059,11 +1148,13 @@ private fun CornerChip(
     label: String,
     corner: BubbleCorner,
     selected: BubbleCorner,
+    enabled: Boolean = true,
     onSelect: () -> Unit
 ) {
     FilterChip(
         selected = selected == corner,
         onClick = onSelect,
+        enabled = enabled,
         label = { Text(label, fontSize = 11.sp) }
     )
 }

@@ -40,7 +40,25 @@ class AppResultsReader(private val context: Context) {
         val timingsMs: Map<String, Long>
     )
 
-    data class ScreenCheck(val isResults: Boolean, val reason: String?)
+    /**
+     * An episode frame keeps the page even when the anchors are missing, so the
+     * caller can tell "this is not the result screen" from "the result screen
+     * is still there but the rows did not read".
+     */
+    data class EpisodeRead(
+        val page: OcrPage,
+        val inspection: Inspection?,
+        val read: ResultsRead?,
+        val rows: List<RowReading>,
+        val timingsMs: Map<String, Long>
+    )
+
+    data class ScreenCheck(
+        val isResults: Boolean,
+        val reason: String?,
+        val page: OcrPage? = null,
+        val inspection: Inspection? = null
+    )
 
     private val mlKit = MlKitOcrEngine()
     private val initMutex = Mutex()
@@ -90,17 +108,18 @@ class AppResultsReader(private val context: Context) {
     }
 
     /**
-     * Cheap anchor check used only for the pre-playback baseline. It never
-     * reads loot and never creates a record.
+     * Cheap anchor check used for detection. The parsed page and inspection are
+     * reused for the first episode frame so the app never runs full-page OCR
+     * twice on the same screenshot.
      */
     suspend fun checkResultsScreen(bitmap: Bitmap): ScreenCheck = readMutex.withLock {
         val page = mlKit.recognize(bitmap)
         val parser = ResultsScreenParser(BitmapIconColorSampler(bitmap))
-        val inspection = parser.inspect(page)
+        val inspection = parser.inspect(page, includeBalance = false)
         if (inspection != null) {
-            ScreenCheck(true, null)
+            ScreenCheck(true, null, page, inspection)
         } else {
-            ScreenCheck(false, parser.ignoredReason(page))
+            ScreenCheck(false, parser.ignoredReason(page), page, null)
         }
     }
 
@@ -109,47 +128,82 @@ class AppResultsReader(private val context: Context) {
 
     suspend fun read(
         bitmap: Bitmap,
-        strategy: ReaderStrategy = ReaderStrategy.CHEAP_FIRST
+        strategy: ReaderStrategy = ReaderStrategy.CHEAP_FIRST,
+        includeBalance: Boolean = false
     ): ReadResult? {
         warmUp()
         return readMutex.withLock {
-            val reader = if (strategy == ReaderStrategy.ALL) {
-                rowReaderAll ?: rowReader
-            } else {
-                rowReader
-            } ?: return@withLock null
-            val pageStart = System.nanoTime()
-            val page = mlKit.recognize(bitmap)
-            val pageOcrMs = (System.nanoTime() - pageStart) / 1_000_000L
-            val parser = ResultsScreenParser(BitmapIconColorSampler(bitmap))
-            val inspection = parser.inspect(page) ?: return@withLock null
+            val result = readLocked(bitmap, strategy, includeBalance) ?: return@withLock null
+            if (result.inspection == null) return@withLock null
+            ReadResult(
+                inspection = result.inspection,
+                page = result.page,
+                rows = result.rows,
+                read = result.read ?: return@withLock null,
+                timingsMs = result.timingsMs
+            )
+        }
+    }
 
-            val rows = mutableListOf<RowReading>()
-            for ((index, row) in inspection.lootRows.withIndex()) {
-                rows += reader.read(bitmap, row, index, null, templateVoteEligible = true)
-            }
-            for ((index, row) in inspection.bonusRows.withIndex()) {
-                rows += reader.read(bitmap, row, index, null, templateVoteEligible = true)
-            }
+    /**
+     * One episode frame: full-page anchors plus the loot and bonus rows. Balance
+     * rows are deliberately skipped; they are never part of the record and cost
+     * three extra reader passes on every frame.
+     */
+    suspend fun readEpisode(
+        bitmap: Bitmap,
+        known: ScreenCheck? = null
+    ): EpisodeRead? {
+        warmUp()
+        return readMutex.withLock {
+            readLocked(bitmap, ReaderStrategy.CHEAP_FIRST, includeBalance = false, known = known)
+        }
+    }
+
+    private suspend fun readLocked(
+        bitmap: Bitmap,
+        strategy: ReaderStrategy,
+        includeBalance: Boolean,
+        known: ScreenCheck? = null
+    ): EpisodeRead? {
+        val reader = if (strategy == ReaderStrategy.ALL) {
+            rowReaderAll ?: rowReader
+        } else {
+            rowReader
+        } ?: return null
+        val pageStart = System.nanoTime()
+        val page = known?.page ?: mlKit.recognize(bitmap)
+        val pageOcrMs = if (known?.page != null) 0L else {
+            (System.nanoTime() - pageStart) / 1_000_000L
+        }
+        val parser = ResultsScreenParser(BitmapIconColorSampler(bitmap))
+        val inspection = known?.inspection ?: parser.inspect(page, includeBalance)
+        if (inspection == null) {
+            val timings = linkedMapOf(TimingKeys.MLKIT_FULL to pageOcrMs)
+            return EpisodeRead(page, null, null, emptyList(), timings)
+        }
+
+        val rows = mutableListOf<RowReading>()
+        for ((index, row) in inspection.lootRows.withIndex()) {
+            rows += reader.read(bitmap, row, index, null, templateVoteEligible = true)
+        }
+        for ((index, row) in inspection.bonusRows.withIndex()) {
+            rows += reader.read(bitmap, row, index, null, templateVoteEligible = true)
+        }
+        if (includeBalance) {
             for ((index, row) in inspection.balanceRows.withIndex()) {
                 rows += reader.read(bitmap, row, index, null, templateVoteEligible = true)
             }
-            val read = ResultsAssembler.assemble(inspection, rows)
-            val timings = linkedMapOf<String, Long>()
-            for (row in rows) {
-                for ((key, value) in row.timingsMs) {
-                    timings[key] = (timings[key] ?: 0L) + value
-                }
-            }
-            timings[TimingKeys.MLKIT_FULL] = pageOcrMs
-            ReadResult(
-                inspection = inspection,
-                page = page,
-                rows = rows,
-                read = read,
-                timingsMs = timings
-            )
         }
+        val read = ResultsAssembler.assemble(inspection, rows)
+        val timings = linkedMapOf<String, Long>()
+        for (row in rows) {
+            for ((key, value) in row.timingsMs) {
+                timings[key] = (timings[key] ?: 0L) + value
+            }
+        }
+        timings[TimingKeys.MLKIT_FULL] = pageOcrMs
+        return EpisodeRead(page, inspection, read, rows, timings)
     }
 
     fun closeAsync() {

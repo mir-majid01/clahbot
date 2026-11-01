@@ -104,6 +104,51 @@ class AttackRepository(private val file: File) {
         }
     }
 
+    /** Timestamped copy of history for a destructive Settings action. */
+    suspend fun backup(prefix: String = "before-delete"): java.io.File? = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            val all = readLocked()
+            if (all.isEmpty()) return@withLock null
+            val parent = file.parentFile ?: return@withLock null
+            val directory = File(parent, "attack_backups").apply { mkdirs() }
+            val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US)
+                .format(java.util.Date())
+            val target = File(directory, "attacks-$prefix-$stamp.json")
+            val text = gson.toJson(AttackFile(schemaVersion = SCHEMA_VERSION, records = all))
+            runCatching { target.writeText(text) }.map { target }.getOrNull()
+        }
+    }
+
+    /** Clears history but keeps the removed rows so the UI can offer Undo. */
+    suspend fun clearAllReturning(): List<AttackRecord> = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            val all = readLocked()
+            writeLocked(emptyList())
+            publish(emptyList())
+            all
+        }
+    }
+
+    suspend fun restoreMany(items: List<AttackRecord>): Int = withContext(Dispatchers.IO) {
+        if (items.isEmpty()) return@withContext 0
+        mutex.withLock {
+            val all = readLocked().toMutableList()
+            var added = 0
+            for (item in items) {
+                val sane = sanitizeAttack(item) ?: continue
+                if (all.none { it.id == sane.id }) {
+                    all.add(sane)
+                    added++
+                }
+            }
+            if (added > 0) {
+                writeLocked(all)
+                publish(all)
+            }
+            added
+        }
+    }
+
     suspend fun clearAll(): Boolean = withContext(Dispatchers.IO) {
         mutex.withLock {
             writeLocked(emptyList())

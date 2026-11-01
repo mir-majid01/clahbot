@@ -28,6 +28,15 @@ class MainViewModel(private val repository: MacroRepository) : ViewModel() {
         viewModelScope.launch { repository.delete(id) }
     }
 
+    suspend fun duplicate(id: Long): Macro? = repository.duplicate(id)
+
+    suspend fun backup(prefix: String = "before-delete"): java.io.File? =
+        repository.backup(prefix)
+
+    suspend fun deleteMany(ids: Set<Long>): List<Macro> = repository.deleteMany(ids)
+
+    suspend fun restoreMany(items: List<Macro>): Int = repository.restoreMany(items)
+
     fun rename(id: Long, name: String) {
         viewModelScope.launch { repository.rename(id, name) }
     }

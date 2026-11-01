@@ -80,7 +80,7 @@ class ResultsScreenParser(
     private val colorSampler: IconColorSampler?
 ) {
 
-    fun inspect(page: OcrPage): Inspection? {
+    fun inspect(page: OcrPage, includeBalance: Boolean = true): Inspection? {
         val anchors = findAnchors(page) ?: return null
         val issues = mutableListOf<String>()
         val outcome = anchors.outcome
@@ -90,7 +90,7 @@ class ResultsScreenParser(
         } else {
             emptyList()
         }
-        val balanceRows = readBalanceRows(page, issues)
+        val balanceRows = if (includeBalance) readBalanceRows(page, issues) else emptyList()
         return Inspection(
             outcome = outcome,
             lootRows = lootRows,

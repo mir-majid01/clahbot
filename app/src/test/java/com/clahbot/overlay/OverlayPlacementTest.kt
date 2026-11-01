@@ -47,6 +47,47 @@ class OverlayPlacementTest {
     }
 
     @Test
+    fun snapToEdgesOnlySnapsInsideTheThreshold() {
+        val width = 132
+        val height = 132
+        val margin = 24
+        val threshold = 72
+        val left = 120
+        val right = 2720 - margin - width
+        val top = 24
+        val bottom = 1177 - margin - height
+
+        val nearLeft = OverlayPlacement.snapToEdges(
+            left + 20, 500, width, height, landscape, margin, threshold
+        )
+        assertEquals(left, nearLeft.x)
+        assertEquals(500, nearLeft.y)
+
+        val awayFromLeft = OverlayPlacement.snapToEdges(
+            left + 73, 500, width, height, landscape, margin, threshold
+        )
+        assertEquals(left + 73, awayFromLeft.x)
+
+        val nearRightBottom = OverlayPlacement.snapToEdges(
+            right - 10, bottom - 12, width, height, landscape, margin, threshold
+        )
+        assertEquals(right, nearRightBottom.x)
+        assertEquals(bottom, nearRightBottom.y)
+
+        val nearTop = OverlayPlacement.snapToEdges(
+            700, top + 30, width, height, landscape, margin, threshold
+        )
+        assertEquals(top, nearTop.y)
+        assertEquals(700, nearTop.x)
+
+        val middle = OverlayPlacement.snapToEdges(
+            700, 500, width, height, landscape, margin, threshold
+        )
+        assertEquals(700, middle.x)
+        assertEquals(500, middle.y)
+    }
+
+    @Test
     fun menuDefaultSitsOnTheLeftBelowTheStatusBar() {
         val point = OverlayPlacement.menuDefault(landscape, 24, 96)
         assertEquals(120, point.x)

@@ -22,22 +22,24 @@ class PlaybackPlanTest {
     }
 
     @Test
-    fun attackLimitCapsLoopAndCustom() {
+    fun theRepeatIsThePlanAndTheAttackLimitIsSeparate() {
         val loop = PlaybackSettings.planFor(
             macro(repeat = Macro.REPEAT_INFINITE, stopAfterAttacks = 5)
         )
-        assertEquals(5, loop.iterations)
-        assertFalse(loop.infinite)
+        assertEquals(Int.MAX_VALUE, loop.iterations)
+        assertEquals(5, loop.stopAfterAttacks)
 
         val custom = PlaybackSettings.planFor(
             macro(repeat = "100", stopAfterAttacks = 8)
         )
-        assertEquals(8, custom.iterations)
+        assertEquals(100, custom.iterations)
+        assertEquals(8, custom.stopAfterAttacks)
 
         val below = PlaybackSettings.planFor(
             macro(repeat = "3", stopAfterAttacks = 40)
         )
         assertEquals(3, below.iterations)
+        assertEquals(40, below.stopAfterAttacks)
     }
 
     @Test

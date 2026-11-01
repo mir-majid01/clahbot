@@ -2,9 +2,6 @@ package com.clahbot.update
 
 import android.content.Context
 import android.content.Intent
-import android.net.Uri
-import android.os.Build
-import android.provider.Settings
 import android.util.Log
 import androidx.core.content.FileProvider
 import com.clahbot.BuildConfig
@@ -38,7 +35,6 @@ object GitHubUpdater {
 
     sealed interface InstallResult {
         data object Started : InstallResult
-        data class NeedsPermission(val message: String) : InstallResult
         data class Failure(val message: String) : InstallResult
     }
 
@@ -212,22 +208,6 @@ object GitHubUpdater {
     fun launchInstaller(context: Context, file: File): InstallResult {
         if (!file.exists() || file.length() <= 0L) {
             return InstallResult.Failure("The downloaded update file is missing.")
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
-            !context.packageManager.canRequestPackageInstalls()
-        ) {
-            val intent = Intent(
-                Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                Uri.parse("package:${context.packageName}")
-            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            return try {
-                context.startActivity(intent)
-                InstallResult.NeedsPermission(
-                    "Allow AutoClash to install unknown apps, then tap Install again."
-                )
-            } catch (t: Throwable) {
-                InstallResult.Failure("Could not open the install permission screen.")
-            }
         }
         return try {
             val uri = FileProvider.getUriForFile(

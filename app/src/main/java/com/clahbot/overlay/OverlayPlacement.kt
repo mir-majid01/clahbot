@@ -1,5 +1,7 @@
 package com.clahbot.overlay
 
+import kotlin.math.abs
+
 enum class BubbleCorner { TOP_LEFT, TOP_RIGHT, BOTTOM_LEFT, BOTTOM_RIGHT }
 
 data class OverlayPoint(val x: Int, val y: Int)
@@ -57,6 +59,36 @@ object OverlayPlacement {
         val right = (bounds.right - margin - width).coerceAtLeast(left)
         val center = x + width / 2
         return if (center <= bounds.left + bounds.width / 2) left else right
+    }
+
+    /**
+     * Snaps only the axes that are within [threshold] of a safe edge. A release
+     * in the middle of the screen never jumps to a corner.
+     */
+    fun snapToEdges(
+        x: Int,
+        y: Int,
+        width: Int,
+        height: Int,
+        bounds: OverlayBounds,
+        margin: Int,
+        threshold: Int
+    ): OverlayPoint {
+        val left = bounds.left + margin
+        val right = (bounds.right - margin - width).coerceAtLeast(left)
+        val top = bounds.top + margin
+        val bottom = (bounds.bottom - margin - height).coerceAtLeast(top)
+        val snappedX = when {
+            abs(x - left) <= threshold -> left
+            abs(x - right) <= threshold -> right
+            else -> x
+        }
+        val snappedY = when {
+            abs(y - top) <= threshold -> top
+            abs(y - bottom) <= threshold -> bottom
+            else -> y
+        }
+        return OverlayPoint(snappedX, snappedY)
     }
 
     fun menuDefault(bounds: OverlayBounds, margin: Int, topOffset: Int): OverlayPoint =

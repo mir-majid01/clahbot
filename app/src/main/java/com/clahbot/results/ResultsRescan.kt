@@ -13,7 +13,7 @@ import java.util.Locale
 
 object ResultsRescan {
 
-    data class Summary(val scanned: Int, val updated: Int)
+    data class Summary(val scanned: Int, val updated: Int, val skippedNoFrame: Int)
 
     fun candidates(records: List<AttackRecord>): List<AttackRecord> = records.filter { record ->
         record.confirmed &&
@@ -22,25 +22,39 @@ object ResultsRescan {
     }
 
     /**
-     * Re-reads saved screenshots of confirmed records that have no complete
-     * loot. A record is updated only when the current consensus supplies all
-     * three main values; the original screenshot is never replaced.
+     * Re-reads saved screenshots of confirmed records that are incomplete or
+     * carry a review reason. Only a complete, plausible three-value read is
+     * applied; the original screenshot is never replaced.
      */
     suspend fun run(context: Context, repository: AttackRepository): Summary =
         withContext(Dispatchers.IO) {
-            val candidates = candidates(repository.refresh())
-            if (candidates.isEmpty()) return@withContext Summary(0, 0)
+            val records = repository.refresh()
+            val candidates = candidates(records)
+            if (candidates.isEmpty()) {
+                return@withContext Summary(0, 0, records.count { it.confirmed && !it.hasLoot })
+            }
 
             val reader = AppResultsReader(context)
             var scanned = 0
             var updated = 0
+            var skippedNoFrame = 0
             try {
                 for (record in candidates) {
-                    val path = record.resultsScreenshot ?: continue
+                    val path = record.resultsScreenshot
+                    if (path == null) {
+                        skippedNoFrame++
+                        continue
+                    }
                     val file = File(path)
-                    if (!file.isFile) continue
+                    if (!file.isFile) {
+                        skippedNoFrame++
+                        continue
+                    }
                     val bitmap = runCatching { BitmapFactory.decodeFile(path) }.getOrNull()
-                        ?: continue
+                    if (bitmap == null) {
+                        skippedNoFrame++
+                        continue
+                    }
                     try {
                         val result = withTimeoutOrNull(30_000) {
                             reader.read(bitmap, ReaderStrategy.ALL)
@@ -48,7 +62,6 @@ object ResultsRescan {
                         scanned++
                         val sanity = LootSanity.sanitize(result.read)
                         val read = sanity.read
-                        if (sanity.reasons.isNotEmpty()) continue
                         if (!RescanPolicy.mayApply(
                                 read.outcome,
                                 read.gold,
@@ -58,21 +71,30 @@ object ResultsRescan {
                         ) {
                             continue
                         }
+                        val bonusAny = read.bonusGold != null ||
+                            read.bonusElixir != null ||
+                            read.bonusDarkElixir != null
                         val bonusGold = read.bonusGold ?: record.bonusGold
                         val bonusElixir = read.bonusElixir ?: record.bonusElixir
                         val bonusDark = read.bonusDarkElixir ?: record.bonusDarkElixir
-                        val bonusAny = bonusGold != null || bonusElixir != null || bonusDark != null
+                        val resolvedBonus = bonusGold != null ||
+                            bonusElixir != null ||
+                            bonusDark != null
                         val bonusState = when {
-                            read.bonusPanel && bonusAny -> AttackRecord.BONUS_CAPTURED
-                            read.bonusPanel -> AttackRecord.BONUS_NOT_CAPTURED
-                            record.bonusState == AttackRecord.BONUS_CAPTURED &&
-                                bonusAny -> AttackRecord.BONUS_CAPTURED
-                            else -> record.bonusState ?: AttackRecord.BONUS_NONE
+                            resolvedBonus -> AttackRecord.BONUS_CAPTURED
+                            read.bonusPanel -> record.bonusState
+                                ?.takeIf { it != AttackRecord.BONUS_CAPTURED }
+                                ?: AttackRecord.BONUS_NONE
+                            else -> AttackRecord.BONUS_NONE
                         }
-                        val reviewReason = if (bonusState == AttackRecord.BONUS_NOT_CAPTURED) {
-                            "Bonus panel present but not captured"
-                        } else {
-                            null
+                        val reviewReason = when {
+                            sanity.reasons.isNotEmpty() ->
+                                sanity.reasons.joinToString("; ")
+
+                            bonusState == AttackRecord.BONUS_NOT_CAPTURED ->
+                                "Bonus missing"
+
+                            else -> null
                         }
                         val changed = repository.update(
                             record.copy(
@@ -86,10 +108,11 @@ object ResultsRescan {
                                 lootSource = AttackRecord.LOOT_OCR,
                                 captureSource = AttackRecord.SOURCE_RESCAN,
                                 outcome = read.outcome.name.lowercase(Locale.US),
-                                verified = read.lootComplete && reviewReason == null,
+                                verified = reviewReason == null,
                                 complete = read.lootComplete,
                                 reviewReason = reviewReason,
-                                note = record.note + " Re-scanned with the current reader."
+                                note = record.note.trimEnd() +
+                                    " Re-scanned with the current reader."
                             )
                         )
                         if (changed != null) updated++
@@ -100,11 +123,18 @@ object ResultsRescan {
             } finally {
                 reader.closeAsync()
             }
-            Summary(scanned, updated)
+            Summary(scanned, updated, skippedNoFrame)
         }
 
     fun summaryText(summary: Summary): String = when {
-        summary.scanned == 0 -> "No unreadable captures found"
+        summary.scanned == 0 && summary.skippedNoFrame == 0 ->
+            "No attacks need review"
+
+        summary.scanned == 0 ->
+            "No saved frame to re-scan (" +
+                com.clahbot.util.Plural.of(summary.skippedNoFrame, "record") +
+                " ${if (summary.skippedNoFrame == 1) "has" else "have"} none)"
+
         summary.updated == 0 -> "Re-scanned ${summary.scanned}; no record changed"
         else -> "Re-scanned ${summary.scanned}; updated ${summary.updated}"
     }

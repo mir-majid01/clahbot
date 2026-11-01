@@ -2,6 +2,8 @@ package com.clahbot.input
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -31,7 +33,7 @@ class PassiveRecorderTest {
 
     @Test
     fun startsTheParsedDeviceAndStopsWithoutLeakingInput() {
-        assertTrue(recorder.start())
+        assertNull(recorder.start())
         assertEquals("/dev/input/event2", source.startedPath)
         assertTrue(recorder.isRunning)
 
@@ -70,24 +72,39 @@ class PassiveRecorderTest {
             onError = { errors += it }
         )
 
-        assertFalse(local.start())
+        val failure = local.start()
+        assertNotNull(failure)
         assertFalse(local.isRunning)
-        assertTrue(errors.single().contains("touchscreen", ignoreCase = true))
+        assertTrue(failure!!.contains("touchscreen", ignoreCase = true))
+        assertTrue(errors.isEmpty())
     }
 
     @Test
-    fun sourceStartFailureIsReported() {
+    fun sourceStartFailureIsReturnedToTheCallerNotReportedAsRecording() {
         source.startResult = false
+        source.lastFailure = "Could not start touch capture."
+        source.fatalOnStart = "Could not start touch capture."
 
-        assertFalse(recorder.start())
+        val failure = recorder.start()
+        assertEquals("Could not start touch capture.", failure)
         assertFalse(recorder.isRunning)
-        assertTrue(errors.single().contains("capture", ignoreCase = true))
+        assertTrue(errors.isEmpty())
         assertEquals(1, source.stopCalls)
     }
 
     @Test
+    fun startupFatalErrorNeverBecomesAnEmptyRecording() {
+        source.fatalOnStart = "Shizuku did not start its input service."
+
+        val failure = recorder.start()
+        assertEquals("Shizuku did not start its input service.", failure)
+        assertFalse(recorder.isRunning)
+        assertTrue(errors.isEmpty())
+    }
+
+    @Test
     fun fatalSourceErrorStopsTheRecording() {
-        assertTrue(recorder.start())
+        assertNull(recorder.start())
         source.fatal("getevent exited")
 
         assertFalse(recorder.isRunning)
@@ -100,7 +117,7 @@ class PassiveRecorderTest {
 
     @Test
     fun multiLineBatchesFromShizukuAreParsedLineByLine() {
-        assertTrue(recorder.start())
+        assertNull(recorder.start())
 
         source.emitRaw(down(1000, 1, 300, 2300) + "\n")
         source.emitRaw(up(1200) + "\n")
@@ -114,7 +131,7 @@ class PassiveRecorderTest {
 
     @Test
     fun pauseDropsInputAndResumeStartsFresh() {
-        assertTrue(recorder.start())
+        assertNull(recorder.start())
         recorder.setPaused(true)
         source.emit(down(1000, 1, 300, 2300))
         source.emit(up(1200))
@@ -137,7 +154,7 @@ class PassiveRecorderTest {
             onGesture = { localGestures += it },
             onError = { }
         )
-        assertTrue(local.start())
+        assertNull(local.start())
 
         // The intended game gesture.
         source.emit(down(1000, 1, 300, 2300))
@@ -187,7 +204,9 @@ class PassiveRecorderTest {
 
     private class FakeSource(private val discovery: String?) : InputEventSource {
         override val label: String = "fake"
+        override var lastFailure: String? = null
         var startResult = true
+        var fatalOnStart: String? = null
         var startedPath: String? = null
         var stopCalls = 0
         var closeCalls = 0
@@ -204,6 +223,11 @@ class PassiveRecorderTest {
             startedPath = devicePath
             lines = onLines
             fatal = onFatal
+            val startError = fatalOnStart
+            if (startError != null) {
+                onFatal(startError)
+                return false
+            }
             return startResult
         }
 

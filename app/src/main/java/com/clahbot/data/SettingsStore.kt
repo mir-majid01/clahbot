@@ -13,6 +13,18 @@ enum class ThemeMode { DARK, LIGHT, SYSTEM }
 
 enum class RecordingMode { PASSIVE, CAPTURE_ONLY }
 
+enum class EffectStyle { RING, DOT, RIPPLE }
+
+/** Per-scope touch-effect configuration (recording and playing). */
+data class TouchEffectConfig(
+    val enabled: Boolean = true,
+    val style: EffectStyle = EffectStyle.RIPPLE,
+    val color: Int = 0xFF3D7BFF.toInt(),
+    val sizeDp: Int = 48,
+    val fadeMs: Int = 600,
+    val trail: Boolean = true
+)
+
 data class AppSettings(
     val defaultSpeed: Float = 1f,
     val defaultRepeat: String = Macro.REPEAT_ONCE,
@@ -24,6 +36,10 @@ data class AppSettings(
     val controllerScale: Float = 1f,
     val bubbleScale: Float = 1f,
     val bubbleCorner: BubbleCorner = BubbleCorner.TOP_RIGHT,
+    val autoDockIcon: Boolean = true,
+    val recordingEffect: TouchEffectConfig = TouchEffectConfig(),
+    val playingEffect: TouchEffectConfig = TouchEffectConfig(),
+    val hapticIntensity: String = "medium",
     val saveResultsScreenshots: Boolean = false,
     val theme: ThemeMode = ThemeMode.DARK
 )
@@ -64,6 +80,10 @@ class SettingsStore private constructor(private val prefs: SharedPreferences) {
                         ?: BubbleCorner.TOP_RIGHT.name
                 )
             }.getOrDefault(BubbleCorner.TOP_RIGHT),
+            autoDockIcon = prefs.getBoolean(KEY_AUTO_DOCK, true),
+            recordingEffect = readEffect("rec"),
+            playingEffect = readEffect("play"),
+            hapticIntensity = prefs.getString(KEY_HAPTIC_INTENSITY, "medium") ?: "medium",
             saveResultsScreenshots = prefs.getBoolean(KEY_SAVE_RESULTS, false),
             theme = runCatching { ThemeMode.valueOf(themeName) }.getOrDefault(ThemeMode.DARK)
         )
@@ -92,10 +112,34 @@ class SettingsStore private constructor(private val prefs: SharedPreferences) {
             .putFloat(KEY_CONTROLLER_SCALE, normalized.controllerScale)
             .putFloat(KEY_BUBBLE_SCALE, normalized.bubbleScale)
             .putString(KEY_BUBBLE_CORNER, normalized.bubbleCorner.name)
+            .putBoolean(KEY_AUTO_DOCK, normalized.autoDockIcon)
+            .putString(KEY_HAPTIC_INTENSITY, normalized.hapticIntensity)
             .putBoolean(KEY_SAVE_RESULTS, normalized.saveResultsScreenshots)
             .putString(KEY_THEME, normalized.theme.name)
             .apply()
+        writeEffect("rec", normalized.recordingEffect)
+        writeEffect("play", normalized.playingEffect)
         _settings.value = normalized
+    }
+
+    private fun readEffect(prefix: String): TouchEffectConfig = TouchEffectConfig(
+        enabled = prefs.getBoolean(KEY_EFFECT_ON + prefix, true),
+        style = runCatching { EffectStyle.valueOf(prefs.getString(KEY_EFFECT_STYLE + prefix, EffectStyle.RIPPLE.name) ?: EffectStyle.RIPPLE.name) }.getOrDefault(EffectStyle.RIPPLE),
+        color = prefs.getInt(KEY_EFFECT_COLOR + prefix, 0xFF3D7BFF.toInt()),
+        sizeDp = prefs.getInt(KEY_EFFECT_SIZE + prefix, 48).coerceIn(16, 96),
+        fadeMs = prefs.getInt(KEY_EFFECT_FADE + prefix, 600).coerceIn(200, 1500),
+        trail = prefs.getBoolean(KEY_EFFECT_TRAIL + prefix, true)
+    )
+
+    private fun writeEffect(prefix: String, config: TouchEffectConfig) {
+        prefs.edit()
+            .putBoolean(KEY_EFFECT_ON + prefix, config.enabled)
+            .putString(KEY_EFFECT_STYLE + prefix, config.style.name)
+            .putInt(KEY_EFFECT_COLOR + prefix, config.color)
+            .putInt(KEY_EFFECT_SIZE + prefix, config.sizeDp.coerceIn(16, 96))
+            .putInt(KEY_EFFECT_FADE + prefix, config.fadeMs.coerceIn(200, 1500))
+            .putBoolean(KEY_EFFECT_TRAIL + prefix, config.trail)
+            .apply()
     }
 
     private fun normalizeRepeat(value: String?): String {
@@ -110,8 +154,8 @@ class SettingsStore private constructor(private val prefs: SharedPreferences) {
 
     companion object {
         const val MIN_ALPHA = 0.5f
-        const val MIN_CONTROLLER_SCALE = 0.7f
-        const val MAX_CONTROLLER_SCALE = 1.15f
+        const val MIN_CONTROLLER_SCALE = 0.8f
+        const val MAX_CONTROLLER_SCALE = 1.3f
         const val MIN_BUBBLE_SCALE = 0.7f
         const val MAX_BUBBLE_SCALE = 1.5f
 
@@ -126,6 +170,14 @@ class SettingsStore private constructor(private val prefs: SharedPreferences) {
         private const val KEY_CONTROLLER_SCALE = "controller_scale"
         private const val KEY_BUBBLE_SCALE = "bubble_scale"
         private const val KEY_BUBBLE_CORNER = "bubble_corner"
+        private const val KEY_AUTO_DOCK = "auto_dock_icon"
+        private const val KEY_HAPTIC_INTENSITY = "haptic_intensity"
+        private const val KEY_EFFECT_ON = "touch_effect_on_"
+        private const val KEY_EFFECT_STYLE = "touch_effect_style_"
+        private const val KEY_EFFECT_COLOR = "touch_effect_color_"
+        private const val KEY_EFFECT_SIZE = "touch_effect_size_"
+        private const val KEY_EFFECT_FADE = "touch_effect_fade_"
+        private const val KEY_EFFECT_TRAIL = "touch_effect_trail_"
         private const val KEY_SAVE_RESULTS = "save_results_screenshots"
         private const val KEY_THEME = "theme"
 

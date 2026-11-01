@@ -13,7 +13,7 @@ import kotlinx.coroutines.delay
 class ResultCaptureGate(
     private val freshEnoughMs: Long = 500L,
     private val freshSampleWaitMs: Long = 2_000L,
-    private val holdTimeoutMs: Long = 8_000L,
+    val holdTimeoutMs: Long = HOLD_TIMEOUT_MS,
     private val stepMs: Long = 40L,
     private val clock: () -> Long = { System.currentTimeMillis() }
 ) {
@@ -80,5 +80,10 @@ class ResultCaptureGate(
             delay(stepMs)
         }
         return true
+    }
+
+    companion object {
+        /** Longest a Return Home tap is held; the capture normally releases it much sooner. */
+        const val HOLD_TIMEOUT_MS = 10_000L
     }
 }

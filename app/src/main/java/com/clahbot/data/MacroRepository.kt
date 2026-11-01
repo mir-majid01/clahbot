@@ -122,6 +122,60 @@ class MacroRepository(private val file: File) {
         }
     }
 
+    /** Deletes a selection in one atomic write and returns what was removed. */
+    suspend fun deleteMany(ids: Set<Long>): List<Macro> = withContext(Dispatchers.IO) {
+        if (ids.isEmpty()) return@withContext emptyList()
+        mutex.withLock {
+            val all = readLocked().toMutableList()
+            val removed = all.filter { it.id in ids }
+            if (removed.isEmpty()) return@withLock emptyList()
+            all.removeAll { it.id in ids }
+            writeLocked(all)
+            publish(all)
+            removed
+        }
+    }
+
+    /**
+     * Writes the current library to a timestamped file before a bulk delete.
+     * The backup is a normal macros.json envelope and can be imported/restored
+     * without any special tooling.
+     */
+    suspend fun backup(prefix: String = "before-delete"): File? = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            val all = readLocked()
+            if (all.isEmpty()) return@withLock null
+            val parent = file.parentFile ?: return@withLock null
+            val directory = File(parent, "macro_backups").apply { mkdirs() }
+            val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US)
+                .format(java.util.Date())
+            val target = File(directory, "macros-$prefix-$stamp.json")
+            val text = gson.toJson(
+                MacroFile(schemaVersion = Macro.CURRENT_SCHEMA_VERSION, macros = all)
+            )
+            runCatching { target.writeText(text) }.map { target }.getOrNull()
+        }
+    }
+
+    suspend fun restoreMany(items: List<Macro>): Int = withContext(Dispatchers.IO) {
+        if (items.isEmpty()) return@withContext 0
+        mutex.withLock {
+            val all = readLocked().toMutableList()
+            var added = 0
+            for (item in items) {
+                if (all.none { it.id == item.id }) {
+                    all.add(item)
+                    added++
+                }
+            }
+            if (added > 0) {
+                writeLocked(all)
+                publish(all)
+            }
+            added
+        }
+    }
+
     suspend fun clearAll(): Boolean = withContext(Dispatchers.IO) {
         mutex.withLock {
             writeLocked(emptyList())

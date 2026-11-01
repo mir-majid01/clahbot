@@ -14,7 +14,8 @@ class PassiveGestureBuilder(
     private val device: TouchscreenDevice,
     private val geometry: () -> ScreenGeometry?,
     private val controllerBounds: () -> ScreenRect?,
-    private val onGesture: (BuiltGesture) -> Unit
+    private val onGesture: (BuiltGesture) -> Unit,
+    private val onTouch: (Int, ScreenPoint, Boolean) -> Unit = { _, _, _ -> }
 ) {
 
     private class PathState(
@@ -137,6 +138,7 @@ class PassiveGestureBuilder(
     private fun appendLocked(state: PathState, point: ScreenPoint, timestampMs: Long) {
         val t = (timestampMs - state.startAbsMs).coerceAtLeast(0L)
         state.points += GesturePoint(point.x, point.y, t)
+        onTouch(state.pointerId, point, true)
         state.lastX = point.x
         state.lastY = point.y
     }
@@ -153,6 +155,7 @@ class PassiveGestureBuilder(
             state.points += GesturePoint(state.lastX, state.lastY, duration)
         }
         finished += state
+        onTouch(state.pointerId, ScreenPoint(state.lastX, state.lastY), false)
     }
 
     private fun emitLocked() {
