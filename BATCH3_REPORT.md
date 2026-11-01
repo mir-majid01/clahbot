@@ -1,21 +1,52 @@
-# AutoClash 2.10.1 — v6 batch and follow-up report
+# AutoClash 2.10.2 — v6 batch and follow-up report
 
 Date: 2026-11-01  
-Release: **2.10.1 (versionCode 27)**  
-GitHub release: <https://github.com/mir-majid01/clahbot/releases/tag/v27>  
-CI-built APK: `AutoClash-2.10.1.apk` (51,067,753 bytes)  
-SHA-256: `94792176f02f058a1c3fcb23b878710f92f5912acad5eb80cf4f8aafc0c47051`
+Release: **2.10.2 (versionCode 28)**  
+GitHub release: <https://github.com/mir-majid01/clahbot/releases/tag/v28>  
+CI-built APK: `AutoClash-2.10.2.apk` (51,067,493 bytes)  
+SHA-256: `15bd6f835875d37434b8d1fbf39a35ae2fb9dc49d616e6c829311c8e2dbef1f2`
 
-The release was built and signed by **GitHub Actions** (debug run
-`41334582010`, release run `41335015586`), not on this machine. The downloaded
-release was installed in place on the Infinix X6876; the installed
-`/data/app/.../base.apk` hash matches the asset above, `versionCode=27`,
-`versionName=2.10.1`, and the package no longer has the `DEBUGGABLE` flag.
+The release was built and signed by **GitHub Actions**, not on this machine.
+The downloaded release was installed in place on the Infinix X6876; the
+installed `/data/app/.../base.apk` hash matches the asset above,
+`versionCode=28`, `versionName=2.10.2`, and the package no longer has the
+`DEBUGGABLE` flag. App data is preserved by the in-place update.
 
-Automated checks: **231 app unit tests, 2 skipped, 0 failures**; lint
-**0 errors**. Art data is preserved by the in-place update.
+Automated checks: **232 app unit tests, 2 skipped, 0 failures**; lint
+**0 errors**.
 
-## 2.10.1 follow-up fixes (this round)
+## 2.10.2 countdown and strip follow-up
+
+The red line was the old `countdownPanel`: during playback the controller
+window is only strip-height, so its large “5 / Switch to Clash / Stop” panel was
+clipped into a red horizontal line (the Stop button) and the status text was
+drawn loose over whatever app was in front.
+
+- Deleted the separate countdown panel and all of its references.
+- The green strip is entered immediately when PLAYING starts. Its timer shows
+  the countdown in amber (`3s`) with an accessibility description, the run chip
+  is hidden until the countdown ends, and Pause is disabled/dimmed during the
+  countdown. Stop and Minimize still work.
+- The strip is now 52 dp high instead of 44 dp, with 36 dp pause/stop/minimize
+  buttons and 8 dp gaps (6 dp at narrow width), so the buttons no longer touch
+  the edges.
+- The name is a weighted, ellipsized field, so the layout has no fixed
+  `maxWidth` that clipped names; the strip width/height never shrink below the
+  unscaled design size when the controller is set to 80 %.
+- Fixed a remaining race where the “start minimized” collapse animation finished
+  after playback began and replaced the strip with the bubble. Playback now
+  cancels the collapse, and the animation refuses to collapse while playback,
+  recording or review chrome is active.
+- The standalone status line is hidden whenever any custom chrome is active, so
+  “Starting in 3s” and similar text cannot float outside the strip.
+- Added `PlaybackStripLayoutTest` (Robolectric) asserting 36 dp controls, at
+  least 6 dp vertical breathing room, no overlap and a 46 dp timer.
+
+Verified on the release with a cold-start dashboard Play: the strip appears
+immediately, shows `3s` in amber, has evenly spaced controls, and the red line
+and loose status text are gone.
+
+## 2.10.1 follow-up fixes
 
 ### Splash
 
