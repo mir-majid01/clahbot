@@ -50,6 +50,24 @@ Last updated: 2026-11-01
   0 % jank / 10 ms p95. Splash and playback-strip screenshots were checked on
   device; the 20-attack loot run remains pending.
 
+## 2.10.2 (versionCode 28) — countdown and strip polish
+
+- Removed the separate clipped countdown panel that appeared as a red line.
+  The green strip now appears immediately and shows the countdown in amber in
+  its timer; Pause is dimmed during the countdown, Stop/Minimize stay active.
+- Strip height increased to 52 dp, controls to 36 dp with 8 dp gaps (6 dp
+  narrow); the name is weighted/ellipsized; strip width/height have an unscaled
+  minimum so 80 % controller scale cannot make the controls cramped.
+- Fixed the remaining “start minimized” collapse race that hid the strip after
+  a dashboard Play; the collapse is cancelled and refuses to run during
+  playback/recording/review chrome. Loose status text is hidden whenever custom
+  chrome is active.
+- Added `PlaybackStripLayoutTest` for control size, margins, overlap and timer
+  width. 232 app tests pass (2 skipped); lint 0 errors.
+- GitHub Actions release `v28` built `AutoClash-2.10.2.apk`, SHA-256
+  `15bd6f835875d37434b8d1fbf39a35ae2fb9dc49d616e6c829311c8e2dbef1f2`;
+  installed in place and verified on the phone.
+
 Scope: Feature 1 results-screen loot OCR and its integration into AutoClash.
 Ranked is untouched. Product Features 2-5 have not been started.
 
