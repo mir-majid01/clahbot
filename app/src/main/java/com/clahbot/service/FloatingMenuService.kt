@@ -368,11 +368,7 @@ class FloatingMenuService : Service() {
         }
         scope.launch { BotState.status.collect { onStatusChanged(it) } }
         scope.launch {
-            BotState.startCountdown.collect { seconds ->
-                if (seconds == null && BotState.state.value == ControllerState.PLAYING) {
-                    macros.firstOrNull { it.id == BotState.activeMacroId.value }
-                        ?.let { placeControllerForPlayback(it) }
-                }
+            BotState.startCountdown.collect {
                 refreshUi()
             }
         }
@@ -911,12 +907,6 @@ class FloatingMenuService : Service() {
             minimizePlaybackStrip()
         }
 
-        view.findViewById<Button>(R.id.btnStopCountdown).setOnClickListener {
-            haptic()
-            stopPlayback()
-            BotState.setState(ControllerState.READY)
-            BotState.setStatus("Playback stopped")
-        }
         view.findViewById<ImageButton>(R.id.btnPlayPause).setOnClickListener {
             haptic()
             togglePlaybackPause()
@@ -1235,7 +1225,13 @@ class FloatingMenuService : Service() {
     private fun collapseController() {
         val view = controllerView ?: return
         val params = controllerParams ?: return
-        if (recording || startingPassive || preparingPassive) return
+        if (recording || startingPassive || preparingPassive || playbackChromeActive ||
+            player?.isRunning() == true ||
+            BotState.state.value == ControllerState.PLAYING ||
+            BotState.state.value == ControllerState.PLAYBACK_PAUSED
+        ) {
+            return
+        }
         savePosition(PlacementKind.CONTROLLER, params)
         val size = currentBubbleSizePx()
         val hadSavedIcon = savedPosition(PlacementKind.BUBBLE)
@@ -1307,6 +1303,17 @@ class FloatingMenuService : Service() {
                     panel.alpha = 1f
                     if (cancelled) {
                         panel.visibility = View.VISIBLE
+                        params.flags = baseFlags
+                        try {
+                            windowManager.updateViewLayout(view, params)
+                        } catch (_: Exception) {
+                            // Window detached.
+                        }
+                        return
+                    }
+                    if (playbackChromeActive || recordingChromeActive || reviewChromeActive) {
+                        panel.visibility = View.VISIBLE
+                        bubble.visibility = View.GONE
                         params.flags = baseFlags
                         try {
                             windowManager.updateViewLayout(view, params)
@@ -2326,9 +2333,9 @@ class FloatingMenuService : Service() {
                 "speed=${macro.speedMultiplier} countdownMs=${macro.effectiveStartCountdownMs} " +
                 "delayMs=${macro.effectiveRepeatDelayMs}"
         )
-        // Place the icon before the first injected gesture can run. A macro with
-        // a start countdown keeps the panel open so the countdown is visible.
-        if (adjusted.effectiveStartCountdownMs <= 0L) placeControllerForPlayback(macro)
+        // Choose the strip position before the first injected gesture. The
+        // countdown is shown inside that strip, never in a second overlay.
+        placeControllerForPlayback(macro)
         scope.launch { resultsReader.warmUp() }
         scope.launch { repository.markPlayed(macro.id) }
         val startedAt = System.currentTimeMillis()
@@ -2395,7 +2402,7 @@ class FloatingMenuService : Service() {
             x,
             topMargin,
             stripWidth,
-            dp(PLAY_STRIP_HEIGHT),
+            playbackStripHeightPx(),
             safeBounds(),
             dp(8)
         )
@@ -4849,12 +4856,27 @@ class FloatingMenuService : Service() {
 
     private fun recordingUiActive(): Boolean = recording || startingPassive
 
+    /**
+     * The strip is critical chrome: it must stay usable even when the user set
+     * the controller to 80 %. Its width/height therefore never shrink below
+     * the unscaled design size, though they may grow with the controller scale.
+     */
     private fun playbackStripWidthPx(): Int {
         val landscape = screenWidth > screenHeight
         val base = if (landscape) PLAY_STRIP_LANDSCAPE_W else PLAY_STRIP_PORTRAIT_W
         val safe = safeBounds()
-        return minOf(dp(base), (safe.width - dp(16)).coerceAtLeast(dp(260)))
+        val unshrunk = maxOf(dp(base), unscaledDp(base))
+        return minOf(
+            unshrunk,
+            (safe.width - unscaledDp(16)).coerceAtLeast(unscaledDp(260))
+        )
     }
+
+    private fun playbackStripHeightPx(): Int =
+        maxOf(dp(PLAY_STRIP_HEIGHT), unscaledDp(PLAY_STRIP_HEIGHT))
+
+    private fun unscaledDp(value: Int): Int =
+        (value * resources.displayMetrics.density).roundToInt()
 
     private fun enterPlaybackChrome(pointOverride: OverlayPoint? = null) {
         val view = controllerView ?: return
@@ -4862,6 +4884,14 @@ class FloatingMenuService : Service() {
         playbackChromeActive = true
         playbackMinimized = false
         collapsed = false
+        collapseAnimator?.cancel()
+        collapseAnimator = null
+        snapAnimator?.cancel()
+        snapAnimator = null
+        val panelView = view.findViewById<View>(R.id.panel)
+        panelView.scaleX = 1f
+        panelView.scaleY = 1f
+        panelView.alpha = 1f
         recordingChromeActive = false
         reviewChromeActive = false
         val stripWidth = playbackStripWidthPx()
@@ -4874,7 +4904,7 @@ class FloatingMenuService : Service() {
         pendingPlaybackPoint = null
         applyWindowPoint(
             params,
-            OverlayPlacement.clamp(point.x, point.y, stripWidth, dp(PLAY_STRIP_HEIGHT), safe, dp(8)),
+            OverlayPlacement.clamp(point.x, point.y, stripWidth, playbackStripHeightPx(), safe, dp(8)),
             PlacementKind.PLAYING,
             save = false
         )
@@ -4921,7 +4951,7 @@ class FloatingMenuService : Service() {
             height = if (playbackMinimized) {
                 LinearLayout.LayoutParams.WRAP_CONTENT
             } else {
-                dp(PLAY_STRIP_HEIGHT)
+                playbackStripHeightPx()
             }
         }
         view.findViewById<View>(R.id.contentFrame).visibility =
@@ -4931,7 +4961,6 @@ class FloatingMenuService : Service() {
         view.findViewById<View>(R.id.playPill).visibility =
             if (playbackMinimized) View.VISIBLE else View.GONE
         val narrow = stripWidth < dp(350)
-        view.findViewById<TextView>(R.id.tvPlayingName)?.maxWidth = dp(if (narrow) 58 else 96)
         view.findViewById<TextView>(R.id.tvPlayingRun)?.apply {
             textSize = if (narrow) 10f else 11f
             setPadding(dp(if (narrow) 5 else 8), 0, dp(if (narrow) 5 else 8), 0)
@@ -4940,7 +4969,7 @@ class FloatingMenuService : Service() {
             textSize = if (narrow) 11.5f else 13f
             minWidth = dp(if (narrow) 42 else 46)
         }
-        val gap = dp(if (narrow) 4 else 6)
+        val gap = dp(if (narrow) 6 else 8)
         view.findViewById<View>(R.id.btnPlayPause)?.layoutParams =
             (view.findViewById<View>(R.id.btnPlayPause)?.layoutParams as? LinearLayout.LayoutParams)?.apply { marginStart = gap }
         view.findViewById<View>(R.id.btnStopPlayback)?.layoutParams =
@@ -4992,20 +5021,48 @@ class FloatingMenuService : Service() {
         override fun run() {
             if (!playbackChromeActive) return
             val view = controllerView ?: return
-            val elapsed = player?.runningElapsedMs() ?: 0L
-            val text = formatClock(elapsed)
-            view.findViewById<TextView>(R.id.tvPlayElapsed)?.text = text
-            view.findViewById<TextView>(R.id.tvPlayPillTimer)?.text = text
+            applyPlaybackTimerState(view)
             val macro = macros.firstOrNull { it.id == BotState.activeMacroId.value }
             if (macro != null) {
                 view.findViewById<TextView>(R.id.tvPlayPillName)?.text = macro.name
             }
-            val runLabel = BotState.playbackRunLabel.value
-            view.findViewById<TextView>(R.id.tvPlayingRun)?.apply {
-                visibility = if (runLabel.isNullOrBlank()) View.GONE else View.VISIBLE
-                if (!runLabel.isNullOrBlank()) this.text = runLabel
-            }
             handler.postDelayed(this, 500L)
+        }
+    }
+
+    private fun applyPlaybackTimerState(view: View) {
+        val countdown = BotState.startCountdown.value
+        val countingDown = countdown != null
+        val timerText = if (countingDown) "${countdown}s" else {
+            formatClock(player?.runningElapsedMs() ?: 0L)
+        }
+        view.findViewById<TextView>(R.id.tvPlayElapsed)?.apply {
+            text = timerText
+            setTextColor(if (countingDown) Ds.WARN else 0xFFEAF1FF.toInt())
+            contentDescription = if (countingDown) {
+                "Starting in $countdown seconds"
+            } else {
+                "Playback time"
+            }
+        }
+        view.findViewById<TextView>(R.id.tvPlayPillTimer)?.text = timerText
+        val runLabel = BotState.playbackRunLabel.value
+        view.findViewById<TextView>(R.id.tvPlayingRun)?.apply {
+            visibility = if (countingDown || runLabel.isNullOrBlank()) {
+                View.GONE
+            } else {
+                View.VISIBLE
+            }
+            text = runLabel ?: ""
+        }
+        view.findViewById<ImageButton>(R.id.btnPlayPause)?.apply {
+            isEnabled = !countingDown
+            alpha = if (countingDown) 0.45f else 1f
+            contentDescription = if (countingDown) {
+                "Pause becomes available after the countdown"
+            } else {
+                "Pause playback"
+            }
         }
     }
 
@@ -5015,13 +5072,7 @@ class FloatingMenuService : Service() {
             macro?.name ?: BotState.activeMacroName.value ?: "Macro"
         view.findViewById<TextView>(R.id.tvPlayPillName)?.text =
             macro?.name ?: BotState.activeMacroName.value ?: "Macro"
-        val runLabel = BotState.playbackRunLabel.value
-        view.findViewById<TextView>(R.id.tvPlayingRun)?.apply {
-            visibility = if (runLabel.isNullOrBlank()) View.GONE else View.VISIBLE
-            text = runLabel ?: ""
-        }
-        view.findViewById<TextView>(R.id.tvPlayElapsed)?.text =
-            formatClock(player?.runningElapsedMs() ?: 0L)
+        applyPlaybackTimerState(view)
         view.findViewById<ImageButton>(R.id.btnPlayPause)?.apply {
             setImageResource(
                 if (BotState.state.value == ControllerState.PLAYBACK_PAUSED) {
@@ -5030,8 +5081,14 @@ class FloatingMenuService : Service() {
                     R.drawable.ic_pause
                 }
             )
-            contentDescription =
-                if (BotState.state.value == ControllerState.PLAYBACK_PAUSED) "Resume playback" else "Pause playback"
+            if (BotState.startCountdown.value == null) {
+                contentDescription =
+                    if (BotState.state.value == ControllerState.PLAYBACK_PAUSED) {
+                        "Resume playback"
+                    } else {
+                        "Pause playback"
+                    }
+            }
         }
     }
 
@@ -5079,7 +5136,6 @@ class FloatingMenuService : Service() {
         view.findViewById<View>(R.id.reviewPanel).visibility = View.GONE
         view.findViewById<View>(R.id.playingPanel).visibility = View.GONE
         view.findViewById<View>(R.id.statsPanel).visibility = View.GONE
-        view.findViewById<View>(R.id.countdownPanel).visibility = View.GONE
         view.findViewById<View>(R.id.readyFooter).visibility = View.GONE
         panel.background = null
         panel.setPadding(0, 0, 0, 0)
@@ -5416,27 +5472,24 @@ class FloatingMenuService : Service() {
         val statsVisible = page == PAGE_STATS &&
             !showRecording && !showReview && !showPlaying
         val startCountdown = BotState.startCountdown.value
-        val countdownVisible = startCountdown != null && !statsVisible
         val settingsOpen = settingsView != null
-        val readyVisible = !statsVisible && showReady && !countdownVisible && !settingsOpen
+        val readyVisible = !statsVisible && showReady && !settingsOpen
         view.findViewById<View>(R.id.readyFooter).visibility =
             if (readyVisible) View.VISIBLE else View.GONE
         view.findViewById<View>(R.id.statsPanel).visibility =
             if (statsVisible) View.VISIBLE else View.GONE
         view.findViewById<View>(R.id.readyPanel).visibility =
-            if (!statsVisible && showReady && !countdownVisible) View.VISIBLE else View.GONE
+            if (!statsVisible && showReady) View.VISIBLE else View.GONE
         view.findViewById<View>(R.id.recordingPanel).visibility =
-            if (!statsVisible && showRecording && !countdownVisible && !recordingMinimized) {
+            if (!statsVisible && showRecording && !recordingMinimized) {
                 View.VISIBLE
             } else {
                 View.GONE
             }
         view.findViewById<View>(R.id.reviewPanel).visibility =
-            if (!statsVisible && showReview && !countdownVisible) View.VISIBLE else View.GONE
+            if (!statsVisible && showReview) View.VISIBLE else View.GONE
         view.findViewById<View>(R.id.playingPanel).visibility =
-            if (!statsVisible && showPlaying && !countdownVisible) View.VISIBLE else View.GONE
-        view.findViewById<View>(R.id.countdownPanel).visibility =
-            if (countdownVisible) View.VISIBLE else View.GONE
+            if (!statsVisible && showPlaying) View.VISIBLE else View.GONE
         if (reviewChromeActive) {
             view.findViewById<View>(R.id.controllerHeader).visibility = View.GONE
             view.findViewById<View>(R.id.contentFrame).visibility = View.GONE
@@ -5445,14 +5498,11 @@ class FloatingMenuService : Service() {
             view.findViewById<View>(R.id.reviewPanel).visibility = View.GONE
             view.findViewById<View>(R.id.playingPanel).visibility = View.GONE
             view.findViewById<View>(R.id.statsPanel).visibility = View.GONE
-            view.findViewById<View>(R.id.countdownPanel).visibility = View.GONE
             view.findViewById<View>(R.id.recPill).visibility = View.GONE
             view.findViewById<View>(R.id.playPill).visibility = View.GONE
             view.findViewById<View>(R.id.tvStatus).visibility = View.GONE
             applyReviewChrome()
         }
-        view.findViewById<TextView>(R.id.tvStartCountdown).text =
-            startCountdown?.toString() ?: ""
         view.findViewById<TextView>(R.id.btnPageController).apply {
             background = Ds.rounded(
                 if (statsVisible) android.graphics.Color.TRANSPARENT else Ds.ACCENT,
@@ -5478,6 +5528,7 @@ class FloatingMenuService : Service() {
             ColorStateList.valueOf(dotColor)
         applyBubbleChrome(view)
         val statusStripVisible = preparingPassive || (!showRecording &&
+            !playbackChromeActive && !recordingChromeActive && !reviewChromeActive &&
             state != ControllerState.READY &&
             state != ControllerState.INACTIVE &&
             state != ControllerState.STOPPING)
@@ -5905,7 +5956,7 @@ class FloatingMenuService : Service() {
         private const val SAVED_UNDO_MS = 5_000L
         private const val PLAY_STRIP_LANDSCAPE_W = 368
         private const val PLAY_STRIP_PORTRAIT_W = 328
-        private const val PLAY_STRIP_HEIGHT = 44
+        private const val PLAY_STRIP_HEIGHT = 52
         private const val PAGE_CONTROLLER = 0
         private const val PAGE_STATS = 1
         private const val STATS_SESSION = 0
