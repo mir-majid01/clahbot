@@ -8,10 +8,6 @@ Last updated: 2026-11-01
   `app/build/outputs/apk/debug/app-debug.apk`,
   SHA-256 `dc576cecfb087f63195205da1f9d0f0027b7a0b78cdc1fd90ac8a31e25404655`.
   228 app unit tests pass (2 skipped); lint 0 errors.
-- Installed in place on the Infinix X6876 on 2026-11-01; the installed APK hash
-  matches the built APK. App data was preserved (`macros.json` 91,593 bytes,
-  `attacks.json` 14,922 bytes). The interactive device pass, pack screenshots
-  and the 20-attack measurement are pending.
 - Delivered: original logo restoration and dock ring; saved-toast restore fix;
   44 dp one-row playing strip; boxed floating list; no implicit overlay
   Activity launches; full History page + dashboard session boxes; shared
@@ -20,6 +16,32 @@ Last updated: 2026-11-01
   up to 10 s while a result episode is active.
 - Detail and the honest acceptance table: `BATCH3_REPORT.md`.
 - The earlier 2.8.1 report remains in `POLISH_REPORT.md`.
+
+## 2.10.1 (versionCode 27) — follow-up fixes
+
+- Splash now uses a generated padded squircle tile (`ic_splash_tile.png`), so
+  the original artwork keeps its aspect ratio and dark margins on the system
+  splash. Verified by a cold-start capture on the X6876.
+- Playback strip: the old pre-play path collapsed to the bubble and left the
+  panel hidden; the strip now appears immediately, is positioned from the
+  macro's touch points, and minimize/reopen resets the content margin, panel
+  height and window clamp. Playback ending because Clash left the foreground
+  now sets READY, ends the capture session and restores the controller.
+- Accessibility: three explicit states (disabled, enabled-not-connected,
+  connected), resume/4 s refresh, hardened service init/unbind, and guidance
+  for Android's “Allow restricted settings” flow. Device evidence: after an
+  update Android can leave the service listed but the master switch off; the
+  app now reports “Not connected” rather than a false grant.
+- Trust: release is non-debuggable and R8-minified, built by GitHub Actions;
+  removed `REQUEST_INSTALL_PACKAGES` and the unused battery-optimization
+  request; updates use the system package installer. The accessibility consent
+  dialog itself is an Android security prompt and cannot be removed.
+- Performance: dashboard Statistics is split into lazy items; the 15 s no-op
+  tick is now 60 s. Warm debug scroll on the X6876 improved from 1.36 % jank /
+  44 ms p95 to 0.16 % / 23 ms; release measurement is pending the CI artifact.
+- Dashboard pin text became the pin icon; notification counts use plurals.
+- 231 app unit tests pass (2 skipped); lint 0 errors. The release APK and its
+  hash are being produced by the GitHub `Publish APK release` workflow.
 
 Scope: Feature 1 results-screen loot OCR and its integration into AutoClash.
 Ranked is untouched. Product Features 2-5 have not been started.
