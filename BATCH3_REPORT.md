@@ -3,13 +3,16 @@
 Date: 2026-11-02  
 Release: **2.10.5 (versionCode 31)**  
 GitHub release: <https://github.com/mir-majid01/clahbot/releases/tag/v31>  
-CI-built APK: `AutoClash-2.10.5.apk` (size and SHA-256 recorded after CI)
+GitHub Actions run `41508904248` succeeded.  
+CI-built APK: `AutoClash-2.10.5.apk` (51,075,733 bytes)  
+SHA-256: `40a6ab430ae8975f1c17746ce1f43e0296972faf74f416195c324db0245d42b9`
 
-The release is built and signed by **GitHub Actions**, not on this machine.
-The previous 2.10.4 release was installed in place on the Infinix X6876; the
-new release is installed over it the same way, preserving app data.
+The release was built and signed by **GitHub Actions**, not on this machine.
+It was installed in place over 2.10.4 on the Infinix X6876; the installed base
+APK hash matches the asset above, `versionCode=31`, `versionName=2.10.5`, and
+app data was preserved.
 
-Automated checks: **241 app unit tests, 2 skipped, 0 failures**; lint
+Automated checks: **242 app unit tests, 2 skipped, 0 failures**; lint
 **0 errors**.
 
 ## 2.10.5 playback-strip name and stale save name
@@ -28,8 +31,10 @@ Automated checks: **241 app unit tests, 2 skipped, 0 failures**; lint
   closes. Default names also get “ 2”, “ 3” suffixes if the same minute’s name
   already exists.
 - Tests: `PlaybackStripLayoutTest` now checks the name column width, the
-  two-line geometry and portrait width; `MacroNamingTest` covers unique default
-  names. 241 app tests pass (2 skipped); lint 0 errors.
+  two-line geometry and portrait width, and renders a 3× preview to
+  `app/build/reports/playback-strip/landscape-368.png` for visual inspection.
+  `MacroNamingTest` covers unique default names. 242 app tests pass (2 skipped);
+  lint 0 errors.
 
 ## 2.10.4 updater rate limit, notification and install flow
 
