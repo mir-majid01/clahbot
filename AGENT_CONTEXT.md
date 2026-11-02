@@ -85,6 +85,24 @@ Last updated: 2026-11-01
   installed in place. Realme hardware and real-attack totals are still to be
   checked by the user.
 
+## 2.10.4 (versionCode 30) — update feed and install flow
+
+- Update checks use the unthrottled Releases Atom feed first, so the anonymous
+  GitHub API rate limit no longer blocks the Settings checker; REST is a
+  friendly-message fallback.
+- Settings → App has a complete update card: release info, SHA-256-verified
+  download and Android package installer launch.
+- `UpdateNotifier` checks on app launch (6 h cache), posts one notification per
+  new version, and the notification opens Settings with auto download/install.
+- `REQUEST_INSTALL_PACKAGES` is declared for the self-updater; the release is
+  still non-debuggable and stable-key signed.
+- 234 app tests pass (2 skipped); lint 0 errors. GitHub Actions release `v30`
+  built `AutoClash-2.10.4.apk`, SHA-256
+  `3b7cc869c1bb756006dccf783d28e23192ffbfc07f30b50fc7b110f148c35ce9`,
+  installed in place. The notification/install tap could not be forced through
+  a downgrade test because Android rejected the downgrade; the next real
+  release will exercise it.
+
 Scope: Feature 1 results-screen loot OCR and its integration into AutoClash.
 Ranked is untouched. Product Features 2-5 have not been started.
 
