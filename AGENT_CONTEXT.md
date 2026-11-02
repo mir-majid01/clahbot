@@ -14,8 +14,11 @@ Last updated: 2026-11-02
   panel always generates a fresh default name, clears it when the review
   closes, and appends “ 2”, “ 3” when that minute’s default already exists
   (`MacroNaming`, with tests).
-- 241 app tests pass (2 skipped); lint 0 errors. CI release `v31` is built by
-  GitHub Actions.
+- 242 app tests pass (2 skipped); lint 0 errors. GitHub Actions release `v31`
+  built `AutoClash-2.10.5.apk`, SHA-256
+  `40a6ab430ae8975f1c17746ce1f43e0296972faf74f416195c324db0245d42b9`,
+  installed in place over 2.10.4; the installed base APK hash matches and app
+  data was preserved.
 
 ## 2.10.0 (versionCode 26) — v6 batch
 

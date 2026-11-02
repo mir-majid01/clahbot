@@ -1,5 +1,7 @@
 package com.clahbot.service
 
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.view.ContextThemeWrapper
 import android.view.LayoutInflater
 import android.view.View
@@ -14,6 +16,7 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -151,6 +154,24 @@ class PlaybackStripLayoutTest {
             strip.run.absLeft() + strip.run.width <= strip.name.absLeft() + strip.name.width
         )
         assertTrue("timer is too close to the top", strip.timer.absTop() >= dp(6))
+    }
+
+    @Test
+    @Config(qualifiers = "xxhdpi")
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun rendersStripPreview() {
+        val strip = layoutStrip(368)
+        val bitmap = Bitmap.createBitmap(strip.root.width, strip.root.height, Bitmap.Config.ARGB_8888)
+        strip.root.draw(Canvas(bitmap))
+        val output = java.io.File("build/reports/playback-strip").apply { mkdirs() }
+        java.io.File(output, "landscape-368.png").outputStream().use { stream ->
+            bitmap.compress(Bitmap.CompressFormat.PNG, 100, stream)
+        }
+        assertTrue(
+            "preview is blank",
+            bitmap.getPixel(bitmap.width / 2, bitmap.height / 2) != 0
+        )
+        bitmap.recycle()
     }
 
     @Test
