@@ -18,7 +18,8 @@ Last updated: 2026-11-02
   built `AutoClash-2.10.5.apk`, SHA-256
   `40a6ab430ae8975f1c17746ce1f43e0296972faf74f416195c324db0245d42b9`,
   installed in place over 2.10.4; the installed base APK hash matches and app
-  data was preserved.
+  data was preserved. The phone was in active use during the pass, so the live
+  playback-strip screenshot and real two-recording save remain to be checked.
 
 ## 2.10.0 (versionCode 26) — v6 batch
 

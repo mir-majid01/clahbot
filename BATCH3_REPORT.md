@@ -35,6 +35,10 @@ Automated checks: **242 app unit tests, 2 skipped, 0 failures**; lint
   `app/build/reports/playback-strip/landscape-368.png` for visual inspection.
   `MacroNamingTest` covers unique default names. 242 app tests pass (2 skipped);
   lint 0 errors.
+- The interactive device pass could not be completed this round because the
+  phone was in active use; the installed build and the rendered preview were
+  verified. The live playback-strip screenshot and a real two-recording save
+  are left for the next free-device pass.
 
 ## 2.10.4 updater rate limit, notification and install flow
 
