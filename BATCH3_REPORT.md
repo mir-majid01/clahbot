@@ -1,19 +1,35 @@
-# AutoClash 2.10.4 — v6 batch and follow-up report
+# AutoClash 2.10.5 — v6 batch and follow-up report
 
 Date: 2026-11-02  
-Release: **2.10.4 (versionCode 30)**  
-GitHub release: <https://github.com/mir-majid01/clahbot/releases/tag/v30>  
-CI-built APK: `AutoClash-2.10.4.apk` (51,075,717 bytes)  
-SHA-256: `3b7cc869c1bb756006dccf783d28e23192ffbfc07f30b50fc7b110f148c35ce9`
+Release: **2.10.5 (versionCode 31)**  
+GitHub release: <https://github.com/mir-majid01/clahbot/releases/tag/v31>  
+CI-built APK: `AutoClash-2.10.5.apk` (size and SHA-256 recorded after CI)
 
-The release was built and signed by **GitHub Actions**, not on this machine.
-The downloaded release was installed in place on the Infinix X6876; the
-installed `/data/app/.../base.apk` hash matches the asset above,
-`versionCode=30`, `versionName=2.10.4`, and the package no longer has the
-`DEBUGGABLE` flag. App data is preserved by the in-place update.
+The release is built and signed by **GitHub Actions**, not on this machine.
+The previous 2.10.4 release was installed in place on the Infinix X6876; the
+new release is installed over it the same way, preserving app data.
 
-Automated checks: **234 app unit tests, 2 skipped, 0 failures**; lint
+Automated checks: **241 app unit tests, 2 skipped, 0 failures**; lint
 **0 errors**.
+
+## 2.10.5 playback-strip name and stale save name
+
+- Playback strip name: the name, run chip and timer shared one row, so at the
+  368 dp landscape width the name received only ~76 dp and was cut to
+  “Macro Nov…”. The strip is now two lines inside the same 52 dp height: the
+  macro name owns the full text column (~188 dp landscape, ~148 dp portrait),
+  with the elapsed timer and run progress underneath. The run text is hidden
+  for a single run instead of showing the meaningless “Run 1/1”, and the timer
+  and run are plain text rather than a chip competing with the name.
+- Macro save name: `reviewName` survived after a macro was saved, and the next
+  recording’s review panel prefilled that old name; the 8 s auto-save then
+  stored the new recording under the previous name. Every new review now
+  generates a fresh default name, and the name is cleared when the review
+  closes. Default names also get “ 2”, “ 3” suffixes if the same minute’s name
+  already exists.
+- Tests: `PlaybackStripLayoutTest` now checks the name column width, the
+  two-line geometry and portrait width; `MacroNamingTest` covers unique default
+  names. 241 app tests pass (2 skipped); lint 0 errors.
 
 ## 2.10.4 updater rate limit, notification and install flow
 

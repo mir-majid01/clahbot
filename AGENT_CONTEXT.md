@@ -1,6 +1,21 @@
 # Agent Context — AutoClash Feature 1
 
-Last updated: 2026-11-01
+Last updated: 2026-11-02
+
+## 2.10.5 (versionCode 31) — strip name and save name
+
+- Playback strip is now two lines in the same 52 dp: the macro name gets the
+  full text column (~188 dp landscape / ~148 dp portrait), and the elapsed
+  timer plus run progress sit underneath. This fixes the name being cut to
+  “Macro Nov…” even though the strip was wide. “Run 1/1” is no longer shown for
+  a single run. `PlaybackStripLayoutTest` asserts the name width and two-line
+  geometry (including portrait).
+- Saving a recording no longer reuses the previous macro’s name. The review
+  panel always generates a fresh default name, clears it when the review
+  closes, and appends “ 2”, “ 3” when that minute’s default already exists
+  (`MacroNaming`, with tests).
+- 241 app tests pass (2 skipped); lint 0 errors. CI release `v31` is built by
+  GitHub Actions.
 
 ## 2.10.0 (versionCode 26) — v6 batch
 
