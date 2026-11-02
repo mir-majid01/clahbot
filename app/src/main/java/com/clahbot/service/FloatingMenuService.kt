@@ -64,6 +64,7 @@ import com.clahbot.data.BotState
 import com.clahbot.data.models.AttackRecord
 import com.clahbot.data.models.AttackStats
 import com.clahbot.data.ControllerState
+import com.clahbot.data.MacroNaming
 import com.clahbot.data.MacroRepository
 import com.clahbot.data.MacroSelection
 import com.clahbot.data.RecordingMode
@@ -3331,7 +3332,7 @@ class FloatingMenuService : Service() {
 
     private fun beginSaveToast() {
         if (recorded.isEmpty()) return
-        if (reviewName.isBlank()) reviewName = defaultMacroName()
+        reviewName = MacroNaming.uniqueDefault(defaultMacroName(), macros.map { it.name })
         savePending = true
         savedMacro = null
         discardedGestures = null
@@ -3569,6 +3570,8 @@ class FloatingMenuService : Service() {
             if (reviewChromeActive) {
                 savedMacro = null
                 discardedGestures = null
+                reviewName = ""
+                controllerView?.findViewById<EditText>(R.id.etMacroName)?.setText("")
                 restoreControllerChrome()
                 BotState.setState(ControllerState.READY)
                 BotState.setStatus("Ready")
@@ -4942,14 +4945,12 @@ class FloatingMenuService : Service() {
         view.findViewById<View>(R.id.playPill).visibility =
             if (playbackMinimized) View.VISIBLE else View.GONE
         val narrow = stripWidth < dp(350)
-        view.findViewById<TextView>(R.id.tvPlayingRun)?.apply {
-            textSize = if (narrow) 10f else 11f
-            setPadding(dp(if (narrow) 5 else 8), 0, dp(if (narrow) 5 else 8), 0)
-        }
-        view.findViewById<TextView>(R.id.tvPlayElapsed)?.apply {
-            textSize = if (narrow) 11.5f else 13f
-            minWidth = dp(if (narrow) 42 else 46)
-        }
+        view.findViewById<TextView>(R.id.tvPlayingName)?.textSize =
+            if (narrow) 12.5f else 13f
+        view.findViewById<TextView>(R.id.tvPlayingRun)?.textSize =
+            if (narrow) 10f else 10.5f
+        view.findViewById<TextView>(R.id.tvPlayElapsed)?.textSize =
+            if (narrow) 10.5f else 11f
         val gap = dp(if (narrow) 6 else 8)
         view.findViewById<View>(R.id.btnPlayPause)?.layoutParams =
             (view.findViewById<View>(R.id.btnPlayPause)?.layoutParams as? LinearLayout.LayoutParams)?.apply { marginStart = gap }

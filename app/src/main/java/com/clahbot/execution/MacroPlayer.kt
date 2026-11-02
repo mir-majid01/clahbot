@@ -112,12 +112,12 @@ class MacroPlayer(
                         "macro iteration=$iteration " +
                             "iterations=${if (plan.infinite) "infinite" else plan.iterations}"
                     )
+                    val runLabel =
+                        if (plan.infinite) "Loop $iteration" else "Run $iteration/${plan.iterations}"
                     BotState.setPlaybackRunLabel(
-                        if (plan.infinite) "Loop $iteration" else "Run $iteration/${plan.iterations}"
+                        if (plan.infinite || plan.iterations > 1) runLabel else null
                     )
-                    BotState.setStatus(
-                        if (plan.infinite) "Loop $iteration" else "Run $iteration/${plan.iterations}"
-                    )
+                    BotState.setStatus(runLabel)
 
                     var lastTimestamp = 0L
                     for (gesture in gestures) {
