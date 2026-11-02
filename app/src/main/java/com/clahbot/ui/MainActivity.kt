@@ -71,6 +71,7 @@ import androidx.core.graphics.drawable.toBitmap
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.lifecycleScope
 
 import com.clahbot.BuildConfig
 import com.clahbot.R
@@ -153,6 +154,9 @@ class MainActivity : ComponentActivity() {
         installSplashScreen()
         super.onCreate(savedInstanceState)
         GameSessionTracker.start(this)
+        lifecycleScope.launch {
+            com.clahbot.update.UpdateNotifier.checkAndNotify(this@MainActivity)
+        }
         val startWithHistory = intent?.getBooleanExtra(EXTRA_OPEN_HISTORY, false) == true
 
         setContent {

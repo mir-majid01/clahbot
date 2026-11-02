@@ -84,6 +84,62 @@ object GitHubReleaseParser {
         }
     }
 
+    /**
+     * The Releases Atom feed is not part of the REST API and therefore is not
+     * subject to the 60-requests/hour anonymous API limit. It gives the latest
+     * tag and title; the release workflow always names the APK and its checksum
+     * in a predictable way, so the download URLs can be built from that.
+     */
+    fun parseAtom(atom: String, repo: String): UpdateRelease? {
+        return try {
+            val entry = Regex("<entry\\b[^>]*>(.*?)</entry>", RegexOption.DOT_MATCHES_ALL)
+                .find(atom)?.groupValues?.get(1) ?: return null
+            val title = Regex("<title\\b[^>]*>(.*?)</title>", RegexOption.DOT_MATCHES_ALL)
+                .find(entry)?.groupValues?.get(1)
+                ?.replace(Regex("<!\\[CDATA\\[(.*?)]]>", RegexOption.DOT_MATCHES_ALL), "$1")
+                ?.replace("&amp;", "&")
+                ?.trim()
+                ?.takeIf { it.isNotBlank() }
+                ?: return null
+            val link = Regex(
+                "<link\\b[^>]*rel=\"alternate\"[^>]*href=\"([^\"]+)\"",
+                RegexOption.DOT_MATCHES_ALL
+            ).find(entry)?.groupValues?.get(1)
+                ?: Regex(
+                    "<link\\b[^>]*href=\"([^\"]+)\"[^>]*rel=\"alternate\"",
+                    RegexOption.DOT_MATCHES_ALL
+                ).find(entry)?.groupValues?.get(1)
+                ?: return null
+            val tag = link.trimEnd('/').substringAfterLast('/')
+            val versionCode = UpdateVersion.parseTag(tag) ?: return null
+            val versionName = title
+                .removePrefix("AutoClash")
+                .trim()
+                .ifBlank { tag.removePrefix("v").removePrefix("V") }
+            val apkName = "AutoClash-$versionName.apk"
+            val base = "https://github.com/$repo/releases/download/$tag/"
+            UpdateRelease(
+                versionCode = versionCode,
+                tag = tag,
+                title = title,
+                notes = "",
+                htmlUrl = link,
+                apk = UpdateAsset(
+                    name = apkName,
+                    url = base + apkName,
+                    size = 0L
+                ),
+                checksum = UpdateAsset(
+                    name = "$apkName.sha256",
+                    url = base + "$apkName.sha256",
+                    size = 0L
+                )
+            )
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     private fun JsonObject.string(key: String): String? {
         val element: JsonElement = get(key) ?: return null
         if (element.isJsonNull || !element.isJsonPrimitive) return null

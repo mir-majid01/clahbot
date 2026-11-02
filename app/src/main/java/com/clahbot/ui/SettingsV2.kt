@@ -123,7 +123,8 @@ fun SettingsScreenV2(
     onOpenController: () -> Unit,
     onResetPosition: () -> Unit,
     initialTab: Int = SettingsTab.PLAYBACK.ordinal,
-    resumeToken: Int = 0
+    resumeToken: Int = 0,
+    openUpdater: Boolean = false
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -133,7 +134,12 @@ fun SettingsScreenV2(
     val attacks by attackRepository.records.collectAsState()
     val controllerState by BotState.state.collectAsState()
 
-    var tab by remember { mutableIntStateOf(initialTab.coerceIn(0, SettingsTab.entries.lastIndex)) }
+    var tab by remember {
+        mutableIntStateOf(
+            if (openUpdater) SettingsTab.APP.ordinal
+            else initialTab.coerceIn(0, SettingsTab.entries.lastIndex)
+        )
+    }
     var refreshToken by remember { mutableIntStateOf(0) }
     var overlayOk by remember { mutableStateOf(false) }
     var accessibilityStatus by remember {
@@ -152,6 +158,75 @@ fun SettingsScreenV2(
     var updateStatus by remember { mutableStateOf<String?>(null) }
     var undoMacros by remember { mutableStateOf<List<Macro>?>(null) }
     var undoAttacks by remember { mutableStateOf<List<com.clahbot.data.models.AttackRecord>?>(null) }
+    var availableUpdate by remember { mutableStateOf<com.clahbot.update.UpdateRelease?>(null) }
+    var downloadedUpdate by remember { mutableStateOf<java.io.File?>(null) }
+    var autoUpdateHandled by remember { mutableStateOf(false) }
+
+    fun installUpdate(release: com.clahbot.update.UpdateRelease) {
+        if (updateBusy) return
+        updateBusy = true
+        scope.launch {
+            val file = downloadedUpdate ?: run {
+                updateStatus = "Downloading ${release.title}…"
+                when (val result = com.clahbot.update.GitHubUpdater.download(context, release)) {
+                    is com.clahbot.update.GitHubUpdater.DownloadResult.Ready -> {
+                        downloadedUpdate = result.file
+                        updateStatus = "Downloaded and checksum verified."
+                        result.file
+                    }
+
+                    is com.clahbot.update.GitHubUpdater.DownloadResult.Failure -> {
+                        updateStatus = result.message
+                        null
+                    }
+                }
+            }
+            if (file != null) {
+                when (val launch = com.clahbot.update.GitHubUpdater.launchInstaller(context, file)) {
+                    is com.clahbot.update.GitHubUpdater.InstallResult.Started ->
+                        updateStatus = "Android installer opened. Allow installs from this source, then confirm."
+
+                    is com.clahbot.update.GitHubUpdater.InstallResult.Failure ->
+                        updateStatus = launch.message
+                }
+            }
+            updateBusy = false
+        }
+    }
+
+    fun checkUpdates(autoInstall: Boolean) {
+        if (updateBusy) return
+        updateBusy = true
+        updateStatus = "Checking GitHub…"
+        availableUpdate = null
+        downloadedUpdate = null
+        scope.launch {
+            val result = runCatching { com.clahbot.update.GitHubUpdater.check() }.getOrNull()
+            updateStatus = when (result) {
+                is com.clahbot.update.GitHubUpdater.CheckResult.UpToDate -> "You are up to date."
+                is com.clahbot.update.GitHubUpdater.CheckResult.Available -> {
+                    availableUpdate = result.release
+                    "Update available: ${result.release.title}"
+                }
+
+                is com.clahbot.update.GitHubUpdater.CheckResult.Failure -> result.message
+                null -> "Could not check for updates."
+            }
+            updateBusy = false
+            if (autoInstall &&
+                result is com.clahbot.update.GitHubUpdater.CheckResult.Available
+            ) {
+                installUpdate(result.release)
+            }
+        }
+    }
+
+    LaunchedEffect(openUpdater) {
+        if (openUpdater && !autoUpdateHandled) {
+            autoUpdateHandled = true
+            checkUpdates(autoInstall = true)
+        }
+    }
 
     LaunchedEffect(Unit) {
         repository.refresh()
@@ -757,29 +832,51 @@ fun SettingsScreenV2(
                                 color = Color(Ds.MUTED)
                             )
                             Button(
-                                onClick = {
-                                    if (!updateBusy) {
-                                        updateBusy = true
-                                        updateStatus = "Checking GitHub…"
-                                        scope.launch {
-                                            val result = runCatching { com.clahbot.update.GitHubUpdater.check() }
-                                                .getOrNull()
-                                            updateStatus = when (result) {
-                                                is com.clahbot.update.GitHubUpdater.CheckResult.UpToDate -> "You are up to date."
-                                                is com.clahbot.update.GitHubUpdater.CheckResult.Available ->
-                                                    "Update available: ${result.release.title}"
-                                                is com.clahbot.update.GitHubUpdater.CheckResult.Failure -> result.message
-                                                null -> "Could not check for updates."
-                                            }
-                                            updateBusy = false
-                                        }
-                                    }
-                                },
+                                onClick = { checkUpdates(autoInstall = false) },
                                 enabled = !updateBusy,
                                 modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                                 colors = ButtonDefaults.buttonColors(containerColor = Color(Ds.ACCENT))
                             ) { Text(if (updateBusy) "Working…" else "Check GitHub for updates", fontSize = 12.sp) }
-                            updateStatus?.let { Text(it, fontSize = 10.sp, color = Color(Ds.MUTED)) }
+                            updateStatus?.let {
+                                Text(it, fontSize = 10.sp, color = Color(Ds.MUTED))
+                            }
+                            availableUpdate?.let { release ->
+                                Spacer(Modifier.height(8.dp))
+                                Text(
+                                    "${release.title} · ${release.tag}",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = Color(Ds.TEXT)
+                                )
+                                Text(
+                                    if (release.apk.size > 0) {
+                                        "APK ${formatBytesV2(release.apk.size)}"
+                                    } else {
+                                        "Latest release APK · checksum verified"
+                                    },
+                                    fontSize = 10.sp,
+                                    color = Color(Ds.MUTED)
+                                )
+                                Button(
+                                    onClick = { installUpdate(release) },
+                                    enabled = !updateBusy,
+                                    modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(Ds.PLAY))
+                                ) {
+                                    Text(
+                                        if (downloadedUpdate == null) "Download & install"
+                                        else "Open installer",
+                                        fontSize = 12.sp
+                                    )
+                                }
+                                Text(
+                                    "Android will ask to allow installs from this source the first time, " +
+                                        "then show the APK installer confirmation.",
+                                    fontSize = 9.sp,
+                                    color = Color(Ds.MUTED),
+                                    modifier = Modifier.padding(top = 4.dp)
+                                )
+                            }
                         }
                     }
                     item {

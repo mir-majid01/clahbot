@@ -104,6 +104,7 @@ class SettingsActivity : ComponentActivity() {
 
     companion object {
         const val EXTRA_TAB = "settings_tab"
+        const val EXTRA_OPEN_UPDATER = "open_updater"
 
         fun start(context: android.content.Context, tab: Int) {
             context.startActivity(
@@ -128,7 +129,8 @@ class SettingsActivity : ComponentActivity() {
                     onOpenController = { FloatingMenuService.show(this) },
                     onResetPosition = { FloatingMenuService.resetPosition(this) },
                     initialTab = intent.getIntExtra(EXTRA_TAB, 1),
-                    resumeToken = resumeToken
+                    resumeToken = resumeToken,
+                    openUpdater = intent.getBooleanExtra(EXTRA_OPEN_UPDATER, false)
                 )
             }
         }
