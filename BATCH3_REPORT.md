@@ -1,19 +1,43 @@
-# AutoClash 2.10.2 — v6 batch and follow-up report
+# AutoClash 2.10.3 — v6 batch and follow-up report
 
-Date: 2026-11-01  
-Release: **2.10.2 (versionCode 28)**  
-GitHub release: <https://github.com/mir-majid01/clahbot/releases/tag/v28>  
-CI-built APK: `AutoClash-2.10.2.apk` (51,067,493 bytes)  
-SHA-256: `15bd6f835875d37434b8d1fbf39a35ae2fb9dc49d616e6c829311c8e2dbef1f2`
+Date: 2026-11-02  
+Release: **2.10.3 (versionCode 29)**  
+GitHub release: <https://github.com/mir-majid01/clahbot/releases/tag/v29>  
+CI-built APK: `AutoClash-2.10.3.apk` (51,067,497 bytes)  
+SHA-256: `a61352a6961a79d36dc4178462ed9640949068bb251c42072b93132d61984aec`
 
 The release was built and signed by **GitHub Actions**, not on this machine.
 The downloaded release was installed in place on the Infinix X6876; the
 installed `/data/app/.../base.apk` hash matches the asset above,
-`versionCode=28`, `versionName=2.10.2`, and the package no longer has the
+`versionCode=29`, `versionName=2.10.3`, and the package no longer has the
 `DEBUGGABLE` flag. App data is preserved by the in-place update.
 
-Automated checks: **232 app unit tests, 2 skipped, 0 failures**; lint
+Automated checks: **233 app unit tests, 2 skipped, 0 failures**; lint
 **0 errors**.
+
+## 2.10.3 session totals, strip placement and minimize defaults
+
+- Floating session totals: the saved result was attached to the active session
+  explicitly (`syncWithRecords(includeIds)`), and Session scope now also
+  includes confirmed attacks that started during the still-active session even
+  if the session JSON has not caught up yet. The loot tiles and Recent list now
+  move together. Regression test:
+  `aRecordThatStartedBeforeTheSessionIsAttachedWhenExplicitlyIncluded`.
+- Playback strip position: the default is now the recording strip position
+  (centred at the top), or the user’s dragged recording-strip position. It is
+  no longer chosen from the macro’s touch points or docked to the right corner.
+- Strip corners on other OEMs: all controller/strip clamping now keeps an 8 dp
+  screen margin, so a panel cannot sit flush against a display edge and render
+  one flattened corner. We could not reproduce the Realme model here; the
+  centered placement and margin are the targeted fixes.
+- New Settings → Controller defaults:
+  - **Start recording strip minimized**
+  - **Start playback strip minimized**
+  Both persist and make the corresponding strip open as the compact pill.
+- Saving a recording now returns to the main floating controller after **2 s**
+  instead of 5 s.
+- 233 app tests pass (2 skipped); lint 0 errors. The 20-real-attack loot run
+  and a Realme hardware pass are still pending.
 
 ## 2.10.2 countdown and strip follow-up
 
