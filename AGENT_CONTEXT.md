@@ -68,6 +68,23 @@ Last updated: 2026-11-01
   `15bd6f835875d37434b8d1fbf39a35ae2fb9dc49d616e6c829311c8e2dbef1f2`;
   installed in place and verified on the phone.
 
+## 2.10.3 (versionCode 29) — session totals and strip defaults
+
+- Floating session loot now attaches the new result to the active session
+  explicitly and includes in-session attacks while the session file catches up,
+  so the top tiles and Recent list update together.
+- Playback strip defaults to the recording-strip position (centred top) and
+  reuses a dragged recording position. Controller/strip clamping keeps 8 dp
+  from screen edges to avoid flattened rounded corners on other OEMs.
+- Settings → Controller has independent “Start recording strip minimized” and
+  “Start playback strip minimized” switches, both persisted.
+- Save returns to the main floating controller after 2 s instead of 5 s.
+- 233 app tests pass (2 skipped); lint 0 errors. GitHub Actions release `v29`
+  built `AutoClash-2.10.3.apk`, SHA-256
+  `a61352a6961a79d36dc4178462ed9640949068bb251c42072b93132d61984aec`,
+  installed in place. Realme hardware and real-attack totals are still to be
+  checked by the user.
+
 Scope: Feature 1 results-screen loot OCR and its integration into AutoClash.
 Ranked is untouched. Product Features 2-5 have not been started.
 
