@@ -17,6 +17,7 @@ object GitHubUpdater {
     private const val TAG = "AutoClashUpdate"
     private const val REPO = "mir-majid01/clahbot"
     private const val API_URL = "https://api.github.com/repos/$REPO/releases/latest"
+    private const val ATOM_URL = "https://github.com/$REPO/releases.atom"
     private const val ASSET_API = "https://api.github.com/repos/$REPO/releases/assets"
     private const val MAX_JSON_BYTES = 2_000_000L
     private const val MAX_CHECKSUM_BYTES = 8_192L
@@ -39,8 +40,21 @@ object GitHubUpdater {
     }
 
     suspend fun check(): CheckResult = withContext(Dispatchers.IO) {
+        val atom = fetchText(ATOM_URL, MAX_JSON_BYTES, "application/atom+xml")
+        val fromFeed = atom?.let { GitHubReleaseParser.parseAtom(it, REPO) }
+        if (fromFeed != null) {
+            return@withContext if (fromFeed.isNewerThan(BuildConfig.VERSION_CODE)) {
+                CheckResult.Available(fromFeed)
+            } else {
+                CheckResult.UpToDate
+            }
+        }
+        checkApi()
+    }
+
+    private fun checkApi(): CheckResult {
         var connection: HttpURLConnection? = null
-        try {
+        return try {
             val conn = open(API_URL)
             connection = conn
             val code = conn.responseCode
@@ -50,7 +64,7 @@ object GitHubUpdater {
                 )
 
                 code == 403 -> CheckResult.Failure(
-                    "GitHub rate limit reached. Try again later."
+                    "GitHub is busy right now. Try again in a minute."
                 )
 
                 code !in 200..299 -> CheckResult.Failure("GitHub returned HTTP $code.")
@@ -245,10 +259,14 @@ object GitHubUpdater {
         }
     }
 
-    private fun fetchText(url: String, limit: Long): String? {
+    private fun fetchText(
+        url: String,
+        limit: Long,
+        accept: String = "application/vnd.github+json"
+    ): String? {
         var connection: HttpURLConnection? = null
         return try {
-            val conn = open(url)
+            val conn = open(url, accept)
             connection = conn
             if (conn.responseCode !in 200..299) return null
             conn.inputStream.bufferedReader().use { it.readLimited(limit) }

@@ -57,6 +57,39 @@ class GitHubReleaseParserTest {
     }
 
     @Test
+    fun parsesTheLatestReleaseFromTheAtomFeed() {
+        val atom = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <feed xmlns="http://www.w3.org/2005/Atom">
+              <entry>
+                <title>AutoClash 2.10.3</title>
+                <link rel="alternate" type="text/html"
+                    href="https://github.com/mir-majid01/clahbot/releases/tag/v29"/>
+              </entry>
+              <entry>
+                <title>AutoClash 2.10.2</title>
+                <link rel="alternate" type="text/html"
+                    href="https://github.com/mir-majid01/clahbot/releases/tag/v28"/>
+              </entry>
+            </feed>
+        """.trimIndent()
+
+        val release = GitHubReleaseParser.parseAtom(atom, "mir-majid01/clahbot")
+        requireNotNull(release)
+        assertEquals(29, release.versionCode)
+        assertEquals("v29", release.tag)
+        assertEquals("AutoClash 2.10.3", release.title)
+        assertEquals(
+            "https://github.com/mir-majid01/clahbot/releases/download/v29/AutoClash-2.10.3.apk",
+            release.apk.url
+        )
+        assertEquals(
+            "https://github.com/mir-majid01/clahbot/releases/download/v29/AutoClash-2.10.3.apk.sha256",
+            release.checksum?.url
+        )
+    }
+
+    @Test
     fun aNewerVersionIsDetected() {
         val release = requireNotNull(GitHubReleaseParser.parse(releaseJson))
 
