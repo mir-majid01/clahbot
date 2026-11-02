@@ -587,6 +587,16 @@ fun SettingsScreenV2(
                             SwitchRowV2("Start minimized", "Show only the floating logo when the controller opens.", settings.startMinimized) {
                                 value -> onUpdate { it.copy(startMinimized = value) }
                             }
+                            SwitchRowV2(
+                                "Start recording strip minimized",
+                                "Recording begins as the small pill; tap it to open the full strip.",
+                                settings.recordingStartMinimized
+                            ) { value -> onUpdate { it.copy(recordingStartMinimized = value) } }
+                            SwitchRowV2(
+                                "Start playback strip minimized",
+                                "Playback begins as the small pill; tap it to open the full strip.",
+                                settings.playbackStartMinimized
+                            ) { value -> onUpdate { it.copy(playbackStartMinimized = value) } }
                             Text("Opacity: ${(settings.controllerAlpha * 100).toInt()}%", fontSize = 12.sp, color = Color(Ds.TEXT))
                             Slider(
                                 value = settings.controllerAlpha,

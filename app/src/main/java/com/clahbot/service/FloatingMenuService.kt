@@ -81,7 +81,6 @@ import com.clahbot.data.models.RecordedGesture
 import com.clahbot.execution.MacroPlayer
 import com.clahbot.execution.MacroTimeline
 import com.clahbot.execution.StopSummary
-import com.clahbot.execution.PlaybackBubblePlacement
 import com.clahbot.overlay.BubbleCorner
 import com.clahbot.overlay.OverlayBounds
 import com.clahbot.overlay.OverlayPlacement
@@ -315,7 +314,7 @@ class FloatingMenuService : Service() {
                 scope.launch {
                     attackRepository.refresh()
                     GameSessionTracker.ensureSession(record.startedAt)
-                    GameSessionTracker.syncNow()
+                    GameSessionTracker.syncNow(includeIds = setOf(record.id))
                     renderStats()
                     refreshUi()
                 }
@@ -551,7 +550,7 @@ class FloatingMenuService : Service() {
                             panelWidth,
                             panelHeight,
                             safeBounds(),
-                            0
+                            dp(8)
                         ),
                         PlacementKind.CONTROLLER
                     )
@@ -1132,7 +1131,7 @@ class FloatingMenuService : Service() {
             panelWidth,
             panelHeight,
             safeBounds(),
-            0
+            dp(8)
         )
     }
 
@@ -1147,7 +1146,7 @@ class FloatingMenuService : Service() {
         } else {
             controllerView?.height?.takeIf { it > 0 } ?: dp(260)
         }
-        val margin = if (kind == PlacementKind.CONTROLLER) 0 else dp(8)
+        val margin = dp(8)
         return OverlayPlacement.clamp(x, y, width, height, safeBounds(), margin)
     }
 
@@ -1373,7 +1372,7 @@ class FloatingMenuService : Service() {
             panelWidth,
             panelHeight,
             safeBounds(),
-            0
+            dp(8)
         )
         applyWindowPoint(params, clamped, PlacementKind.CONTROLLER)
         refreshUi()
@@ -2335,7 +2334,7 @@ class FloatingMenuService : Service() {
         )
         // Choose the strip position before the first injected gesture. The
         // countdown is shown inside that strip, never in a second overlay.
-        placeControllerForPlayback(macro)
+        placeControllerForPlayback()
         scope.launch { resultsReader.warmUp() }
         scope.launch { repository.markPlayed(macro.id) }
         val startedAt = System.currentTimeMillis()
@@ -2371,54 +2370,28 @@ class FloatingMenuService : Service() {
     }
 
     /**
-     * Chooses where the playback strip will appear and stores it. The strip is
-     * entered by refreshUi once the player state is PLAYING, so a repository
-     * update between this call and play() cannot collapse it back to the icon.
+     * The playback strip uses the same default position as the recording
+     * strip: centred at the top. A recording strip the user dragged is reused
+     * so the two strips feel like one control surface.
      */
-    private fun placeControllerForPlayback(macro: Macro) {
+    private fun placeControllerForPlayback() {
         if (screenWidth <= 0 || screenHeight <= 0) return
-
-        val landscape = screenWidth > screenHeight
-        val topMargin = if (landscape) {
-            dp(BUBBLE_TOP_LANDSCAPE_DP)
-        } else {
-            dp(BUBBLE_TOP_DP)
-        }
+        val safe = safeBounds()
         val stripWidth = playbackStripWidthPx()
-        val corner = PlaybackBubblePlacement.chooseCorner(
-            points = macroTouchPoints(macro),
-            width = screenWidth,
-            height = screenHeight,
-            bubbleSizePx = stripWidth.toFloat(),
-            sideMarginPx = dp(BUBBLE_MARGIN_DP).toFloat(),
-            topMarginPx = topMargin.toFloat()
+        val centered = OverlayPoint(
+            safe.left + ((safe.width - stripWidth) / 2).coerceAtLeast(0),
+            safe.top + dp(8)
         )
-        val x = if (corner == BubbleCorner.TOP_RIGHT) {
-            screenWidth - stripWidth - dp(BUBBLE_MARGIN_DP)
-        } else {
-            dp(BUBBLE_MARGIN_DP)
-        }
+        val recording = overlayPositions?.get(positionKey(PlacementKind.RECORDING))
+        val chosen = recording ?: centered
         pendingPlaybackPoint = OverlayPlacement.clamp(
-            x,
-            topMargin,
+            chosen.x,
+            chosen.y,
             stripWidth,
             playbackStripHeightPx(),
-            safeBounds(),
+            safe,
             dp(8)
         )
-    }
-
-    private fun macroTouchPoints(macro: Macro): List<GesturePoint> {
-        val points = ArrayList<GesturePoint>()
-        for (gesture in macro.gestures) {
-            val stored = gesture.paths.filter { it.points.isNotEmpty() }
-            if (stored.isNotEmpty()) {
-                stored.forEach { points.addAll(it.points) }
-            } else {
-                points.addAll(MacroTimeline.effectivePoints(gesture))
-            }
-        }
-        return points
     }
 
     private fun togglePlaybackPause() {
@@ -2850,7 +2823,14 @@ class FloatingMenuService : Service() {
         val current = sessions.firstOrNull { it.active }
             ?: sessions.firstOrNull { it.attackCount > 0 || it.macroIds.isNotEmpty() }
         val scoped = if (statsScope == STATS_SESSION) {
-            if (current == null) emptyList() else all.filter { it.id in current.attackIds }
+            if (current == null) {
+                emptyList()
+            } else {
+                all.filter {
+                    it.id in current.attackIds ||
+                        (current.active && it.startedAt >= current.startedAt)
+                }
+            }
         } else {
             all
         }
@@ -4882,7 +4862,7 @@ class FloatingMenuService : Service() {
         val view = controllerView ?: return
         val params = controllerParams ?: return
         playbackChromeActive = true
-        playbackMinimized = false
+        playbackMinimized = settingsStore.settings.value.playbackStartMinimized
         collapsed = false
         collapseAnimator?.cancel()
         collapseAnimator = null
@@ -4897,10 +4877,11 @@ class FloatingMenuService : Service() {
         val stripWidth = playbackStripWidthPx()
         val safe = safeBounds()
         val saved = overlayPositions?.get(positionKey(PlacementKind.PLAYING))
-        val point = pointOverride ?: pendingPlaybackPoint ?: saved ?: OverlayPoint(
-            (safe.right - stripWidth - dp(8)).coerceAtLeast(safe.left + dp(8)),
+        val centered = OverlayPoint(
+            safe.left + ((safe.width - stripWidth) / 2).coerceAtLeast(0),
             safe.top + dp(8)
         )
+        val point = pointOverride ?: pendingPlaybackPoint ?: saved ?: centered
         pendingPlaybackPoint = null
         applyWindowPoint(
             params,
@@ -5096,8 +5077,8 @@ class FloatingMenuService : Service() {
         val view = controllerView ?: return
         val params = controllerParams ?: return
         recordingChromeActive = true
-        recordingMinimized = false
-        lastRecordingMinimized = false
+        recordingMinimized = settingsStore.settings.value.recordingStartMinimized
+        lastRecordingMinimized = recordingMinimized
         val safe = safeBounds()
         val barWidth = recordingStripWidthPx()
         val saved = overlayPositions?.get(positionKey(PlacementKind.RECORDING))
@@ -5213,7 +5194,7 @@ class FloatingMenuService : Service() {
                         panelWidth,
                         panelHeight,
                         safeBounds(),
-                        0
+                            dp(8)
                     ),
                     PlacementKind.CONTROLLER,
                     save = false
@@ -5953,7 +5934,7 @@ class FloatingMenuService : Service() {
         private const val REC_STRIP_HEIGHT = 44
         private const val REC_CONFIRM_MS = 3_000L
         private const val SAVE_AUTO_MS = 8_000L
-        private const val SAVED_UNDO_MS = 5_000L
+        private const val SAVED_UNDO_MS = 2_000L
         private const val PLAY_STRIP_LANDSCAPE_W = 368
         private const val PLAY_STRIP_PORTRAIT_W = 328
         private const val PLAY_STRIP_HEIGHT = 52

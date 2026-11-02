@@ -158,6 +158,23 @@ class SessionRepositoryTest {
     }
 
     @Test
+    fun aRecordThatStartedBeforeTheSessionIsAttachedWhenExplicitlyIncluded() = runBlocking {
+        repository.ensureActive(10_000L)
+        val early = record(id = 7, startedAt = 1_000L, gold = 100, elixir = 200, dark = 30)
+        val ignored = repository.syncWithRecords(listOf(early))!!
+        assertEquals(0, ignored.attackCount)
+        assertTrue(7L !in ignored.attackIds)
+
+        val attached = repository.syncWithRecords(
+            records = listOf(early),
+            includeIds = setOf(7L)
+        )!!
+        assertEquals(1, attached.attackCount)
+        assertTrue(7L in attached.attackIds)
+        assertEquals(100L, attached.gold)
+    }
+
+    @Test
     fun editedRecordIsRecomputedInPlace() = runBlocking {
         repository.ensureActive(1_000L)
         repository.syncWithRecords(

@@ -76,9 +76,9 @@ object GameSessionTracker {
         sessionRepository.refresh()
     }
 
-    suspend fun syncNow() {
+    suspend fun syncNow(includeIds: Set<Long> = emptySet()) {
         setupJob?.join()
-        sessionRepository.syncWithRecords(attackRepository.records.value)
+        sessionRepository.syncWithRecords(attackRepository.records.value, includeIds)
     }
 
     fun closeSessionAsync(status: String = GameSession.CLOSED) {

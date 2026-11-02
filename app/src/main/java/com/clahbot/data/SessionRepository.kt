@@ -141,7 +141,10 @@ class SessionRepository(private val file: File) {
         }
     }
 
-    suspend fun syncWithRecords(records: List<AttackRecord>): GameSession? =
+    suspend fun syncWithRecords(
+        records: List<AttackRecord>,
+        includeIds: Set<Long> = emptySet()
+    ): GameSession? =
         withContext(Dispatchers.IO) {
             mutex.withLock {
                 val all = readLocked().toMutableList()
@@ -150,7 +153,9 @@ class SessionRepository(private val file: File) {
                 val session = all[index]
                 val ids = session.attackIds.toMutableSet()
                 for (record in records) {
-                    if (record.confirmed && record.startedAt >= session.startedAt) {
+                    if (record.confirmed &&
+                        (record.startedAt >= session.startedAt || record.id in includeIds)
+                    ) {
                         ids.add(record.id)
                     }
                 }

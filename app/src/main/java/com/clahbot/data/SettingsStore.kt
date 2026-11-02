@@ -32,6 +32,8 @@ data class AppSettings(
     val hapticFeedback: Boolean = true,
     val keepScreenAwake: Boolean = true,
     val startMinimized: Boolean = false,
+    val recordingStartMinimized: Boolean = false,
+    val playbackStartMinimized: Boolean = false,
     val controllerAlpha: Float = 1f,
     val controllerScale: Float = 1f,
     val bubbleScale: Float = 1f,
@@ -69,6 +71,8 @@ class SettingsStore private constructor(private val prefs: SharedPreferences) {
             hapticFeedback = prefs.getBoolean(KEY_HAPTIC, true),
             keepScreenAwake = prefs.getBoolean(KEY_AWAKE, true),
             startMinimized = prefs.getBoolean(KEY_MINIMIZED, false),
+            recordingStartMinimized = prefs.getBoolean(KEY_REC_START_MINIMIZED, false),
+            playbackStartMinimized = prefs.getBoolean(KEY_PLAY_START_MINIMIZED, false),
             controllerAlpha = prefs.getFloat(KEY_ALPHA, 1f).coerceIn(MIN_ALPHA, 1f),
             controllerScale = prefs.getFloat(KEY_CONTROLLER_SCALE, 1f)
                 .coerceIn(MIN_CONTROLLER_SCALE, MAX_CONTROLLER_SCALE),
@@ -108,6 +112,8 @@ class SettingsStore private constructor(private val prefs: SharedPreferences) {
             .putBoolean(KEY_HAPTIC, normalized.hapticFeedback)
             .putBoolean(KEY_AWAKE, normalized.keepScreenAwake)
             .putBoolean(KEY_MINIMIZED, normalized.startMinimized)
+            .putBoolean(KEY_REC_START_MINIMIZED, normalized.recordingStartMinimized)
+            .putBoolean(KEY_PLAY_START_MINIMIZED, normalized.playbackStartMinimized)
             .putFloat(KEY_ALPHA, normalized.controllerAlpha)
             .putFloat(KEY_CONTROLLER_SCALE, normalized.controllerScale)
             .putFloat(KEY_BUBBLE_SCALE, normalized.bubbleScale)
@@ -166,6 +172,8 @@ class SettingsStore private constructor(private val prefs: SharedPreferences) {
         private const val KEY_HAPTIC = "haptic"
         private const val KEY_AWAKE = "keep_awake"
         private const val KEY_MINIMIZED = "start_minimized"
+        private const val KEY_REC_START_MINIMIZED = "recording_start_minimized"
+        private const val KEY_PLAY_START_MINIMIZED = "playback_start_minimized"
         private const val KEY_ALPHA = "controller_alpha"
         private const val KEY_CONTROLLER_SCALE = "controller_scale"
         private const val KEY_BUBBLE_SCALE = "bubble_scale"
