@@ -1,19 +1,41 @@
-# AutoClash 2.10.3 — v6 batch and follow-up report
+# AutoClash 2.10.4 — v6 batch and follow-up report
 
 Date: 2026-11-02  
-Release: **2.10.3 (versionCode 29)**  
-GitHub release: <https://github.com/mir-majid01/clahbot/releases/tag/v29>  
-CI-built APK: `AutoClash-2.10.3.apk` (51,067,497 bytes)  
-SHA-256: `a61352a6961a79d36dc4178462ed9640949068bb251c42072b93132d61984aec`
+Release: **2.10.4 (versionCode 30)**  
+GitHub release: <https://github.com/mir-majid01/clahbot/releases/tag/v30>  
+CI-built APK: `AutoClash-2.10.4.apk` (51,075,717 bytes)  
+SHA-256: `3b7cc869c1bb756006dccf783d28e23192ffbfc07f30b50fc7b110f148c35ce9`
 
 The release was built and signed by **GitHub Actions**, not on this machine.
 The downloaded release was installed in place on the Infinix X6876; the
 installed `/data/app/.../base.apk` hash matches the asset above,
-`versionCode=29`, `versionName=2.10.3`, and the package no longer has the
+`versionCode=30`, `versionName=2.10.4`, and the package no longer has the
 `DEBUGGABLE` flag. App data is preserved by the in-place update.
 
-Automated checks: **233 app unit tests, 2 skipped, 0 failures**; lint
+Automated checks: **234 app unit tests, 2 skipped, 0 failures**; lint
 **0 errors**.
+
+## 2.10.4 updater rate limit, notification and install flow
+
+- Update checks now use the GitHub **Releases Atom feed** first. It is not part
+  of the REST API and is not subject to the anonymous 60-requests/hour quota,
+  so repeated checks no longer show “GitHub rate limit reached.” The REST API
+  is only a fallback, with a friendly “GitHub is busy” message.
+- The Settings → App update card is now complete: it shows the available
+  release, downloads the APK with SHA-256 verification, and opens the Android
+  installer. It explains that Android may ask to allow installs from this
+  source, then the APK confirmation.
+- `REQUEST_INSTALL_PACKAGES` is declared again because a self-updater cannot
+  open the package installer reliably without it. The release is still
+  non-debuggable and signed with the stable key.
+- The app checks for updates on launch (at most every 6 hours) and posts one
+  notification per new version. Tapping the notification opens the App tab,
+  checks again, downloads, and launches the installer automatically.
+- Added an Atom parser test. The 2.10.3 → 2.10.4 end-to-end notification tap
+  could not be exercised by downgrading the phone because Android rejected the
+  test downgrade; the final 2.10.4 release is installed and the next published
+  version will exercise it normally.
+- 234 app tests pass (2 skipped); lint 0 errors.
 
 ## 2.10.3 session totals, strip placement and minimize defaults
 
