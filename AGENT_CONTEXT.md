@@ -34,7 +34,13 @@ Last updated: 2026-11-02
 - Known gaps: the requested screenshot folder was a placeholder, so no
   labelled accuracy table; failed recovery stops instead of resuming; a
   landmark and camera macro must be set before a cycle can run.
-- Device pass for Test (no spend), Live N=1 and an injected popup is pending.
+- GitHub Actions run `41592266222` built `AutoClash-2.11.0.apk`
+  (51,157,274 bytes, SHA-256
+  `eae58f092029d914246aa7c71514941ab6d953f7ba8fe5178bb5d8bad9ae0844`,
+  versionCode 32), downloaded and hash-verified here.
+- Device pass is pending: the phone was not connected over adb. Test (no
+  spend), Live N=1 and an injected popup still need to be run after
+  `adb install -r` and re-enabling accessibility.
 
 ## 2.10.5 (versionCode 31) — strip name and save name
 
