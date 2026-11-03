@@ -1,3 +1,142 @@
+# AutoClash 2.11.0 — smart recovery + auto wall upgrader
+
+Date: 2026-11-02  
+Release: **2.11.0 (versionCode 32)**, built and signed by GitHub Actions on tag `v32`.
+
+## What this batch adds
+
+### 1. Game screen-state engine (`com.clahbot.game`)
+
+- `GameScreenEngine.inspect(bitmap, OcrPage, foregroundPackage)` classifies
+  NOT_CLASH, POPUP(kind), BATTLE, RESULTS, SEARCHING, ATTACK_MENU, HOME,
+  LOADING and UNKNOWN in that order. Text anchors are stored in screen
+  fractions, so one engine serves any resolution.
+- Colour anchors come from a 240×135 downscaled flood fill: squarish red X
+  (1.2–6% width), wide green confirm (≥8% width, aspect ≥1.4), gem icons
+  (small bright green blobs) and a dimmed scrim.
+- Every pass returns state, confidence, popup kind, close/confirm boxes, safe
+  targets, forbidden boxes, text lines, frame size, average hash, mean value
+  and saturation.
+
+### 2. Smart recovery (`com.clahbot.recovery`)
+
+- `RecoveryWatchdog` polls at 1 Hz during every macro run and re-observes at
+  800 ms inside a recovery attempt.
+- Popup grace 6 s → `RecoveryAgent.clearPopup` (3 tries, 800 ms apart) with
+  the amber strip “Closing a popup… try N of 3”. Success resumes the player;
+  failure stops the run and marks it interrupted.
+- Limits: 3 recoveries per loop and 8 per hour. At either limit the run stops,
+  the reason is logged and a screenshot is saved to the Unknown gallery.
+- NOT_CLASH: BACK once, launch Clash, wait up to 20 s. Screen off or locked
+  stops immediately. A frozen frame (identical hash for 20 s, outside
+  searching/results/loading) gets 2 clear attempts and then stops.
+- Unknown screens are saved after 15 s, capped at 20 screenshots. The
+  dashboard gallery offers Teach: tap the spot, name it, choose Tap here /
+  Close ✕ / Wait / Go home. Taught rules match by image hash (distance ≤ 3).
+- After 3 clean loops (RESULTS → HOME/ATTACK_MENU) the watchdog logs the
+  learned sequence.
+- Built-in rules: connection lost → Reload; Surrender?/Exit? → Cancel; gem
+  dialog → red X only; shop/offer/rate/season → red X.
+
+### The never-press list is code, not a promise in a rule file
+
+`SafeActionFactory` is the only place recovery actions are born. Every target
+is checked against the observation's forbidden boxes (every gem blob expanded,
+plus Buy / Surrender / End Battle / Quit / Exit / Charge / Top up / Gems
+captions). On a gem-spend dialog every caption action is refused and only the
+red X is proposed. Tests that fail if this ever breaks:
+
+- `SafeActionFactoryTest.no candidate action ever intersects a forbidden box`
+  enumerates every built-in rule and the generic chain.
+- `SafeActionFactoryTest.an action aimed at a gem button is refused by the factory`.
+- `SafeActionFactoryTest.gem dialog refuses every caption action`.
+- `BitmapIconColorSamplerTest.wall ring blue is never classified` — a blue
+  Wall Ring can never become a gold/elixir price at all.
+
+### 3. Auto wall upgrader (`com.clahbot.walls`)
+
+- Walls tab in the controller: on/off, line progress “34 / 120 walls”, cost per
+  wall for gold and elixir with per-resource switches, Detect price, reserves
+  and run-when thresholds (1M steps), spend caps (session/day), priority
+  (gold first / elixir first / fuller first), max per cycle, current wall
+  level, camera macro picker, landmark marking and cycle history.
+- 10b setup overlay: full-screen and only present while setting up. Green A
+  and red B markers are dragged over the captured frame, tap dots are drawn
+  along the line, total walls and already-at-max are steppers, Cancel / Save.
+- Landmark: drag one marker to a stable patch near the walls and save it. The
+  patch is template-matched every cycle (coarse ¼-scale NCC, full-res
+  refine, 24 px tolerance, one retry through the camera macro).
+- Cycle: balances consensus read → N = floor((balance − reserve)/cost)
+  clamped by max per cycle and walls remaining → camera macro + alignment →
+  tap the wall at the line position and verify “Wall (Level X)” (then ±1..3
+  neighbours) → Upgrade More, +10 × floor(N/10), +1 × N mod 10 with count
+  verification → read the gold/elixir price and compare to the setting (3%)
+  → tap Upgrade → read the LARGE price in the confirm dialog (the small
+  struck-through original is ignored) → Test closes the dialog with X and
+  logs “would have spent”; Live confirms → verify the balance dropped by
+  about the price → advance progress and write the cycle log.
+- Refusals: no line, no level, not on HOME, macro running, price >3% higher,
+  balance not verified, gem/insufficient dialog (close with X, mark
+  insufficient), spend caps reached, no Upgrade buttons — each stops the
+  cycle and reports why.
+- Stop always wins: the stop button cancels the job and closes an open dialog
+  with X or Cancel.
+- The blue Wall Ring button is structurally unbuyable: prices only come from
+  `BitmapIconColorSampler`, which never returns blue.
+
+### 4. UI (10a–10d)
+
+- Controller tabs Macros | Stats | Walls.
+- Blue wall strip “Walls · Gold · 8 of 40” with the same 52 dp size and stop
+  button as the playback strip; the amber recovery strip swaps in during a
+  recovery; result toasts auto-dismiss after 5 s.
+- Dashboard Automation card: Recovered / Stopped / Unknown counters and the
+  Unknown screens gallery with Teach.
+- Dashboard Walls card reads the same `walls.json` state as the overlay.
+- None of the overlay wall/recovery flows starts an Activity; setup and
+  pickers are overlay windows.
+
+## Verification
+
+- `./gradlew testDebugUnitTest` (all modules): **313 app tests, 2 skipped,
+  0 failures; 50 ocrlab tests, 0 failures**. 71 new tests: WallMathTest 28,
+  WallDialogParserTest 7, WallBarReaderTest 8, SafeActionFactoryTest 12,
+  GameScreenEngineTest 11, BitmapIconColorSamplerTest 5.
+- `./gradlew :app:lintDebug`: **0 errors, 239 warnings** (pre-existing
+  hardcoded-string and deprecation warnings).
+- The engine fixtures cover all nine classes with synthetic bitmaps + OCR
+  pages, including the gem-dialog forbidden box and the red-X close button.
+- Wall-bar fixtures cover the selection caption, Upgrade vs Upgrade More,
+  +10 / +1 exact matching, the x-count chip, gold-only pricing, the blue ring
+  refusal and the bar-band cutoff.
+
+## Honest gaps and deviations
+
+- The screenshot folder in the request was a literal placeholder
+  (`[FOLDER PATH]`), so a per-class accuracy table on your labelled screenshots
+  could not be produced. The engine ships with the fixture suite above, and the
+  device pass records the real transitions it observed (the watchdog logs
+  state and confidence).
+- On a failed recovery the run STOPS and is marked interrupted instead of
+  resuming into a possibly desynchronised gesture stream. This is a deliberate
+  safety choice.
+- “Run when” triggers check the balances once a minute while the game is on
+  HOME and no other run is active.
+- Until a landmark is marked and a walls camera macro is picked, the cycle
+  stops with “Camera alignment failed” — there is no fallback to blind taps.
+- Wall-flow screenshots from your phone were not available here; the device
+  pass captures the wall bar, confirm dialog and gem dialog for the record.
+
+## Device pass (2.11.0)
+
+Pending — filled after install:
+
+- [ ] Test (no spend) cycle with logs
+- [ ] Live cycle N=1
+- [ ] Loop with an injected popup
+
+---
+
 # AutoClash 2.10.5 — v6 batch and follow-up report
 
 Date: 2026-11-02  

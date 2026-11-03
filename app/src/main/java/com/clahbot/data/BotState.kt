@@ -68,6 +68,34 @@ object BotState {
     private val _playbackElapsedMs = MutableStateFlow(0L)
     val playbackElapsedMs: StateFlow<Long> = _playbackElapsedMs.asStateFlow()
 
+    /** Amber smart-recovery strip: label like "Closing a popup… try 1 of 3". */
+    private val _recoveryStrip = MutableStateFlow<RecoveryStripUi?>(null)
+    val recoveryStrip: StateFlow<RecoveryStripUi?> = _recoveryStrip.asStateFlow()
+
+    /** Blue wall-cycle strip: label like "Walls · Gold · 8 of 40". */
+    private val _wallStrip = MutableStateFlow<WallStripUi?>(null)
+    val wallStrip: StateFlow<WallStripUi?> = _wallStrip.asStateFlow()
+
+    /** Auto-dismissing result toast (5 s) for wall/recovery outcomes. */
+    private val _resultToast = MutableStateFlow<ResultToastUi?>(null)
+    val resultToast: StateFlow<ResultToastUi?> = _resultToast.asStateFlow()
+
+    fun setRecoveryStrip(value: RecoveryStripUi?) {
+        _recoveryStrip.value = value
+    }
+
+    fun setWallStrip(value: WallStripUi?) {
+        _wallStrip.value = value
+    }
+
+    fun setResultToast(kind: ResultToastUi.Kind, text: String) {
+        _resultToast.value = ResultToastUi(id = System.nanoTime(), kind = kind, text = text)
+    }
+
+    fun clearResultToast(id: Long) {
+        if (_resultToast.value?.id == id) _resultToast.value = null
+    }
+
     fun setState(value: ControllerState) {
         val old = _state.value
         _state.value = value
@@ -129,6 +157,18 @@ object BotState {
     fun setPlaybackElapsed(ms: Long) {
         _playbackElapsedMs.value = ms.coerceAtLeast(0L)
     }
+}
+
+data class RecoveryStripUi(val label: String, val tryIndex: Int, val tryCount: Int)
+
+data class WallStripUi(val label: String)
+
+data class ResultToastUi(
+    val id: Long,
+    val kind: Kind,
+    val text: String
+) {
+    enum class Kind { SUCCESS, WARNING }
 }
 
 /**

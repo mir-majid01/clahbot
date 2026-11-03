@@ -206,6 +206,43 @@ class AppResultsReader(private val context: Context) {
         return EpisodeRead(page, inspection, read, rows, timings)
     }
 
+    /**
+     * Full-page OCR for the screen-state engine and the wall bar reader. The
+     * expensive engines were warmed by warmUp(), so callers only pay for the
+     * recognition itself.
+     */
+    suspend fun page(bitmap: Bitmap): OcrPage {
+        warmUp()
+        return readMutex.withLock {
+            mlKit.recognize(bitmap)
+        }
+    }
+
+    /**
+     * One number crop (home balance bars, wall-bar prices) through the same
+     * consensus core as results rows. rawText is the full-page line when one
+     * exists, else empty. Returns the agreed value or null when readers could
+     * not agree.
+     */
+    suspend fun readNumber(
+        bitmap: Bitmap,
+        box: com.clahbot.ocr.OcrBox,
+        rawText: String,
+        resource: com.clahbot.ocr.ResourceKind?
+    ): Long? {
+        warmUp()
+        return readMutex.withLock {
+            val reader = rowReader ?: return@withLock null
+            val row = com.clahbot.ocr.RowCandidate(
+                box = box,
+                rawText = rawText,
+                role = com.clahbot.ocr.RowRole.BALANCE,
+                resource = resource
+            )
+            reader.read(bitmap, row, 0, null, templateVoteEligible = true).combined
+        }
+    }
+
     fun closeAsync() {
         closeScope.launch {
             initMutex.withLock {

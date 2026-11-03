@@ -2,6 +2,40 @@
 
 Last updated: 2026-11-02
 
+## 2.11.0 (versionCode 32) — smart recovery + auto wall upgrader
+
+- New `com.clahbot.game` engine classifies NOT_CLASH / POPUP(kind) / BATTLE /
+  RESULTS / SEARCHING / ATTACK_MENU / HOME / LOADING / UNKNOWN from OCR text
+  anchors in screen fractions plus colour blobs (red X, wide green confirm,
+  gem icons, scrim) on a 240×135 grid.
+- New `com.clahbot.recovery` watchdog runs at 1 Hz during every macro play:
+  closes popups after a 6 s grace with 3 tries 800 ms apart (amber strip),
+  resumes the player, and stops the run after 3 recoveries in a loop or 8 per
+  hour (screenshot saved). Handles NOT_CLASH (BACK + launch), frozen frames
+  (20 s), loading (25 s), and saves unknown screens after 15 s (cap 20).
+  Taught rules and the gallery live in the dashboard Automation card; rules
+  match by image hash (distance ≤ 3).
+- Safety is structural: `SafeActionFactory` refuses any action intersecting a
+  forbidden box (gem blobs, Buy/Surrender/End Battle/Quit/Exit/Charge/Top
+  up/Gems captions); gem dialogs only ever close with the red X. Tests:
+  `SafeActionFactoryTest` (12) and `BitmapIconColorSamplerTest` (5).
+- New `com.clahbot.walls` upgrader: settings + line A→B (fraction geometry,
+  10b overlay), landmark template alignment (NCC), 10-step cycle, price
+  verification against the user's cost (3%), large-dialog price parsing
+  (struck-through ignored), Test mode closes with X, Live confirms, balance
+  drop verification, spend caps, and progress/history. The blue Wall Ring can
+  never be bought because prices only come from the icon-colour sampler.
+- UI: controller tabs Macros | Stats | Walls; blue wall strip (52 dp, stop),
+  amber recovery strip, 5 s result toasts; dashboard Automation card with
+  Recovered / Stopped / Unknown and Unknown gallery + Teach; dashboard Walls
+  card reads the same walls.json.
+- Gates: 313 app tests (2 skipped, 0 failures) + 50 ocrlab tests, lint
+  0 errors / 239 warnings. Engine fixtures cover all nine states.
+- Known gaps: the requested screenshot folder was a placeholder, so no
+  labelled accuracy table; failed recovery stops instead of resuming; a
+  landmark and camera macro must be set before a cycle can run.
+- Device pass for Test (no spend), Live N=1 and an injected popup is pending.
+
 ## 2.10.5 (versionCode 31) — strip name and save name
 
 - Playback strip is now two lines in the same 52 dp: the macro name gets the
