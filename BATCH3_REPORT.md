@@ -1,7 +1,17 @@
 # AutoClash 2.11.0 — smart recovery + auto wall upgrader
 
 Date: 2026-11-02  
-Release: **2.11.0 (versionCode 32)**, built and signed by GitHub Actions on tag `v32`.
+Release: **2.11.0 (versionCode 32)**  
+GitHub release: <https://github.com/mir-majid01/clahbot/releases/tag/v32>  
+GitHub Actions run `41592266222` succeeded.  
+CI-built APK: `AutoClash-2.11.0.apk` (51,157,274 bytes)  
+SHA-256: `eae58f092029d914246aa7c71514941ab6d953f7ba8fe5178bb5d8bad9ae0844`
+
+The release was built and signed by **GitHub Actions**, not on this machine. The
+APK was downloaded here and its SHA-256 matches the asset; `aapt` reads
+`versionCode=32`, `versionName=2.11.0`. The first v32 tag was cancelled before
+anything was published because a Live-mode price check was tightened; the
+published tag points at commit `2fd73ee`.
 
 ## What this batch adds
 
@@ -129,8 +139,11 @@ red X is proposed. Tests that fail if this ever breaks:
 
 ## Device pass (2.11.0)
 
-Pending — filled after install:
+**Not run yet.** The phone was not connected over adb during this session
+(`adb devices` empty), so nothing was installed or tapped. The verified APK is
+ready at `.release/AutoClash-2.11.0.apk`. The pass, when the phone is connected:
 
+- [ ] `adb install -r` (data preserved) and re-enable accessibility
 - [ ] Test (no spend) cycle with logs
 - [ ] Live cycle N=1
 - [ ] Loop with an injected popup
