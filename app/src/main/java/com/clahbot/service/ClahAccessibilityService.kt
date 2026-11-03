@@ -30,6 +30,25 @@ class ClahAccessibilityService : AccessibilityService() {
         val windowId: Int?
     )
 
+    /** A captured game frame plus the window's on-screen bounds, so frame
+     *  pixel coordinates can be mapped to screen coordinates for taps. */
+    data class GameFrame(
+        val bitmap: Bitmap,
+        val windowBounds: Rect?,
+        val windowPackage: String?
+    )
+
+    private fun gameWindowBounds(): Rect? {
+        val window = gameWindow() ?: return null
+        val bounds = Rect()
+        return try {
+            window.getBoundsInScreen(bounds)
+            bounds
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
@@ -316,6 +335,39 @@ class ClahAccessibilityService : AccessibilityService() {
         }
 
         suspend fun captureScreenshot(): Bitmap? = captureShot()?.bitmap
+
+        /**
+         * The frame the recovery watchdog and the wall upgrader act on: the
+         * game window when it exists, else the masked display. The window
+         * bounds travel with the frame so taps can be mapped to the screen.
+         */
+        suspend fun captureGameFrame(): GameFrame? {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                val service = instance ?: return null
+                val bounds = withContext(Dispatchers.Main.immediate) {
+                    runCatching { service.gameWindowBounds() }.getOrNull()
+                }
+                val window = withContext(Dispatchers.Main.immediate) {
+                    runCatching { service.gameWindow() }.getOrNull()
+                }
+                if (window != null) {
+                    val (bitmap, _) = service.captureWindowScreenshot(window.id)
+                    if (bitmap != null) {
+                        return GameFrame(
+                            bitmap = bitmap,
+                            windowBounds = bounds,
+                            windowPackage = currentForegroundPackage()
+                        )
+                    }
+                }
+            }
+            val shot = captureShot() ?: return null
+            return GameFrame(
+                bitmap = shot.bitmap,
+                windowBounds = null,
+                windowPackage = shot.windowPackage
+            )
+        }
 
         private const val TAG = "AutoClashAccessibility"
         private const val SCREENSHOT_TIMEOUT_MS = 3_000L

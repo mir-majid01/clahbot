@@ -87,6 +87,15 @@ import com.clahbot.data.SessionRepository
 import com.clahbot.data.SettingsStore
 import com.clahbot.session.GameSessionTracker
 import com.clahbot.ui.dashboard.AcEmptyCard
+import com.clahbot.ui.dashboard.AcAutomationSection
+import com.clahbot.ui.dashboard.AcWallsCard
+import com.clahbot.ui.dashboard.AcTeachSheet
+import com.clahbot.ui.dashboard.AcUnknownGallery
+import com.clahbot.ui.dashboard.taughtRule
+import com.clahbot.ui.dashboard.TeachAction
+import com.clahbot.recovery.RecoveryRepository
+import com.clahbot.recovery.UnknownScreen
+import com.clahbot.walls.WallsRepository
 import com.clahbot.ui.dashboard.AcGameCard
 import com.clahbot.ui.dashboard.AcHeader
 import com.clahbot.ui.dashboard.AcLibraryActions
@@ -315,8 +324,12 @@ fun DashboardScreen(
     val scope = rememberCoroutineScope()
     val attackRepository = remember { AttackRepository.get(context) }
     val sessionRepository = remember { SessionRepository.get(context) }
+    val recoveryRepository = remember { RecoveryRepository.get(context) }
+    val wallsRepository = remember { WallsRepository.get(context) }
     val attacks by attackRepository.records.collectAsState()
     val sessions by sessionRepository.sessions.collectAsState()
+    val recoveryFile by recoveryRepository.state.collectAsState()
+    val wallsFile by wallsRepository.state.collectAsState()
     val macros by viewModel.macros.collectAsState()
     val selectedId by BotState.selectedMacroId.collectAsState()
     val controllerState by BotState.state.collectAsState()
@@ -347,6 +360,12 @@ fun DashboardScreen(
     var reviewBannerDismissed by remember { mutableStateOf(false) }
     var lastReviewCount by remember { mutableStateOf(0) }
     var expandedStatsSession by remember { mutableStateOf<Long?>(null) }
+    var showUnknownGallery by remember { mutableStateOf(false) }
+    var teachingEntry by remember { mutableStateOf<UnknownScreen?>(null) }
+    var teachingBitmap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
+    var galleryBitmaps by remember {
+        mutableStateOf<Map<String, android.graphics.Bitmap>>(emptyMap())
+    }
     LaunchedEffect(historyRequest) {
         if (historyRequest > 0) showHistory = true
     }
@@ -384,9 +403,39 @@ fun DashboardScreen(
     LaunchedEffect(Unit) {
         attackRepository.refresh()
         sessionRepository.refresh()
+        recoveryRepository.refresh()
+        wallsRepository.refresh()
         viewModel.refresh()
         val active = sessionRepository.sessions.value.firstOrNull { it.active }
         statsScope = if ((active?.attackCount ?: 0) > 0) 0 else 1
+    }
+
+    LaunchedEffect(teachingEntry?.id) {
+        val entry = teachingEntry
+        teachingBitmap = entry?.let {
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    android.graphics.BitmapFactory.decodeFile(
+                        recoveryRepository.screenshotFile(it).absolutePath
+                    )
+                }.getOrNull()
+            }
+        }
+    }
+
+    LaunchedEffect(showUnknownGallery) {
+        if (!showUnknownGallery) return@LaunchedEffect
+        galleryBitmaps = withContext(Dispatchers.IO) {
+            val loaded = mutableMapOf<String, android.graphics.Bitmap>()
+            for (entry in recoveryFile.unknown) {
+                runCatching {
+                    android.graphics.BitmapFactory.decodeFile(
+                        recoveryRepository.screenshotFile(entry).absolutePath
+                    )
+                }.getOrNull()?.let { loaded[entry.id] = it }
+            }
+            loaded
+        }
     }
 
     LaunchedEffect(Unit) {
@@ -696,6 +745,21 @@ fun DashboardScreen(
                 )
             }
             item {
+                AcAutomationSection(
+                    stats = recoveryFile.stats,
+                    unknownCount = recoveryFile.unknown.size,
+                    onOpenGallery = { showUnknownGallery = true }
+                )
+            }
+            item {
+                AcWallsCard(
+                    settings = wallsFile.settings,
+                    cameraMacroName = macros
+                        .firstOrNull { it.id == wallsFile.settings.cameraMacroId }
+                        ?.name
+                )
+            }
+            item {
                 Column {
                     AcSectionHeader(
                         title = "Macro library",
@@ -896,6 +960,48 @@ fun DashboardScreen(
             }
         }
         }
+    }
+
+    if (showUnknownGallery) {
+        AcUnknownGallery(
+            entries = recoveryFile.unknown,
+            loadBitmap = { entry -> galleryBitmaps[entry.id] },
+            onTeach = { entry ->
+                teachingEntry = entry
+                showUnknownGallery = false
+            },
+            onDelete = { entry ->
+                galleryBitmaps = galleryBitmaps - entry.id
+                recoveryRepository.deleteUnknownScreen(entry.id)
+                recoveryRepository.refresh()
+            },
+            onClose = { showUnknownGallery = false }
+        )
+    }
+
+    teachingEntry?.let { entry ->
+        AcTeachSheet(
+            entry = entry,
+            bitmap = teachingBitmap,
+            onSave = { name, action, tapX, tapY ->
+                val bitmap = teachingBitmap
+                if (bitmap != null) {
+                    scope.launch {
+                        val hash = withContext(Dispatchers.Default) {
+                            recoveryRepository.hashDistanceFrom(bitmap)
+                        }
+                        recoveryRepository.saveRule(
+                            taughtRule(entry, name, action, tapX, tapY, hash)
+                        )
+                        recoveryRepository.markTaught(entry.id)
+                        recoveryRepository.refresh()
+                        Toast.makeText(context, "Rule saved", Toast.LENGTH_SHORT).show()
+                    }
+                }
+                teachingEntry = null
+            },
+            onCancel = { teachingEntry = null }
+        )
     }
 
     settingsMacro?.let { macro ->

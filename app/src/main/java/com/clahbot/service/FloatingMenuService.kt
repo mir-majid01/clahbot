@@ -51,6 +51,7 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.PopupWindow
 import android.widget.ScrollView
+import android.widget.Switch
 import android.widget.TextView
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
@@ -101,6 +102,22 @@ import com.clahbot.results.AppResultsReader
 import com.clahbot.results.CaptureSession
 import com.clahbot.results.ResultCaptureGate
 import com.clahbot.results.ResultsCaptureCoordinator
+import com.clahbot.game.GameScreenEngine
+import com.clahbot.game.GameState
+import com.clahbot.recovery.RecoveryAgent
+import com.clahbot.recovery.RecoveryRepositoryHolder
+import com.clahbot.recovery.RecoveryWatchdog
+import com.clahbot.data.RecoveryStripUi
+import com.clahbot.data.ResultToastUi
+import com.clahbot.overlay.WallLineView
+import com.clahbot.walls.WallCamera
+import com.clahbot.walls.WallLine
+import com.clahbot.walls.WallPriority
+import com.clahbot.walls.WallResource
+import com.clahbot.walls.WallRunMode
+import com.clahbot.walls.WallSettings
+import com.clahbot.walls.WallUpgrader
+import com.clahbot.walls.WallsRepository
 import com.clahbot.session.GameSessionTracker
 import com.clahbot.ui.MacroInputActivity
 import com.clahbot.ui.MacroInputRelay
@@ -253,6 +270,23 @@ class FloatingMenuService : Service() {
     private lateinit var resultsReader: AppResultsReader
     private lateinit var resultsCapture: ResultsCaptureCoordinator
 
+    private lateinit var wallsRepository: WallsRepository
+    private val gameEngine = GameScreenEngine()
+    private var recoveryAgent: RecoveryAgent? = null
+    private var recoveryWatchdog: RecoveryWatchdog? = null
+    private var wallUpgrader: WallUpgrader? = null
+    private var wallChromeActive = false
+    private var wallSetupView: View? = null
+    private var wallSetupMode = WallSetupMode.NONE
+    private var wallSetupFrameBitmap: android.graphics.Bitmap? = null
+    private var wallSetupA = DEFAULT_LINE_A
+    private var wallSetupB = DEFAULT_LINE_B
+    private var wallSetupTotal = DEFAULT_TOTAL_WALLS
+    private var wallSetupDone = 0
+    private var resultToastHide: Runnable? = null
+
+    private enum class WallSetupMode { NONE, LINE, LANDMARK, CAMERA, RESERVE }
+
     private val timerRunnable = object : Runnable {
         override fun run() {
             if (!recording) return
@@ -281,6 +315,9 @@ class FloatingMenuService : Service() {
         }.getOrNull() ?: "?"
         AppEventLog.init(this, versionName)
         resultsReader = AppResultsReader(this)
+        wallsRepository = WallsRepository.get(this)
+        RecoveryRepositoryHolder.init(this)
+        recoveryAgent = RecoveryAgent(gameEngine, resultsReader)
         ClahAccessibilityService.overlayMaskProvider = {
             controllerBoundsSnapshot?.let { bounds ->
                 listOf(
@@ -372,6 +409,10 @@ class FloatingMenuService : Service() {
                 refreshUi()
             }
         }
+        scope.launch { BotState.wallStrip.collect { refreshUi() } }
+        scope.launch { BotState.recoveryStrip.collect { refreshUi() } }
+        scope.launch { BotState.resultToast.collect { applyResultToast(it) } }
+        handler.postDelayed(wallAutoTicker, WALL_AUTO_POLL_MS)
         scope.launch {
             settingsStore.settings.collect { settings ->
                 val params = controllerParams ?: return@collect
@@ -590,6 +631,8 @@ class FloatingMenuService : Service() {
         stopPassiveRecorder()
         removeCapture()
         removeEffectsOverlay()
+        wallUpgrader?.cancel()
+        closeWallSetup()
         removeController()
         scope.cancel()
         super.onDestroy()
@@ -799,6 +842,7 @@ class FloatingMenuService : Service() {
         }
         view.findViewById<TextView>(R.id.btnPageController).setOnClickListener { setPage(PAGE_CONTROLLER) }
         view.findViewById<TextView>(R.id.btnPageStats).setOnClickListener { setPage(PAGE_STATS) }
+        view.findViewById<TextView>(R.id.btnPageWalls).setOnClickListener { setPage(PAGE_WALLS) }
         view.findViewById<Button>(R.id.btnUndo).setOnClickListener {
             haptic()
             undoDelete()
@@ -912,6 +956,96 @@ class FloatingMenuService : Service() {
             togglePlaybackPause()
         }
         view.findViewById<ImageButton>(R.id.btnStopPlayback).setOnClickListener {
+            haptic()
+            stopPlayback()
+            BotState.setState(ControllerState.READY)
+            BotState.setStatus("Playback stopped")
+        }
+
+        bindWallsPanel(view, params)
+    }
+
+    private fun bindWallsPanel(view: View, params: WindowManager.LayoutParams) {
+        view.findViewById<Switch>(R.id.wallSwitch).setOnCheckedChangeListener { _, checked ->
+            if (!checked && wallUpgrader?.isRunning == true) stopWallCycle()
+            wallsRepository.updateSettings { it.copy(enabled = checked) }
+            refreshWalls()
+        }
+        view.findViewById<Switch>(R.id.wallGoldSwitch).setOnCheckedChangeListener { _, checked ->
+            wallsRepository.updateSettings { it.copy(goldEnabled = checked) }
+            refreshWalls()
+        }
+        view.findViewById<Switch>(R.id.wallElixirSwitch).setOnCheckedChangeListener { _, checked ->
+            wallsRepository.updateSettings { it.copy(elixirEnabled = checked) }
+            refreshWalls()
+        }
+        bindWallCost(view.findViewById(R.id.etWallGoldCost), WallResource.GOLD)
+        bindWallCost(view.findViewById(R.id.etWallElixirCost), WallResource.ELIXIR)
+
+        view.findViewById<View>(R.id.btnWallSetLine).setOnClickListener {
+            haptic()
+            openWallSetup(WallSetupMode.LINE)
+        }
+        view.findViewById<View>(R.id.btnWallCamera).setOnClickListener {
+            haptic()
+            openWallSetup(WallSetupMode.CAMERA)
+        }
+        view.findViewById<View>(R.id.btnWallLandmark).setOnClickListener {
+            haptic()
+            openWallSetup(WallSetupMode.LANDMARK)
+        }
+        view.findViewById<View>(R.id.tvWallReserve).setOnClickListener {
+            haptic()
+            openWallSetup(WallSetupMode.RESERVE)
+        }
+        view.findViewById<View>(R.id.tvWallPriority).setOnClickListener {
+            haptic()
+            val current = wallsRepository.settings().priority
+            val next = when (current) {
+                WallPriority.GOLD_FIRST -> WallPriority.ELIXIR_FIRST
+                WallPriority.ELIXIR_FIRST -> WallPriority.FULLER_FIRST
+                WallPriority.FULLER_FIRST -> WallPriority.GOLD_FIRST
+            }
+            wallsRepository.updateSettings { it.copy(priority = next) }
+            refreshWalls()
+        }
+        view.findViewById<View>(R.id.btnWallLevelMinus).setOnClickListener {
+            haptic()
+            adjustWallLevel(-1)
+        }
+        view.findViewById<View>(R.id.btnWallLevelPlus).setOnClickListener {
+            haptic()
+            adjustWallLevel(1)
+        }
+        view.findViewById<View>(R.id.btnWallMaxMinus).setOnClickListener {
+            haptic()
+            adjustWallMax(-10)
+        }
+        view.findViewById<View>(R.id.btnWallMaxPlus).setOnClickListener {
+            haptic()
+            adjustWallMax(10)
+        }
+        view.findViewById<View>(R.id.btnWallDetect).setOnClickListener {
+            haptic()
+            detectWallPrice()
+        }
+        view.findViewById<View>(R.id.btnWallTest).setOnClickListener {
+            haptic()
+            startWallCycle(WallRunMode.TEST)
+        }
+        view.findViewById<View>(R.id.btnWallRun).setOnClickListener {
+            haptic()
+            startWallCycle(WallRunMode.LIVE)
+        }
+        view.findViewById<View>(R.id.wallDragBar)
+            .setOnTouchListener(dragListener(params, PlacementKind.PLAYING, onTap = {}))
+        view.findViewById<ImageButton>(R.id.btnWallStop).setOnClickListener {
+            haptic()
+            stopWallCycle()
+        }
+        view.findViewById<View>(R.id.recoveryDragBar)
+            .setOnTouchListener(dragListener(params, PlacementKind.PLAYING, onTap = {}))
+        view.findViewById<ImageButton>(R.id.btnRecoveryStop).setOnClickListener {
             haptic()
             stopPlayback()
             BotState.setState(ControllerState.READY)
@@ -2363,6 +2497,7 @@ class FloatingMenuService : Service() {
             endAttackSession(interrupted = false)
             onPlaybackRunEnded()
         }
+        startRecoveryWatchdog(newPlayer)
         if (!newPlayer.isRunning()) {
             abortCaptureSession()
         }
@@ -2414,6 +2549,8 @@ class FloatingMenuService : Service() {
     private fun stopPlayback() {
         hapticEvent()
         pendingPlaybackPoint = null
+        recoveryWatchdog?.stop()
+        recoveryWatchdog = null
         val interrupted = BotState.interrupted.value
         AppEventLog.log("playback stop interrupted=$interrupted")
         val wasRun = playbackRunActive
@@ -2437,9 +2574,17 @@ class FloatingMenuService : Service() {
                 renderStats()
             }
         }
+        if (next == PAGE_WALLS) {
+            scope.launch {
+                wallsRepository.refresh()
+                refreshWalls()
+            }
+        }
     }
 
     private fun endAttackSession(interrupted: Boolean) {
+        recoveryWatchdog?.stop()
+        recoveryWatchdog = null
         val capture = captureSession ?: return
         captureSession = null
         manualWatch = false
@@ -4940,8 +5085,13 @@ class FloatingMenuService : Service() {
         }
         view.findViewById<View>(R.id.contentFrame).visibility =
             if (playbackMinimized) View.GONE else View.VISIBLE
+        val recovery = BotState.recoveryStrip.value
         view.findViewById<View>(R.id.playingPanel).visibility =
-            if (playbackMinimized) View.GONE else View.VISIBLE
+            if (playbackMinimized || recovery != null) View.GONE else View.VISIBLE
+        view.findViewById<View>(R.id.recoveryStripPanel).visibility =
+            if (!playbackMinimized && recovery != null) View.VISIBLE else View.GONE
+        view.findViewById<TextView>(R.id.tvRecoveryLabel)?.text =
+            recovery?.let { "${it.label}… try ${it.tryIndex} of ${it.tryCount}" } ?: ""
         view.findViewById<View>(R.id.playPill).visibility =
             if (playbackMinimized) View.VISIBLE else View.GONE
         val narrow = stripWidth < dp(350)
@@ -5151,12 +5301,17 @@ class FloatingMenuService : Service() {
 
     private fun restoreControllerChrome() {
         dismissRecConfirm()
-        if (!recordingChromeActive && !reviewChromeActive && !playbackChromeActive) return
+        if (!recordingChromeActive && !reviewChromeActive && !playbackChromeActive &&
+            !wallChromeActive
+        ) {
+            return
+        }
         val view = controllerView ?: return
         val panel = view.findViewById<LinearLayout>(R.id.panel) ?: return
         recordingChromeActive = false
         reviewChromeActive = false
         playbackChromeActive = false
+        wallChromeActive = false
         playbackMinimized = false
         pendingPlaybackPoint = null
         stopPlaybackTicker()
@@ -5177,6 +5332,8 @@ class FloatingMenuService : Service() {
         view.findViewById<View>(R.id.recPill).visibility = View.GONE
         view.findViewById<View>(R.id.playPill).visibility = View.GONE
         view.findViewById<View>(R.id.playingPanel).visibility = View.GONE
+        view.findViewById<View>(R.id.wallStripPanel).visibility = View.GONE
+        view.findViewById<View>(R.id.recoveryStripPanel).visibility = View.GONE
         applyPanelWidth(settingsView != null)
         view.requestLayout()
         view.post {
@@ -5447,21 +5604,40 @@ class FloatingMenuService : Service() {
                 collapsed = false
                 enterPlaybackChrome()
             }
-        } else if (recordingChromeActive || reviewChromeActive || playbackChromeActive) {
+        } else if (BotState.wallStrip.value != null) {
+            if (!wallChromeActive) {
+                collapsed = false
+                enterWallChrome()
+            } else {
+                updateWallStripLabel()
+            }
+        } else if (recordingChromeActive || reviewChromeActive || playbackChromeActive ||
+            wallChromeActive
+        ) {
             restoreControllerChrome()
         }
 
-        val statsVisible = page == PAGE_STATS &&
+        val recovery = BotState.recoveryStrip.value
+        val statsVisible = page == PAGE_STATS && !wallChromeActive &&
+            !showRecording && !showReview && !showPlaying
+        val wallsVisible = page == PAGE_WALLS && !wallChromeActive &&
             !showRecording && !showReview && !showPlaying
         val startCountdown = BotState.startCountdown.value
         val settingsOpen = settingsView != null
-        val readyVisible = !statsVisible && showReady && !settingsOpen
+        val readyVisible = !statsVisible && !wallsVisible && !wallChromeActive &&
+            showReady && !settingsOpen
         view.findViewById<View>(R.id.readyFooter).visibility =
             if (readyVisible) View.VISIBLE else View.GONE
         view.findViewById<View>(R.id.statsPanel).visibility =
             if (statsVisible) View.VISIBLE else View.GONE
+        view.findViewById<View>(R.id.wallsPanel).visibility =
+            if (wallsVisible && !settingsOpen) View.VISIBLE else View.GONE
         view.findViewById<View>(R.id.readyPanel).visibility =
-            if (!statsVisible && showReady) View.VISIBLE else View.GONE
+            if (!statsVisible && !wallsVisible && !wallChromeActive && showReady) {
+                View.VISIBLE
+            } else {
+                View.GONE
+            }
         view.findViewById<View>(R.id.recordingPanel).visibility =
             if (!statsVisible && showRecording && !recordingMinimized) {
                 View.VISIBLE
@@ -5471,7 +5647,15 @@ class FloatingMenuService : Service() {
         view.findViewById<View>(R.id.reviewPanel).visibility =
             if (!statsVisible && showReview) View.VISIBLE else View.GONE
         view.findViewById<View>(R.id.playingPanel).visibility =
-            if (!statsVisible && showPlaying) View.VISIBLE else View.GONE
+            if (!statsVisible && showPlaying && recovery == null) View.VISIBLE else View.GONE
+        view.findViewById<View>(R.id.recoveryStripPanel).visibility =
+            if (playbackChromeActive && !playbackMinimized && recovery != null) {
+                View.VISIBLE
+            } else {
+                View.GONE
+            }
+        view.findViewById<TextView>(R.id.tvRecoveryLabel)?.text =
+            recovery?.let { "${it.label}… try ${it.tryIndex} of ${it.tryCount}" } ?: ""
         if (reviewChromeActive) {
             view.findViewById<View>(R.id.controllerHeader).visibility = View.GONE
             view.findViewById<View>(R.id.contentFrame).visibility = View.GONE
@@ -5485,13 +5669,14 @@ class FloatingMenuService : Service() {
             view.findViewById<View>(R.id.tvStatus).visibility = View.GONE
             applyReviewChrome()
         }
+        val macrosTab = !statsVisible && !wallsVisible
         view.findViewById<TextView>(R.id.btnPageController).apply {
             background = Ds.rounded(
-                if (statsVisible) android.graphics.Color.TRANSPARENT else Ds.ACCENT,
+                if (macrosTab) Ds.ACCENT else android.graphics.Color.TRANSPARENT,
                 8,
                 this@FloatingMenuService
             )
-            setTextColor(if (statsVisible) Ds.MUTED else android.graphics.Color.WHITE)
+            setTextColor(if (macrosTab) android.graphics.Color.WHITE else Ds.MUTED)
         }
         view.findViewById<TextView>(R.id.btnPageStats).apply {
             background = Ds.rounded(
@@ -5500,6 +5685,14 @@ class FloatingMenuService : Service() {
                 this@FloatingMenuService
             )
             setTextColor(if (statsVisible) android.graphics.Color.WHITE else Ds.MUTED)
+        }
+        view.findViewById<TextView>(R.id.btnPageWalls).apply {
+            background = Ds.rounded(
+                if (wallsVisible) Ds.ACCENT else android.graphics.Color.TRANSPARENT,
+                8,
+                this@FloatingMenuService
+            )
+            setTextColor(if (wallsVisible) android.graphics.Color.WHITE else Ds.MUTED)
         }
         val dotColor = when {
             showRecording -> Ds.RECORD
@@ -5904,6 +6097,840 @@ class FloatingMenuService : Service() {
     private fun dp(context: Context, value: Int): Int =
         (value * context.resources.displayMetrics.density).toInt()
 
+    // ---------------------------------------------------------- walls & recovery
+
+    private fun startRecoveryWatchdog(target: MacroPlayer) {
+        recoveryWatchdog?.stop()
+        val watchdog = RecoveryWatchdog(
+            scope = scope,
+            context = this,
+            engine = gameEngine,
+            reader = resultsReader
+        ) { reason -> abortPlaybackAfterRecovery(reason) }
+        recoveryWatchdog = watchdog
+        watchdog.start(target)
+    }
+
+    private fun abortPlaybackAfterRecovery(reason: String) {
+        AppEventLog.log("playback aborted by recovery: $reason")
+        BotState.setInterrupted(true)
+        val wasRun = playbackRunActive
+        player?.stop()
+        player = null
+        endAttackSession(interrupted = true)
+        if (wasRun) onPlaybackRunEnded()
+        updateNotification(getString(R.string.notification_idle))
+        refreshUi()
+    }
+
+    private fun applyResultToast(ui: ResultToastUi?) {
+        val view = controllerView ?: return
+        val box = view.findViewById<View>(R.id.resultToastBox) ?: return
+        resultToastHide?.let(handler::removeCallbacks)
+        resultToastHide = null
+        if (ui == null || playbackChromeActive || recordingChromeActive || reviewChromeActive) {
+            box.visibility = View.GONE
+            return
+        }
+        box.background = getDrawable(
+            if (ui.kind == ResultToastUi.Kind.SUCCESS) R.drawable.bg_toast_ok
+            else R.drawable.bg_toast_warn
+        )
+        view.findViewById<TextView>(R.id.tvResultToast)?.text = ui.text
+        box.visibility = View.VISIBLE
+        val hide = Runnable {
+            box.visibility = View.GONE
+            BotState.clearResultToast(ui.id)
+        }
+        resultToastHide = hide
+        handler.postDelayed(hide, RESULT_TOAST_MS)
+    }
+
+    private fun ensureWallUpgrader(): WallUpgrader {
+        wallUpgrader?.let { return it }
+        val agent = recoveryAgent ?: RecoveryAgent(gameEngine, resultsReader).also {
+            recoveryAgent = it
+        }
+        return WallUpgrader(
+            scope = scope,
+            context = this,
+            engine = gameEngine,
+            reader = resultsReader,
+            repository = wallsRepository,
+            agent = agent,
+            cameraMacroProvider = { id -> macros.firstOrNull { it.id == id } }
+        ).also { wallUpgrader = it }
+    }
+
+    private fun startWallCycle(mode: WallRunMode) {
+        if (recording || preparingPassive || startingPassive) {
+            toast("Finish the recording first")
+            return
+        }
+        if (player?.isRunning() == true || BotState.state.value.isPlayback) {
+            toast("Stop the macro first")
+            return
+        }
+        if (ClahAccessibilityService.instance == null) {
+            toast(accessibilityHint())
+            return
+        }
+        val settings = wallsRepository.settings()
+        if (settings.line == null) {
+            toast("Set the wall line first")
+            openWallSetup(WallSetupMode.LINE)
+            return
+        }
+        if (settings.wallLevel <= 0) {
+            toast("Set your current wall level first")
+            return
+        }
+        updateScreenSize()
+        hapticEvent()
+        ensureWallUpgrader().run(mode)
+    }
+
+    private fun stopWallCycle() {
+        hapticEvent()
+        wallUpgrader?.cancel()
+        refreshUi()
+    }
+
+    private fun detectWallPrice() {
+        scope.launch {
+            val saved = ensureWallUpgrader().detectPrices()
+            toast(if (saved) "Wall price detected" else "Open a wall upgrade screen first")
+            refreshWalls()
+        }
+    }
+
+    private fun adjustWallLevel(delta: Int) {
+        wallsRepository.updateSettings {
+            it.copy(wallLevel = (it.wallLevel + delta).coerceIn(0, 16))
+        }
+        refreshWalls()
+    }
+
+    private fun adjustWallMax(delta: Int) {
+        wallsRepository.updateSettings {
+            it.copy(maxPerCycle = (it.maxPerCycle + delta).coerceIn(10, 100))
+        }
+        refreshWalls()
+    }
+
+    private fun bindWallCost(field: EditText, resource: WallResource) {
+        val commit = {
+            val value = field.text.toString().trim().toLongOrNull()?.coerceAtLeast(0L) ?: 0L
+            wallsRepository.updateSettings {
+                when (resource) {
+                    WallResource.GOLD -> it.copy(goldCost = value)
+                    WallResource.ELIXIR -> it.copy(elixirCost = value)
+                }
+            }
+            refreshWalls()
+        }
+        field.setOnFocusChangeListener { _, hasFocus -> if (!hasFocus) commit() }
+        field.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_DONE) {
+                commit()
+                setFieldTyping(false, field)
+                true
+            } else {
+                false
+            }
+        }
+        field.setOnTouchListener { _, event ->
+            if (event.actionMasked == MotionEvent.ACTION_DOWN) setFieldTyping(true, field)
+            false
+        }
+    }
+
+    /** Mirrors setSaveTyping for the wall cost fields. */
+    private fun setFieldTyping(typing: Boolean, field: EditText) {
+        val view = controllerView ?: return
+        val params = controllerParams ?: return
+        val base = WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
+        params.flags = if (typing) base else base or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+        params.softInputMode = if (typing) {
+            WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE or
+                WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+        } else {
+            WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN
+        }
+        try {
+            windowManager.updateViewLayout(view, params)
+        } catch (_: Exception) {
+            // Window detached.
+        }
+        val imm = getSystemService(INPUT_METHOD_SERVICE) as? InputMethodManager
+        if (typing) {
+            field.requestFocus()
+            imm?.showSoftInput(field, InputMethodManager.SHOW_IMPLICIT)
+        } else {
+            imm?.hideSoftInputFromWindow(field.windowToken, 0)
+        }
+    }
+
+    private fun refreshWalls() {
+        val view = controllerView ?: return
+        val settings = wallsRepository.settings()
+        view.findViewById<EditText>(R.id.etWallGoldCost)?.let { field ->
+            if (!field.hasFocus()) {
+                val text = if (settings.goldCost > 0) settings.goldCost.toString() else ""
+                if (field.text.toString() != text) field.setText(text)
+            }
+        }
+        view.findViewById<EditText>(R.id.etWallElixirCost)?.let { field ->
+            if (!field.hasFocus()) {
+                val text = if (settings.elixirCost > 0) settings.elixirCost.toString() else ""
+                if (field.text.toString() != text) field.setText(text)
+            }
+        }
+        view.findViewById<Switch>(R.id.wallSwitch)?.let {
+            if (it.isChecked != settings.enabled) it.isChecked = settings.enabled
+        }
+        view.findViewById<Switch>(R.id.wallGoldSwitch)?.let {
+            if (it.isChecked != settings.goldEnabled) it.isChecked = settings.goldEnabled
+        }
+        view.findViewById<Switch>(R.id.wallElixirSwitch)?.let {
+            if (it.isChecked != settings.elixirEnabled) it.isChecked = settings.elixirEnabled
+        }
+        val line = settings.line
+        view.findViewById<TextView>(R.id.tvWallLineText)?.text =
+            if (line == null) "Line · not set" else "${line.wallsDone} / ${line.totalWalls} walls"
+        view.findViewById<ProgressBar>(R.id.wallLineProgress)?.progress =
+            if (line == null || line.totalWalls <= 0) {
+                0
+            } else {
+                (100f * line.wallsDone / line.totalWalls).roundToInt().coerceIn(0, 100)
+            }
+        view.findViewById<TextView>(R.id.tvWallWaiting)?.text = wallWaitingText(settings)
+        view.findViewById<TextView>(R.id.tvWallCamera)?.text =
+            "Walls camera · " + (macros.firstOrNull { it.id == settings.cameraMacroId }?.name
+                ?: "not set")
+        view.findViewById<TextView>(R.id.tvWallLevel)?.text =
+            if (settings.wallLevel <= 0) "Wall level · not set" else "Wall level · ${settings.wallLevel}"
+        view.findViewById<TextView>(R.id.tvWallLandmark)?.text =
+            if (settings.camera == null) "Landmark · not marked" else "Landmark · marked"
+        view.findViewById<TextView>(R.id.tvWallPriority)?.text = "Priority · " + when (settings.priority) {
+            WallPriority.GOLD_FIRST -> "Gold first"
+            WallPriority.ELIXIR_FIRST -> "Elixir first"
+            WallPriority.FULLER_FIRST -> "Fuller first"
+        }
+        view.findViewById<TextView>(R.id.tvWallMax)?.text =
+            "Max per cycle · ${settings.maxPerCycle}"
+        view.findViewById<TextView>(R.id.tvWallReserve)?.text =
+            "Keep at least ${compactWall(settings.reserveGold)} · " +
+                "${compactWall(settings.reserveElixir)} ›"
+        val history = view.findViewById<TextView>(R.id.tvWallHistory)
+        val recent = settings.history.takeLast(3).reversed()
+        if (history != null) {
+            if (recent.isEmpty()) {
+                history.visibility = View.GONE
+            } else {
+                history.visibility = View.VISIBLE
+                history.text = recent.joinToString("\n") { log ->
+                    val time = SimpleDateFormat("HH:mm", Locale.US).format(Date(log.at))
+                    val resource = if (log.resource == WallResource.GOLD) "gold" else "elixir"
+                    "$time · ${log.status} · ${log.walls} $resource"
+                }
+            }
+        }
+    }
+
+    private fun wallWaitingText(settings: WallSettings): String {
+        if (!settings.enabled) return "Off · turn on to raise walls automatically"
+        if (settings.line == null) return "Set a wall line and cost to start"
+        val goldReady = settings.enabledFor(WallResource.GOLD)
+        val elixirReady = settings.enabledFor(WallResource.ELIXIR)
+        if (!goldReady && !elixirReady) return "Set a gold or elixir cost"
+        val goldNeed = maxOf(settings.thresholdGold, settings.reserveGold + settings.goldCost)
+        val elixirNeed = maxOf(
+            settings.thresholdElixir,
+            settings.reserveElixir + settings.elixirCost
+        )
+        return when {
+            goldReady -> "Waiting for ${compactWall(goldNeed)} gold"
+            else -> "Waiting for ${compactWall(elixirNeed)} elixir"
+        }
+    }
+
+    private fun compactWall(value: Long): String = when {
+        value <= 0L -> "0"
+        value >= 1_000_000L -> {
+            val millions = value / 1_000_000.0
+            if (millions == millions.toLong().toDouble()) {
+                "${millions.toLong()}M"
+            } else {
+                String.format(Locale.US, "%.1fM", millions)
+            }
+        }
+        value >= 1_000L -> "${value / 1_000}K"
+        else -> value.toString()
+    }
+
+    private fun updateWallStripLabel() {
+        val view = controllerView ?: return
+        val label = BotState.wallStrip.value?.label ?: "Walls"
+        view.findViewById<TextView>(R.id.tvWallStripLabel)?.text = label
+    }
+
+    private fun enterWallChrome() {
+        if (wallChromeActive) return
+        val view = controllerView ?: return
+        val params = controllerParams ?: return
+        wallChromeActive = true
+        collapsed = false
+        collapseAnimator?.cancel()
+        collapseAnimator = null
+        snapAnimator?.cancel()
+        snapAnimator = null
+        recordingChromeActive = false
+        reviewChromeActive = false
+        playbackChromeActive = false
+        val panelView = view.findViewById<View>(R.id.panel)
+        panelView.scaleX = 1f
+        panelView.scaleY = 1f
+        panelView.alpha = 1f
+        val stripWidth = playbackStripWidthPx()
+        val safe = safeBounds()
+        val saved = overlayPositions?.get(positionKey(PlacementKind.PLAYING))
+        val centered = OverlayPoint(
+            safe.left + ((safe.width - stripWidth) / 2).coerceAtLeast(0),
+            safe.top + dp(8)
+        )
+        val point = pendingPlaybackPoint ?: saved ?: centered
+        pendingPlaybackPoint = null
+        applyWindowPoint(
+            params,
+            OverlayPlacement.clamp(
+                point.x,
+                point.y,
+                stripWidth,
+                playbackStripHeightPx(),
+                safe,
+                dp(8)
+            ),
+            PlacementKind.PLAYING,
+            save = false
+        )
+        val panel = view.findViewById<LinearLayout>(R.id.panel)
+        panel.visibility = View.VISIBLE
+        panel.background = null
+        panel.setPadding(0, 0, 0, 0)
+        view.findViewById<View>(R.id.bubble).visibility = View.GONE
+        view.findViewById<View>(R.id.controllerHeader).visibility = View.GONE
+        view.findViewById<View>(R.id.tvStatus).visibility = View.GONE
+        view.findViewById<View>(R.id.settingsHost).visibility = View.GONE
+        view.findViewById<View>(R.id.readyFooter).visibility = View.GONE
+        view.findViewById<View>(R.id.saveBox).visibility = View.GONE
+        view.findViewById<View>(R.id.savedBox).visibility = View.GONE
+        view.findViewById<View>(R.id.discardedBox).visibility = View.GONE
+        (view.findViewById<View>(R.id.contentFrame)?.layoutParams as? LinearLayout.LayoutParams)
+            ?.topMargin = 0
+        applyWallChrome()
+        view.requestLayout()
+        view.post {
+            clampControllerToScreen()
+            refreshControllerBoundsSnapshot()
+        }
+    }
+
+    private fun applyWallChrome() {
+        val view = controllerView ?: return
+        val panel = view.findViewById<LinearLayout>(R.id.panel)
+        val stripWidth = playbackStripWidthPx()
+        panel.visibility = View.VISIBLE
+        view.findViewById<View>(R.id.bubble).visibility = View.GONE
+        (view.findViewById<View>(R.id.contentFrame)?.layoutParams as? LinearLayout.LayoutParams)
+            ?.topMargin = 0
+        view.findViewById<View>(R.id.wallStripPanel)?.layoutParams?.apply {
+            height = LinearLayout.LayoutParams.MATCH_PARENT
+        }
+        panel.layoutParams = panel.layoutParams.apply {
+            width = stripWidth
+            height = playbackStripHeightPx()
+        }
+        view.findViewById<View>(R.id.contentFrame).visibility = View.VISIBLE
+        view.findViewById<View>(R.id.wallStripPanel).visibility = View.VISIBLE
+        view.findViewById<View>(R.id.playingPanel).visibility = View.GONE
+        view.findViewById<View>(R.id.recoveryStripPanel).visibility = View.GONE
+        view.findViewById<View>(R.id.playPill).visibility = View.GONE
+        view.findViewById<View>(R.id.recPill).visibility = View.GONE
+        controllerParams?.let { params ->
+            if (params.width != WindowManager.LayoutParams.WRAP_CONTENT ||
+                params.height != WindowManager.LayoutParams.WRAP_CONTENT
+            ) {
+                params.width = WindowManager.LayoutParams.WRAP_CONTENT
+                params.height = WindowManager.LayoutParams.WRAP_CONTENT
+                try {
+                    windowManager.updateViewLayout(view, params)
+                } catch (_: Exception) {
+                    // Window detached.
+                }
+            }
+        }
+        updateWallStripLabel()
+        view.requestLayout()
+        view.post {
+            clampControllerToScreen()
+            refreshControllerBoundsSnapshot()
+        }
+    }
+
+    private val wallAutoTicker = object : Runnable {
+        override fun run() {
+            val settings = wallsRepository.settings()
+            val armed = settings.enabled &&
+                (settings.thresholdGold > 0 || settings.thresholdElixir > 0)
+            val idle = !recording && !startingPassive && !preparingPassive &&
+                !wallChromeActive && !playbackChromeActive && !reviewChromeActive &&
+                player?.isRunning() != true && wallUpgrader?.isRunning != true
+            if (armed && idle && ClahAccessibilityService.isGameForeground()) {
+                scope.launch {
+                    val reading = runCatching { recoveryAgent?.observe() }.getOrNull()
+                    if (reading?.observation?.state == GameState.HOME && !wallChromeActive &&
+                        wallUpgrader?.isRunning != true
+                    ) {
+                        val balances = runCatching {
+                            ensureWallUpgrader().readBalances(reading.frame.bitmap)
+                        }.getOrNull()
+                        if (balances != null) {
+                            val due =
+                                (settings.thresholdGold > 0 &&
+                                    settings.enabledFor(WallResource.GOLD) &&
+                                    (balances[WallResource.GOLD] ?: 0L) >= settings.thresholdGold) ||
+                                    (settings.thresholdElixir > 0 &&
+                                        settings.enabledFor(WallResource.ELIXIR) &&
+                                        (balances[WallResource.ELIXIR] ?: 0L) >= settings.thresholdElixir)
+                            if (due) ensureWallUpgrader().run(WallRunMode.LIVE)
+                        }
+                    }
+                }
+            }
+            handler.postDelayed(this, WALL_AUTO_POLL_MS)
+        }
+    }
+
+    // ---------------------------------------------------------- wall setup overlay
+
+    private fun openWallSetup(mode: WallSetupMode) {
+        if (mode == WallSetupMode.NONE) return
+        closeWallSetup()
+        scope.launch {
+            val frame = runCatching { ClahAccessibilityService.captureGameFrame() }.getOrNull()
+            showWallSetupWindow(frame, mode)
+        }
+    }
+
+    private fun showWallSetupWindow(
+        frame: ClahAccessibilityService.GameFrame?,
+        mode: WallSetupMode
+    ) {
+        val view = try {
+            LayoutInflater.from(uiContext).inflate(R.layout.overlay_wall_setup, null)
+        } catch (_: Exception) {
+            return
+        }
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT
+        ).apply { gravity = Gravity.TOP or Gravity.START }
+
+        wallSetupMode = mode
+        wallSetupView = view
+        wallSetupFrameBitmap = frame?.bitmap
+        frame?.bitmap?.let { bmp ->
+            view.findViewById<ImageView>(R.id.setupFrameImage)?.setImageBitmap(bmp)
+        }
+        val settings = wallsRepository.settings()
+        val line = settings.line
+        wallSetupA = line?.let { it.ax to it.ay } ?: DEFAULT_LINE_A
+        wallSetupB = line?.let { it.bx to it.by } ?: DEFAULT_LINE_B
+        wallSetupTotal = line?.totalWalls ?: DEFAULT_TOTAL_WALLS
+        wallSetupDone = line?.wallsDone ?: 0
+
+        view.findViewById<View>(R.id.btnSetupCancel).setOnClickListener {
+            haptic()
+            closeWallSetup()
+        }
+        view.findViewById<View>(R.id.btnSetupSave).setOnClickListener {
+            haptic()
+            saveWallSetup(mode)
+        }
+        bindSetupMarker(view, view.findViewById(R.id.setupMarkerA), isA = true)
+        bindSetupMarker(view, view.findViewById(R.id.setupMarkerB), isA = false)
+        bindSetupSteppers(view)
+
+        try {
+            windowManager.addView(view, params)
+        } catch (_: Exception) {
+            wallSetupView = null
+            recycleWallSetupFrame()
+            return
+        }
+        view.post {
+            applyWallSetupMode(view, mode)
+            positionSetupMarkers(view)
+        }
+    }
+
+    private fun applyWallSetupMode(view: View, mode: WallSetupMode) {
+        val markerA = view.findViewById<View>(R.id.setupMarkerA)
+        val markerB = view.findViewById<View>(R.id.setupMarkerB)
+        val lines = view.findViewById<View>(R.id.setupLines)
+        val picker = view.findViewById<View>(R.id.setupPickerScroll)
+        val reserve = view.findViewById<View>(R.id.setupReserveRow)
+        val bottom = view.findViewById<View>(R.id.setupBottomBox)
+        val banner = view.findViewById<TextView>(R.id.tvSetupBanner)
+        val hint = view.findViewById<TextView>(R.id.tvSetupHint)
+        val save = view.findViewById<Button>(R.id.btnSetupSave)
+        val lineTotals = view.findViewById<View>(R.id.setupLineTotals)
+        markerA.visibility = View.GONE
+        markerB.visibility = View.GONE
+        lines.visibility = View.GONE
+        picker.visibility = View.GONE
+        reserve.visibility = View.GONE
+        bottom.visibility = View.GONE
+        lineTotals.visibility = View.GONE
+        when (mode) {
+            WallSetupMode.LINE -> {
+                banner.text = "Set wall line — Drag the green marker to the FIRST wall " +
+                    "and the red marker to the LAST wall"
+                hint.text = "Taps are spread along the line. Walls are upgraded from A towards B."
+                markerA.visibility = View.VISIBLE
+                markerB.visibility = View.VISIBLE
+                lines.visibility = View.VISIBLE
+                bottom.visibility = View.VISIBLE
+                lineTotals.visibility = View.VISIBLE
+                save?.text = "Save line"
+                updateSetupTotals(view)
+            }
+
+            WallSetupMode.LANDMARK -> {
+                banner.text = "Mark one landmark that stays still near your walls"
+                hint.text = "Each cycle the app finds this patch and corrects the camera " +
+                    "before tapping."
+                markerA.visibility = View.VISIBLE
+                bottom.visibility = View.VISIBLE
+                save?.text = "Save landmark"
+            }
+
+            WallSetupMode.CAMERA -> {
+                banner.text = "Pick the macro that opens your walls screen"
+                picker.visibility = View.VISIBLE
+                fillCameraPicker(view)
+            }
+
+            WallSetupMode.RESERVE -> {
+                banner.text = "Wall spending limits"
+                reserve.visibility = View.VISIBLE
+                updateReserveLabels(view)
+            }
+
+            WallSetupMode.NONE -> Unit
+        }
+    }
+
+    private fun fillCameraPicker(view: View) {
+        val list = view.findViewById<LinearLayout>(R.id.setupPickerList) ?: return
+        list.removeAllViews()
+        if (macros.isEmpty()) {
+            list.addView(
+                TextView(this).apply {
+                    text = "Record a macro that opens your walls screen first"
+                    setTextColor(0xFF94A3B8.toInt())
+                    textSize = 12f
+                    gravity = Gravity.CENTER
+                    setPadding(dp(8), dp(16), dp(8), dp(16))
+                }
+            )
+            return
+        }
+        val selectedId = wallsRepository.settings().cameraMacroId
+        for (macro in macros) {
+            val row = TextView(this).apply {
+                text = (if (macro.id == selectedId) "✓  " else "") + macro.name
+                setTextColor(0xFFE6EBF5.toInt())
+                textSize = 13f
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(12), 0, dp(12), 0)
+                background = getDrawable(R.drawable.bg_save_input)
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    dp(40)
+                ).apply { bottomMargin = dp(6) }
+                setOnClickListener {
+                    haptic()
+                    wallsRepository.updateSettings { it.copy(cameraMacroId = macro.id) }
+                    refreshWalls()
+                    closeWallSetup()
+                }
+            }
+            list.addView(row)
+        }
+    }
+
+    private fun bindSetupSteppers(view: View) {
+        view.findViewById<View>(R.id.btnSetupTotalMinus).setOnClickListener {
+            wallSetupTotal = (wallSetupTotal - 10).coerceAtLeast(1)
+            wallSetupDone = wallSetupDone.coerceAtMost(wallSetupTotal)
+            updateSetupTotals(view)
+            updateSetupLine(view)
+        }
+        view.findViewById<View>(R.id.btnSetupTotalPlus).setOnClickListener {
+            wallSetupTotal = (wallSetupTotal + 10).coerceAtMost(400)
+            updateSetupTotals(view)
+            updateSetupLine(view)
+        }
+        view.findViewById<View>(R.id.btnSetupDoneMinus).setOnClickListener {
+            wallSetupDone = (wallSetupDone - 1).coerceAtLeast(0)
+            updateSetupTotals(view)
+        }
+        view.findViewById<View>(R.id.btnSetupDonePlus).setOnClickListener {
+            wallSetupDone = (wallSetupDone + 1).coerceAtMost(wallSetupTotal)
+            updateSetupTotals(view)
+        }
+        view.findViewById<View>(R.id.btnResGoldMinus)
+            .setOnClickListener { adjustReserve(view, WallResource.GOLD, -RESERVE_STEP) }
+        view.findViewById<View>(R.id.btnResGoldPlus)
+            .setOnClickListener { adjustReserve(view, WallResource.GOLD, RESERVE_STEP) }
+        view.findViewById<View>(R.id.btnResElixirMinus)
+            .setOnClickListener { adjustReserve(view, WallResource.ELIXIR, -RESERVE_STEP) }
+        view.findViewById<View>(R.id.btnResElixirPlus)
+            .setOnClickListener { adjustReserve(view, WallResource.ELIXIR, RESERVE_STEP) }
+        view.findViewById<View>(R.id.btnThrGoldMinus)
+            .setOnClickListener { adjustThreshold(view, WallResource.GOLD, -RESERVE_STEP) }
+        view.findViewById<View>(R.id.btnThrGoldPlus)
+            .setOnClickListener { adjustThreshold(view, WallResource.GOLD, RESERVE_STEP) }
+        view.findViewById<View>(R.id.btnThrElixirMinus)
+            .setOnClickListener { adjustThreshold(view, WallResource.ELIXIR, -RESERVE_STEP) }
+        view.findViewById<View>(R.id.btnThrElixirPlus)
+            .setOnClickListener { adjustThreshold(view, WallResource.ELIXIR, RESERVE_STEP) }
+        view.findViewById<View>(R.id.btnCapSessionMinus)
+            .setOnClickListener { adjustCap(view, session = true, delta = -CAP_STEP) }
+        view.findViewById<View>(R.id.btnCapSessionPlus)
+            .setOnClickListener { adjustCap(view, session = true, delta = CAP_STEP) }
+        view.findViewById<View>(R.id.btnCapDayMinus)
+            .setOnClickListener { adjustCap(view, session = false, delta = -CAP_STEP) }
+        view.findViewById<View>(R.id.btnCapDayPlus)
+            .setOnClickListener { adjustCap(view, session = false, delta = CAP_STEP) }
+        view.findViewById<View>(R.id.btnSetupReserveDone).setOnClickListener {
+            haptic()
+            closeWallSetup()
+        }
+    }
+
+    private fun adjustReserve(view: View, resource: WallResource, delta: Long) {
+        wallsRepository.updateSettings {
+            when (resource) {
+                WallResource.GOLD -> it.copy(
+                    reserveGold = (it.reserveGold + delta).coerceIn(0, MAX_SPEND_SETTING)
+                )
+                WallResource.ELIXIR -> it.copy(
+                    reserveElixir = (it.reserveElixir + delta).coerceIn(0, MAX_SPEND_SETTING)
+                )
+            }
+        }
+        updateReserveLabels(view)
+    }
+
+    private fun adjustThreshold(view: View, resource: WallResource, delta: Long) {
+        wallsRepository.updateSettings {
+            when (resource) {
+                WallResource.GOLD -> it.copy(
+                    thresholdGold = (it.thresholdGold + delta).coerceIn(0, MAX_SPEND_SETTING)
+                )
+                WallResource.ELIXIR -> it.copy(
+                    thresholdElixir = (it.thresholdElixir + delta).coerceIn(0, MAX_SPEND_SETTING)
+                )
+            }
+        }
+        updateReserveLabels(view)
+    }
+
+    private fun adjustCap(view: View, session: Boolean, delta: Long) {
+        wallsRepository.updateSettings {
+            if (session) {
+                it.copy(capSession = (it.capSession + delta).coerceIn(0, MAX_SPEND_SETTING))
+            } else {
+                it.copy(capDay = (it.capDay + delta).coerceIn(0, MAX_SPEND_SETTING))
+            }
+        }
+        updateReserveLabels(view)
+    }
+
+    private fun updateReserveLabels(view: View) {
+        val settings = wallsRepository.settings()
+        view.findViewById<TextView>(R.id.tvSetupReserveGold)?.text =
+            "Gold · ${compactWall(settings.reserveGold)}"
+        view.findViewById<TextView>(R.id.tvSetupReserveElixir)?.text =
+            "Elixir · ${compactWall(settings.reserveElixir)}"
+        view.findViewById<TextView>(R.id.tvSetupThresholdGold)?.text =
+            "Gold · ${compactWall(settings.thresholdGold)}"
+        view.findViewById<TextView>(R.id.tvSetupThresholdElixir)?.text =
+            "Elixir · ${compactWall(settings.thresholdElixir)}"
+        view.findViewById<TextView>(R.id.tvSetupCapSession)?.text =
+            if (settings.capSession <= 0) "This session · none"
+            else "This session · ${compactWall(settings.capSession)}"
+        view.findViewById<TextView>(R.id.tvSetupCapDay)?.text =
+            if (settings.capDay <= 0) "Per day · none"
+            else "Per day · ${compactWall(settings.capDay)}"
+    }
+
+    private fun updateSetupTotals(view: View) {
+        view.findViewById<TextView>(R.id.tvSetupTotalWalls)?.text =
+            "Walls in line · $wallSetupTotal"
+        view.findViewById<TextView>(R.id.tvSetupDoneWalls)?.text =
+            "Already at max · $wallSetupDone"
+    }
+
+    private fun bindSetupMarker(view: View, marker: View, isA: Boolean) {
+        val root = view.findViewById<View>(R.id.wallSetupRoot)
+        var offsetX = 0f
+        var offsetY = 0f
+        marker.setOnTouchListener { v, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    offsetX = event.rawX - v.x
+                    offsetY = event.rawY - v.y
+                    true
+                }
+
+                MotionEvent.ACTION_MOVE -> {
+                    val maxX = (root.width - v.width).coerceAtLeast(1)
+                    val maxY = (root.height - v.height).coerceAtLeast(1)
+                    val x = (event.rawX - offsetX).coerceIn(0f, maxX.toFloat())
+                    val y = (event.rawY - offsetY).coerceIn(0f, maxY.toFloat())
+                    v.x = x
+                    v.y = y
+                    val fx = ((x + v.width / 2f) / root.width).coerceIn(0f, 1f)
+                    val fy = ((y + v.height / 2f) / root.height).coerceIn(0f, 1f)
+                    if (isA) wallSetupA = fx to fy else wallSetupB = fx to fy
+                    updateSetupLine(view)
+                    true
+                }
+
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> true
+                else -> false
+            }
+        }
+    }
+
+    private fun updateSetupLine(view: View) {
+        view.findViewById<WallLineView>(R.id.setupLines)?.setLine(
+            wallSetupA.first,
+            wallSetupA.second,
+            wallSetupB.first,
+            wallSetupB.second,
+            count = wallSetupTotal.coerceIn(2, 40)
+        )
+    }
+
+    private fun positionSetupMarkers(view: View) {
+        val root = view.findViewById<View>(R.id.wallSetupRoot)
+        if (root.width <= 0 || root.height <= 0) return
+        val a = view.findViewById<View>(R.id.setupMarkerA)
+        val b = view.findViewById<View>(R.id.setupMarkerB)
+        a.x = wallSetupA.first * root.width - a.width / 2f
+        a.y = wallSetupA.second * root.height - a.height / 2f
+        b.x = wallSetupB.first * root.width - b.width / 2f
+        b.y = wallSetupB.second * root.height - b.height / 2f
+        updateSetupLine(view)
+    }
+
+    private fun saveWallSetup(mode: WallSetupMode) {
+        when (mode) {
+            WallSetupMode.LINE -> {
+                val total = wallSetupTotal.coerceAtLeast(1)
+                val done = wallSetupDone.coerceIn(0, total)
+                wallsRepository.updateSettings {
+                    it.copy(
+                        line = WallLine(
+                            ax = wallSetupA.first,
+                            ay = wallSetupA.second,
+                            bx = wallSetupB.first,
+                            by = wallSetupB.second,
+                            totalWalls = total,
+                            wallsDone = done
+                        )
+                    )
+                }
+                toast("Wall line saved")
+            }
+
+            WallSetupMode.LANDMARK -> {
+                if (!saveLandmark()) return
+            }
+
+            WallSetupMode.CAMERA, WallSetupMode.RESERVE -> Unit
+            WallSetupMode.NONE -> return
+        }
+        refreshWalls()
+        closeWallSetup()
+    }
+
+    private fun saveLandmark(): Boolean {
+        val frame = wallSetupFrameBitmap
+        if (frame == null) {
+            toast("No game frame — open the game and try again")
+            return false
+        }
+        val size = (frame.height * LANDMARK_SIZE_FRACTION).toInt().coerceIn(48, 240)
+        val half = size / 2
+        val cx = (wallSetupA.first * frame.width).toInt()
+        val cy = (wallSetupA.second * frame.height).toInt()
+        val left = (cx - half).coerceIn(0, (frame.width - size).coerceAtLeast(0))
+        val top = (cy - half).coerceIn(0, (frame.height - size).coerceAtLeast(0))
+        val patch = runCatching {
+            android.graphics.Bitmap.createBitmap(frame, left, top, size, size)
+        }.getOrNull() ?: return false
+        val camera = wallsRepository.saveLandmarkPatch(patch)
+        patch.recycle()
+        if (camera == null) {
+            toast("Could not save the landmark")
+            return false
+        }
+        wallsRepository.updateSettings {
+            it.copy(
+                camera = camera.copy(
+                    landmarkLeft = left.toFloat() / frame.width,
+                    landmarkTop = top.toFloat() / frame.height,
+                    landmarkRight = (left + size).toFloat() / frame.width,
+                    landmarkBottom = (top + size).toFloat() / frame.height
+                )
+            )
+        }
+        toast("Landmark saved")
+        return true
+    }
+
+    private fun closeWallSetup() {
+        val view = wallSetupView
+        wallSetupView = null
+        wallSetupMode = WallSetupMode.NONE
+        if (view != null) {
+            try {
+                windowManager.removeView(view)
+            } catch (_: Exception) {
+                // Window detached.
+            }
+        }
+        recycleWallSetupFrame()
+    }
+
+    private fun recycleWallSetupFrame() {
+        val bitmap = wallSetupFrameBitmap ?: return
+        wallSetupFrameBitmap = null
+        runCatching { bitmap.recycle() }
+    }
+
     private fun haptic() {
         if (!settingsStore.settings.value.hapticFeedback) return
         Haptics.tap(controllerView)
@@ -5941,8 +6968,18 @@ class FloatingMenuService : Service() {
         private const val PLAY_STRIP_HEIGHT = 52
         private const val PAGE_CONTROLLER = 0
         private const val PAGE_STATS = 1
+        private const val PAGE_WALLS = 2
         private const val STATS_SESSION = 0
         private const val STATS_ALL = 1
+        private const val WALL_AUTO_POLL_MS = 60_000L
+        private const val RESULT_TOAST_MS = 5_000L
+        private const val DEFAULT_TOTAL_WALLS = 120
+        private const val RESERVE_STEP = 1_000_000L
+        private const val CAP_STEP = 5_000_000L
+        private const val MAX_SPEND_SETTING = 99_000_000L
+        private const val LANDMARK_SIZE_FRACTION = 0.10f
+        private val DEFAULT_LINE_A = 0.35f to 0.72f
+        private val DEFAULT_LINE_B = 0.75f to 0.48f
         private const val TAG = "AutoClashController"
         private const val AUTO_RESTART_DELAY_MS = 5_000L
         private const val CHANNEL_ID = "autoclash_controller"
