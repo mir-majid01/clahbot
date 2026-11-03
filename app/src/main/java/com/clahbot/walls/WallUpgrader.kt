@@ -597,7 +597,14 @@ class WallUpgrader(
                 WallMath.PriceVerdict.OK -> Unit
             }
         } else {
-            AppEventLog.log("walls: no large dialog price read; continuing")
+            if (mode == WallRunMode.LIVE) {
+                // Paying an unverified price is never safe; a test run only
+                // closes the dialog, so it may continue without the read.
+                closeDialogsSafely()
+                fail("Confirm price not readable")
+                return null
+            }
+            AppEventLog.log("walls: no large dialog price read (test mode)")
         }
 
         if (mode == WallRunMode.TEST) {

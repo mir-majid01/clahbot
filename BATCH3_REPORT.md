@@ -76,9 +76,9 @@ red X is proposed. Tests that fail if this ever breaks:
   logs “would have spent”; Live confirms → verify the balance dropped by
   about the price → advance progress and write the cycle log.
 - Refusals: no line, no level, not on HOME, macro running, price >3% higher,
-  balance not verified, gem/insufficient dialog (close with X, mark
-  insufficient), spend caps reached, no Upgrade buttons — each stops the
-  cycle and reports why.
+  balance not verified, unreadable confirm price in Live mode, gem or
+  insufficient dialog (close with X, mark insufficient), spend caps reached,
+  no Upgrade buttons — each stops the cycle and reports why.
 - Stop always wins: the stop button cancels the job and closes an open dialog
   with X or Cancel.
 - The blue Wall Ring button is structurally unbuyable: prices only come from
