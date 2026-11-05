@@ -1,6 +1,47 @@
 # Agent Context — AutoClash Feature 1
 
-Last updated: 2026-11-02
+Last updated: 2026-11-03
+
+## 2.12.0 (versionCode 33) — recorded-macro walls, loot capture fix
+
+- The wall-line system is **deleted**, not hidden: `WallUpgrader`, `WallMath`,
+  `WallBarReader`, `WallDialogParser`, `CameraAligner`, `WallLineView`,
+  `overlay_wall_setup.xml`, the A/B marker drawables and their three test files.
+  Never grep for those names again; the replacement is `WallLogic` +
+  `WallAutomation` + `WallModels` + `WallsRepository`.
+- Walls now replay **a macro the user recorded**. `WallAutomation.run` is one
+  pipeline over three modes (AUTOMATIC / MANUAL / TEST): settled home →
+  resolve macro → gates → two balance reads must agree → choose resource →
+  refuse any recorded tap inside a never-press box → replay with a screen
+  checkpoint every 4 gestures → verify the village is safe → log.
+- `Macro.kind` (`attack`|`wall`) and `Macro.linkedWallMacroId`. Wall macros are
+  filtered out of the attack picker, the loop, the library and the dashboard
+  rows, so a wall run can never add an attack statistic.
+- **Only a completed Run now marks a macro tested.** Test macro is a dry run
+  (reads, decides, reports, taps nothing) and does not mark anything. Changing
+  the selected macro clears `testedWallMacroId`.
+- A missing linked/selected macro is an error and a skip, never a silent
+  substitution. At a loop boundary that message goes to `AppEventLog` and the
+  shared `WallSettings.summary()` line, not to a toast per repetition.
+- Loot: stability now needs gold + elixir only (`ResultsParser.mainLootComplete`
+  — the old `lootComplete` also demanded a dark row that TH 13+ screens often
+  don't render); `sameMain` tolerates a flickering dark row; dark is a
+  `partialReasons` gap, not a review blocker; `EpisodePolicy.stableJustArrived()`
+  lets `ResultsCaptureCoordinator` save on the first stable frame and `update`
+  the same row when the bonus settles; `DUPLICATE_WINDOW_MS` is 45 s (was 10
+  min) and is `internal` so `LootCycleSimulationTest` pins the real value.
+  Nothing in the results-screen hold was shortened.
+- `walls.json` decoding is defensive: obsolete wall-line keys ⇒ ignore the file,
+  unknown enum ⇒ model default, missing field ⇒ model default (seeded by
+  serializing `WallSettings()`, because Gson puts `null` in a non-null enum),
+  stale `WallCycleLog` history rows ⇒ dropped. `WallsRepository` now has an
+  `internal constructor(file: File)` for tests.
+- Both walls surfaces share one `StateFlow`: the dashboard collects
+  `wallsRepository.state`, and the service added
+  `wallsRepository.state.collect { refreshWalls() }` plus `refreshWalls()` in
+  `onMacrosChanged`.
+- `MacroPlayer.play(macro, scope, onFinished, onLoopBoundary)` — the boundary is
+  the only automatic wall trigger, and it fires **between** repetitions only.
 
 ## 2.11.0 (versionCode 32) — smart recovery + auto wall upgrader
 
@@ -25,6 +66,8 @@ Last updated: 2026-11-02
   (struck-through ignored), Test mode closes with X, Live confirms, balance
   drop verification, spend caps, and progress/history. The blue Wall Ring can
   never be bought because prices only come from the icon-colour sampler.
+  **This whole line-based design was removed in 2.12.0** — only the sampler rule
+  survives. Read the 2.12.0 section above before touching `com.clahbot.walls`.
 - UI: controller tabs Macros | Stats | Walls; blue wall strip (52 dp, stop),
   amber recovery strip, 5 s result toasts; dashboard Automation card with
   Recovered / Stopped / Unknown and Unknown gallery + Teach; dashboard Walls

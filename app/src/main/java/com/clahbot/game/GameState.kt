@@ -48,6 +48,8 @@ data class ScreenBox(val left: Int, val top: Int, val right: Int, val bottom: In
     fun intersects(other: ScreenBox): Boolean =
         left < other.right && other.left < right && top < other.bottom && other.top < bottom
 
+    fun contains(x: Int, y: Int): Boolean = x in left until right && y in top until bottom
+
     fun expanded(marginX: Int, marginY: Int, frameW: Int, frameH: Int): ScreenBox = ScreenBox(
         left = (left - marginX).coerceAtLeast(0),
         top = (top - marginY).coerceAtLeast(0),

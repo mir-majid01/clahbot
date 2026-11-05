@@ -360,6 +360,7 @@ class ResultsCaptureCoordinator(
         val frames = mutableListOf<FrameLog>()
         var decision: EpisodeDecision = EpisodeDecision.Continue
         var frameIndex = 0
+        var earlySaved = false
 
         try {
             while (coroutineContext.isActive && decision == EpisodeDecision.Continue) {
@@ -430,6 +431,25 @@ class ResultsCaptureCoordinator(
                     )
                 }
                 frameIndex++
+                if (!earlySaved && policy.stableJustArrived()) {
+                    // The main loot is confirmed: persist it now so the
+                    // dashboard and Stats tab show it within about a second,
+                    // then keep watching and update the same record.
+                    earlySaved = true
+                    event("main loot stable at ${at - episodeStart}ms; saving now")
+                    runCatching {
+                        saveEpisode(
+                            state = state,
+                            episode = policy.finishNow(at),
+                            best = best,
+                            frames = frames.toList(),
+                            screenHash = screenHash,
+                            recordId = recordId,
+                            recordStartedAt = recordStartedAt,
+                            updateExisting = false
+                        )
+                    }.onFailure { warn("Early save failed", it) }
+                }
                 if (decision == EpisodeDecision.Continue) {
                     val elapsed = System.currentTimeMillis() - episodeStart
                     val spent = System.currentTimeMillis() - frameStart
@@ -457,7 +477,8 @@ class ResultsCaptureCoordinator(
                     frames = frames,
                     screenHash = screenHash,
                     recordId = recordId,
-                    recordStartedAt = recordStartedAt
+                    recordStartedAt = recordStartedAt,
+                    updateExisting = earlySaved
                 )
             }
             return false
@@ -491,12 +512,13 @@ class ResultsCaptureCoordinator(
         frames: List<FrameLog>,
         screenHash: String?,
         recordId: Long,
-        recordStartedAt: Long
+        recordStartedAt: Long,
+        updateExisting: Boolean = false
     ): Boolean {
         val session = state.session.copy(id = recordId)
         val playbackEndedAt = state.playbackEndedAt ?: System.currentTimeMillis()
         val outcome = episode.outcome?.name?.lowercase(Locale.US) ?: "unknown"
-        val already = attackRepository.hasRecentMatch(
+        val already = !updateExisting && attackRepository.hasRecentMatch(
             screenHash = screenHash,
             gold = episode.gold,
             elixir = episode.elixir,
@@ -562,27 +584,33 @@ class ResultsCaptureCoordinator(
             captureSource = AttackRecord.SOURCE_AUTO,
             screenHash = screenHash
         )
-        val added = attackRepository.add(record)
-        if (added == null) {
-            warn("Attack record was not added (duplicate or invalid)")
+        val stored = if (updateExisting) {
+            attackRepository.update(record)
+        } else {
+            attackRepository.add(record)
+        }
+        if (stored == null) {
+            warn("Attack record was not ${if (updateExisting) "updated" else "added"}")
             status("Results screen read, but the attack record was not saved.")
             return false
         }
-        state.lastRecord = added
+        state.lastRecord = stored
         event(
-            "record saved id=${added.id} outcome=${added.outcome} lootCaptured=${added.hasLoot} " +
-                "complete=${added.complete} review=${added.reviewReason ?: "-"} " +
-                "screenshot=${added.resultsScreenshot?.let { File(it).name } ?: "-"} " +
+            "record ${if (updateExisting) "updated" else "saved"} id=${stored.id} " +
+                "outcome=${stored.outcome} lootCaptured=${stored.hasLoot} " +
+                "complete=${stored.complete} review=${stored.reviewReason ?: "-"} " +
+                "screenshot=${stored.resultsScreenshot?.let { File(it).name } ?: "-"} " +
                 "recordOutcome=$outcome"
         )
         status(
             when {
-                added.reviewReason != null -> "Attack saved; needs review: ${added.reviewReason}"
-                added.hasLoot -> "Attack saved: ${record.outcome ?: "result"} (loot captured)"
+                stored.reviewReason != null ->
+                    "Attack saved; needs review: ${stored.reviewReason}"
+                stored.hasLoot -> "Attack saved: ${record.outcome ?: "result"} (loot captured)"
                 else -> "Results screen captured; loot not captured"
             } + "; watching for the next"
         )
-        withContext(Dispatchers.Main) { onRecordSaved(added) }
+        withContext(Dispatchers.Main) { onRecordSaved(stored) }
         return true
     }
 
@@ -592,7 +620,8 @@ class ResultsCaptureCoordinator(
     private fun frameScore(read: AppResultsReader.EpisodeRead?): Int {
         val value = read?.read ?: return if (read?.inspection != null) 1 else 0
         var score = 1
-        if (value.lootComplete) score += 4
+        if (value.mainLootComplete) score += 4
+        if (value.darkElixir != null) score += 1
         if (value.bonusGold != null &&
             value.bonusElixir != null &&
             value.bonusDarkElixir != null
@@ -634,7 +663,13 @@ class ResultsCaptureCoordinator(
         private const val CAPTURE_WINDOW_MS = 240_000L
         private const val MAX_WATCH_MS = 60 * 60_000L
         private const val MANUAL_MAX_WATCH_MS = 60 * 60_000L
-        private const val DUPLICATE_WINDOW_MS = 10 * 60_000L
+        /**
+         * Two captures of the same result screen always land inside one episode
+         * plus the record cooldown, so this only has to cover a stray re-read.
+         * It used to be 10 minutes, which meant a screenshot-hash collision with
+         * an earlier attack silently discarded a legitimate result.
+         */
+        internal const val DUPLICATE_WINDOW_MS = 45_000L
         private const val RETRY_DELAY_MS = 1_000L
         private const val DETECT_INTERVAL_MS = 700L
         private const val SCREEN_CLEAR_POLL_MS = 500L

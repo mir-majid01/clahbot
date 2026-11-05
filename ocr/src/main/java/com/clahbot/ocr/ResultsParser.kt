@@ -56,6 +56,14 @@ data class ResultsRead(
     val lootComplete: Boolean
         get() = gold != null && elixir != null && darkElixir != null
 
+    /**
+     * Gold and elixir are the rows that make a reading usable. Dark elixir is
+     * frequently 0 and rendered as a bare icon, so a missing dark value must
+     * not discard the gold and elixir that were read.
+     */
+    val mainLootComplete: Boolean
+        get() = gold != null && elixir != null
+
     /** Stable across repeated captures of the same result, not across new loot. */
     val fingerprint: String = listOf(
         outcome.name,

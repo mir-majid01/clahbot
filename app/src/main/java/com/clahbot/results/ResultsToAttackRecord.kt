@@ -41,6 +41,9 @@ object ResultsToAttackRecord {
                 append("Results screen captured; loot not captured.")
             }
             if (episode.closedEarly) append(" The screen closed early; confirmed values were kept.")
+            if (episode.partialReasons.isNotEmpty()) {
+                append(" ${episode.partialReasons.joinToString("; ")} — gold and elixir still count.")
+            }
             if (interrupted) append(" Playback was stopped before the macro ended.")
             if (reviewReason != null) append(" Needs review: $reviewReason.")
         }

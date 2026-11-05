@@ -1,82 +1,120 @@
 package com.clahbot.walls
 
-enum class WallPriority { GOLD_FIRST, ELIXIR_FIRST, FULLER_FIRST }
+/** Which resource the wall upgrade should come from. */
+enum class WallResourceMode {
+    GOLD,
+    ELIXIR,
+    BOTH;
 
-enum class WallResource { GOLD, ELIXIR }
+    val label: String
+        get() = when (this) {
+            GOLD -> "Gold"
+            ELIXIR -> "Elixir"
+            BOTH -> "Both"
+        }
+}
 
-enum class WallRunMode { TEST, LIVE }
+/** Which resource wins when both can afford the wall in BOTH mode. */
+enum class WallPriority {
+    GOLD_FIRST,
+    ELIXIR_FIRST;
 
-/** The shared wall-line definition set up in the 10b overlay. */
-data class WallLine(
-    val ax: Float,
-    val ay: Float,
-    val bx: Float,
-    val by: Float,
-    /** Walls in this line; drives how progress maps onto the A->B span. */
-    val totalWalls: Int,
-    val wallsDone: Int
-)
+    val label: String
+        get() = if (this == GOLD_FIRST) "Gold first" else "Elixir first"
+}
 
-/** The camera-macro alignment landmark, in frame fractions. */
-data class WallCamera(
-    val landmarkLeft: Float,
-    val landmarkTop: Float,
-    val landmarkRight: Float,
-    val landmarkBottom: Float,
-    val patchFile: String
-)
+/** What the automation decided to do on one home-village visit. */
+enum class WallTrigger {
+    NONE,
+    GOLD,
+    ELIXIR;
 
-data class WallCycleLog(
+    val isRun: Boolean get() = this != NONE
+}
+
+/**
+ * One recorded wall attempt. The balances before and after are what the app
+ * actually measured, so the spent amounts are derived, never guessed.
+ */
+data class WallRunLog(
     val at: Long,
-    val mode: WallRunMode,
-    val resource: WallResource,
-    val walls: Int,
-    val price: Long,
-    val expectedPrice: Long,
-    val balanceBefore: Long?,
-    val balanceAfter: Long?,
-    val status: String
-)
+    val macroName: String,
+    val resource: WallTrigger,
+    val goldBefore: Long?,
+    val goldAfter: Long?,
+    val elixirBefore: Long?,
+    val elixirAfter: Long?,
+    val status: String,
+    val detail: String = ""
+) {
+    val spentGold: Long?
+        get() = if (goldBefore != null && goldAfter != null && goldAfter <= goldBefore) {
+            goldBefore - goldAfter
+        } else {
+            null
+        }
 
+    val spentElixir: Long?
+        get() = if (elixirBefore != null && elixirAfter != null && elixirAfter <= elixirBefore) {
+            elixirBefore - elixirAfter
+        } else {
+            null
+        }
+}
+
+/**
+ * The whole wall configuration. One cost applies to gold and elixir because
+ * walls cost the same in both resources, and the reserve is optional.
+ */
 data class WallSettings(
     val enabled: Boolean = false,
-    val goldCost: Long = 0,
-    val goldEnabled: Boolean = true,
-    val elixirCost: Long = 0,
-    val elixirEnabled: Boolean = true,
-    val reserveGold: Long = 0,
-    val reserveElixir: Long = 0,
-    /** Run-when balance reaches this; 0 means only manual runs. */
-    val thresholdGold: Long = 0,
-    val thresholdElixir: Long = 0,
+    val wallMacroId: Long = -1L,
+    val resourceMode: WallResourceMode = WallResourceMode.BOTH,
     val priority: WallPriority = WallPriority.GOLD_FIRST,
-    val maxPerCycle: Int = 40,
-    val wallLevel: Int = 0,
-    /** Spend caps per resource; 0 disables the cap. */
-    val capSession: Long = 0,
-    val capDay: Long = 0,
-    val line: WallLine? = null,
-    val camera: WallCamera? = null,
-    val cameraMacroId: Long = -1L,
-    val history: List<WallCycleLog> = emptyList()
+    val costPerWall: Long = 0L,
+    val minReserve: Long = 0L,
+    /** Upgrade again on the same home visit when another upgrade is verified. */
+    val allowRepeatUpgrades: Boolean = false,
+    /**
+     * The wall macro the user last played to the end with Run now. A freshly
+     * recorded macro is never run automatically until it appears here.
+     */
+    val testedWallMacroId: Long = -1L,
+    val history: List<WallRunLog> = emptyList()
 ) {
-    fun cost(resource: WallResource): Long = when (resource) {
-        WallResource.GOLD -> goldCost
-        WallResource.ELIXIR -> elixirCost
-    }
+    fun cost(): Long = costPerWall.coerceAtLeast(0L)
 
-    fun enabledFor(resource: WallResource): Boolean = when (resource) {
-        WallResource.GOLD -> goldEnabled && goldCost > 0
-        WallResource.ELIXIR -> elixirEnabled && elixirCost > 0
-    }
+    fun reserve(): Long = minReserve.coerceAtLeast(0L)
 
-    fun reserve(resource: WallResource): Long = when (resource) {
-        WallResource.GOLD -> reserveGold
-        WallResource.ELIXIR -> reserveElixir
-    }
+    fun isTested(macroId: Long): Boolean = testedWallMacroId == macroId
 
-    fun threshold(resource: WallResource): Long = when (resource) {
-        WallResource.GOLD -> thresholdGold
-        WallResource.ELIXIR -> thresholdElixir
+    /** One status line shared by the controller tab and the dashboard card. */
+    fun summary(macroName: String?): String = when {
+        wallMacroId <= 0L -> "Record a wall upgrade macro to start"
+        macroName.isNullOrBlank() -> "The wall macro you picked is gone · select it again"
+        costPerWall <= 0L -> "Enter the cost per wall"
+        !enabled -> "Off · turn on to upgrade after each attack"
+        testedWallMacroId != wallMacroId -> "Run it once with Run now before automating"
+        else -> buildString {
+            append("Ready · upgrades with \"")
+            append(macroName ?: "the wall macro")
+            append("\" after an attack")
+            if (minReserve > 0L) append(" · keeps ${formatWallAmount(minReserve)} in reserve")
+        }
     }
+}
+
+/** 1.4M / 250K style, used by both wall surfaces. */
+fun formatWallAmount(value: Long): String = when {
+    value <= 0L -> "0"
+    value >= 1_000_000L -> {
+        val millions = value / 1_000_000.0
+        if (millions == millions.toLong().toDouble()) {
+            "${millions.toLong()}M"
+        } else {
+            String.format(java.util.Locale.US, "%.1fM", millions)
+        }
+    }
+    value >= 1_000L -> "${value / 1_000}K"
+    else -> value.toString()
 }

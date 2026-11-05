@@ -341,6 +341,8 @@ internal fun sanitizeMacro(raw: Macro): Macro? {
             stopAfterAttacks = raw.effectiveStopAfterAttacks,
             playCount = raw.playCount.coerceAtLeast(0),
             orientation = orientation,
+            kind = if (raw.kind == Macro.KIND_WALL) Macro.KIND_WALL else Macro.KIND_ATTACK,
+            linkedWallMacroId = if (raw.linkedWallMacroId > 0) raw.linkedWallMacroId else -1L,
             schemaVersion = Macro.CURRENT_SCHEMA_VERSION
         )
     } catch (_: RuntimeException) {
