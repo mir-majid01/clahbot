@@ -72,6 +72,7 @@ class WallAutomation(
     private var stopRequested = false
 
     private var upgradedThisVisit = false
+    private var lastUpgradeVerified = false
     private var lastRunAt = 0L
 
     fun isBusy(): Boolean = busy
@@ -79,6 +80,7 @@ class WallAutomation(
     /** Leaving the village arms the next visit for one upgrade. */
     fun noteLeftHome() {
         upgradedThisVisit = false
+        lastUpgradeVerified = false
     }
 
     /** The attack loop boundary: upgrade only when the settings allow it. */
@@ -88,10 +90,31 @@ class WallAutomation(
         if (upgradedThisVisit && !settings.allowRepeatUpgrades) {
             return Outcome("skipped", "already upgraded on this home visit")
         }
+        if (upgradedThisVisit && !lastUpgradeVerified) {
+            // Repeat upgrades need proof the previous one actually spent.
+            return Outcome("skipped", "the previous upgrade was not verified by a balance drop")
+        }
         if (System.currentTimeMillis() - lastRunAt < COOLDOWN_MS) {
             return Outcome("skipped", "cooldown after the last upgrade")
         }
-        return run(settings, attackMacro, Mode.AUTOMATIC)
+        var outcome = run(settings, attackMacro, Mode.AUTOMATIC)
+        var repeats = 0
+        while (WallLogic.mayRepeatUpgrade(
+                status = outcome.status,
+                allowed = settings.allowRepeatUpgrades,
+                verified = lastUpgradeVerified,
+                repeats = repeats,
+                maxRepeats = MAX_REPEAT_UPGRADES
+            ) && !stopRequested
+        ) {
+            // Same visit, and the last spend is proven by a balance drop, so one
+            // more wall may go up. Each pass re-reads the village and the counters.
+            repeats++
+            upgradedThisVisit = false
+            AppEventLog.log("walls: repeat upgrade $repeats of $MAX_REPEAT_UPGRADES")
+            outcome = run(repository.settings(), attackMacro, Mode.AUTOMATIC)
+        }
+        return outcome
     }
 
     /** Manual Run now: a verified home village is enough, no threshold check. */
@@ -229,6 +252,8 @@ class WallAutomation(
             val safe = verifySafeAfterRun()
             val spentGold = spend(gold, afterGold)
             val spentElixir = spend(elixir, afterElixir)
+            // A wall went up only if one of the counters actually went down.
+            lastUpgradeVerified = (spentGold ?: 0L) > 0L || (spentElixir ?: 0L) > 0L
             val detail = "ran \"${macro.name}\"" +
                 spentGold?.let { " · ${compact(it)} gold" }.orEmpty() +
                 spentElixir?.let { " · ${compact(it)} elixir" }.orEmpty() +
@@ -491,6 +516,8 @@ class WallAutomation(
         private const val HOME_WAIT_MS = 12_000L
         private const val AFTER_WAIT_MS = 8_000L
         private const val COOLDOWN_MS = 20_000L
+        /** Ceiling for repeat upgrades in one visit; stops a runaway spend. */
+        private const val MAX_REPEAT_UPGRADES = 5
         private const val CHECKPOINT_EVERY_GESTURES = 4
         private const val CHECKPOINT_MIN_MS = 1_200L
         private const val DISPATCH_SLACK_MS = 1_500L

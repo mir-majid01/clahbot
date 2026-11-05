@@ -42,6 +42,10 @@ Last updated: 2026-11-03
   `onMacrosChanged`.
 - `MacroPlayer.play(macro, scope, onFinished, onLoopBoundary)` — the boundary is
   the only automatic wall trigger, and it fires **between** repetitions only.
+  `startPlayback` calls `WallAutomation.noteLeftHome()`, so every boundary is a
+  fresh visit; a second upgrade in the same visit goes through
+  `WallLogic.mayRepeatUpgrade` (repeat switch on + previous spend proven by a
+  balance drop + under 5 repeats), never a blind replay.
 
 ## 2.11.0 (versionCode 32) — smart recovery + auto wall upgrader
 

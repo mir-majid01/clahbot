@@ -2467,6 +2467,8 @@ class FloatingMenuService : Service() {
         )
         player = newPlayer
         hapticEvent()
+        // This run leaving the village arms the next home visit for one upgrade.
+        wallAutomation?.noteLeftHome()
         newPlayer.play(
             adjusted,
             scope,
