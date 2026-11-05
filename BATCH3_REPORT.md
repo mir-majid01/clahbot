@@ -1,15 +1,26 @@
 # AutoClash 2.12.0 / 2.12.1 — recorded-macro walls, loot capture fix
 
 Date: 2026-11-03  
-Release: **2.12.0 (versionCode 33)** published from `a2d4975`, then
-**2.12.1 (versionCode 34)** for the same-visit arming fix — both built by
-GitHub Actions, numbers appended below once the v34 run finishes.
-**Install 2.12.1**; it is this batch's single device-pass candidate.
+Release: **2.12.1 (versionCode 34)** is this batch's install candidate.  
+GitHub release: <https://github.com/mir-majid01/clahbot/releases/tag/v34>  
+GitHub Actions run `42024690292` succeeded; run `42024093806` (the main-push
+gate) also succeeded.  
+CI-built APK: `AutoClash-2.12.1.apk` (51,151,886 bytes)  
+SHA-256: `35c864e04de7e5c63aca9eeb9e63db1319e05c98e78bd1d1dcccf85c38166b2b` —
+downloaded here and re-hashed; it equals both the asset digest and the
+`AutoClash-2.12.1.apk.sha256` sidecar. `aapt` reads `versionCode=34`,
+`versionName=2.12.1`, minSdk 26, target 34.  
+Signing certificate SHA-256 `67198675f10eebc00199a33c50a2e0aaaab4d8d57edc655be36c428e98ad9d47`
+**equals the 2.11.0 build's**, so the update installs in place and
+`macros.json`/`attacks.json` survive.
 
-Published so far: `AutoClash-2.12.0.apk` (51,151,890 bytes, sha256
-`fcceab2c064007f17c651c80799a346933b01b62d3af6acad841d47d079b7be8`) from
-commit `a2d4975` — that build has every walls and loot change except the
-same-visit arming fix described in §2.
+The build was made and signed by **GitHub Actions**, not on this machine.
+
+An earlier release of the same batch, `AutoClash-2.12.0.apk` (versionCode 33,
+51,151,890 bytes, sha256
+`fcceab2c064007f17c651c80799a346933b01b62d3af6acad841d47d079b7be8`), was
+published from commit `a2d4975` before the same-visit arming fix in §2 landed.
+It is left published and untouched; install 2.12.1 instead.
 
 The wall-line upgrader from 2.11.0 is gone. Walls are now driven only by a
 macro the user recorded themselves, and the loot pipeline writes its record the
@@ -195,15 +206,38 @@ Spec §10 matrix status:
 
 ## 8. Honest gaps
 
-- **No device pass.** `adb devices` listed nothing (USB and mDNS), so no APK was
-  installed and no real screen was OCR'd or tapped. Everything above is
-  simulated/unit evidence. The untested parts are exactly the parts that need
-  hardware: real top-bar OCR reads on the home village, the recorded macro
-  landing where it was recorded, popup behaviour mid-run, the wall strip on the
-  Infinix, and 10 real result screens for the loot timings.
+- **No device pass.** `adb devices -l` listed no device (re-checked after the
+  v34 build finished), so nothing was installed and no real screen was OCR'd or
+  tapped. Everything above is simulated/unit evidence. The untested parts are
+  exactly the parts that need hardware: real top-bar OCR reads on the home
+  village, the recorded macro landing where it was recorded, popup behaviour
+  mid-run, the wall strip on the Infinix, and 10 real result screens for the
+  loot timings.
 - `LootCycleSimulationTest` measures the policy→record→file pipeline. The
   on-device "UI refresh" leg (StateFlow → Compose re-render) and the true OCR
   latency per frame are not measured here.
+
+## Device pass (2.12.1, when the phone is connected)
+
+Install in place (`adb install -r .release/AutoClash-2.12.1.apk`; the signature
+matches 2.11.0, so `macros.json`/`attacks.json` are untouched — no backup is
+required, but the same read-only backup routine as before applies if you want
+one). Then, in order:
+
+1. Walls tab → Record wall macro → do one real wall upgrade in Clash by hand →
+   stop → name it. Confirm the tab says "Run it once with Run now…".
+2. Test macro with plenty of gold: counters on screen, no taps, nothing spent.
+3. Run now: the macro plays, the strip shows `Walls · gold`, one wall goes up,
+   the balance drop is in "Last upgrades". Walls status becomes Ready.
+4. Turn Auto Walls on, run a repeating attack macro: exactly one upgrade per
+   home visit, none on a results/loading/unknown screen.
+5. Link a different wall macro to that attack macro in the dashboard sheet and
+   confirm the run uses the linked one; delete it and confirm the loop reports
+   the missing macro instead of using another.
+6. Put a gem offer dialog on screen mid-macro (open a shop item) and confirm the
+   run stops, logs the reason, and the attack loop halts rather than resuming.
+7. Ten real attacks: each record should appear within about a second of the
+   numbers settling, with the dark-elixir gap noted rather than blocking.
 - Wall macros show a summary (gesture count, duration) in the Walls card, not the
   per-gesture timeline the attack sheet has.
 - Auto Walls upgrades in the gap between repetitions of a running loop. After the
