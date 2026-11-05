@@ -88,7 +88,7 @@ import com.clahbot.data.SettingsStore
 import com.clahbot.session.GameSessionTracker
 import com.clahbot.ui.dashboard.AcEmptyCard
 import com.clahbot.ui.dashboard.AcAutomationSection
-import com.clahbot.ui.dashboard.AcWallsCard
+import com.clahbot.ui.dashboard.AcWallsSection
 import com.clahbot.ui.dashboard.AcTeachSheet
 import com.clahbot.ui.dashboard.AcUnknownGallery
 import com.clahbot.ui.dashboard.taughtRule
@@ -331,6 +331,9 @@ fun DashboardScreen(
     val recoveryFile by recoveryRepository.state.collectAsState()
     val wallsFile by wallsRepository.state.collectAsState()
     val macros by viewModel.macros.collectAsState()
+    val attackMacros = remember(macros) { macros.filter { it.kind != Macro.KIND_WALL } }
+    val wallMacros = remember(macros) { macros.filter { it.kind == Macro.KIND_WALL } }
+    fun wallNameFor(id: Long): String? = macros.firstOrNull { it.id == id }?.name
     val selectedId by BotState.selectedMacroId.collectAsState()
     val controllerState by BotState.state.collectAsState()
 
@@ -478,13 +481,13 @@ fun DashboardScreen(
     // Drop a selection that points at a macro deleted from any surface.
     LaunchedEffect(macros) {
         val current = BotState.selectedMacroId.value
-        val reconciled = com.clahbot.data.MacroSelection.reconcile(current, macros)
+        val reconciled = com.clahbot.data.MacroSelection.reconcile(current, attackMacros)
         if (reconciled != current) BotState.setSelectedMacroId(reconciled)
         if (selectionMode) {
-            val existing = macros.mapTo(mutableSetOf()) { it.id }
+            val existing = attackMacros.mapTo(mutableSetOf()) { it.id }
             val filtered = selectedMacros.filter { it in existing }.toSet()
             if (filtered != selectedMacros) selectedMacros = filtered
-            if (macros.isEmpty()) {
+            if (attackMacros.isEmpty()) {
                 selectionMode = false
                 selectedMacros = emptySet()
             }
@@ -752,18 +755,43 @@ fun DashboardScreen(
                 )
             }
             item {
-                AcWallsCard(
+                AcWallsSection(
                     settings = wallsFile.settings,
-                    cameraMacroName = macros
-                        .firstOrNull { it.id == wallsFile.settings.cameraMacroId }
-                        ?.name
+                    wallMacros = wallMacros,
+                    onToggle = { checked ->
+                        wallsRepository.updateSettings { it.copy(enabled = checked) }
+                    },
+                    onSelectMacro = { id ->
+                        wallsRepository.updateSettings {
+                            it.copy(
+                                wallMacroId = id,
+                                testedWallMacroId = if (id == it.testedWallMacroId) id else -1L
+                            )
+                        }
+                    },
+                    onMode = { mode ->
+                        wallsRepository.updateSettings { it.copy(resourceMode = mode) }
+                    },
+                    onCost = { value ->
+                        wallsRepository.updateSettings { it.copy(costPerWall = value) }
+                    },
+                    onReserve = { value ->
+                        wallsRepository.updateSettings { it.copy(minReserve = value) }
+                    },
+                    onRepeat = { allowed ->
+                        wallsRepository.updateSettings { it.copy(allowRepeatUpgrades = allowed) }
+                    },
+                    onRun = { FloatingMenuService.runWall(context, test = false) },
+                    onTest = { FloatingMenuService.runWall(context, test = true) },
+                    onRenameMacro = { macro, name -> viewModel.rename(macro.id, name) },
+                    onDeleteMacro = { macro -> viewModel.delete(macro.id) }
                 )
             }
             item {
                 Column {
                     AcSectionHeader(
                         title = "Macro library",
-                        meta = "${macros.size} saved"
+                        meta = "${attackMacros.size} saved"
                     )
                     AcLibraryActions(
                         importing = importing,
@@ -792,7 +820,7 @@ fun DashboardScreen(
                     )
                 }
             }
-            if (macros.isEmpty()) {
+            if (attackMacros.isEmpty()) {
                 item {
                     AcEmptyCard(
                         "No macros yet",
@@ -800,11 +828,14 @@ fun DashboardScreen(
                     )
                 }
             } else {
-                items(macros, key = { it.id }) { macro ->
+                items(attackMacros, key = { it.id }) { macro ->
                     AcMacroRow(
                         macro = macro,
                         selected = macro.id == selectedId,
                         busy = controllerState.isBusy,
+                        wallLink = macros.firstOrNull {
+                            it.id == macro.linkedWallMacroId && it.kind == Macro.KIND_WALL
+                        }?.name,
                         selectionMode = selectionMode,
                         checked = macro.id in selectedMacros,
                         onToggleChecked = {
@@ -1007,6 +1038,7 @@ fun DashboardScreen(
     settingsMacro?.let { macro ->
         MacroSettingsSheet(
             macro = macro,
+            wallMacros = wallMacros,
             onDismiss = { settingsMacro = null },
             onSave = { draft ->
                 viewModel.update(draft.toMacro(macro))

@@ -706,7 +706,7 @@
 
                             <LinearLayout
                                 android:layout_width="match_parent"
-                                android:layout_height="32dp"
+                                android:layout_height="30dp"
                                 android:gravity="center_vertical"
                                 android:orientation="horizontal">
 
@@ -714,7 +714,7 @@
                                     android:layout_width="0dp"
                                     android:layout_height="wrap_content"
                                     android:layout_weight="1"
-                                    android:text="Auto wall upgrader"
+                                    android:text="Auto Walls"
                                     android:textColor="#E6EBF5"
                                     android:textSize="12.5sp"
                                     android:textStyle="bold" />
@@ -722,18 +722,70 @@
                                 <Switch
                                     android:id="@+id/wallSwitch"
                                     android:layout_width="wrap_content"
-                                    android:layout_height="32dp" />
+                                    android:layout_height="30dp" />
                             </LinearLayout>
 
                             <TextView
-                                android:id="@+id/tvWallWaiting"
+                                android:id="@+id/tvWallStatus"
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
                                 android:ellipsize="end"
-                                android:maxLines="1"
-                                android:text="Waiting for 9,000,000 gold"
+                                android:maxLines="2"
+                                android:text="Record a wall upgrade macro to start"
                                 android:textColor="#94A3B8"
                                 android:textSize="10sp" />
+
+                            <LinearLayout
+                                android:layout_width="match_parent"
+                                android:layout_height="30dp"
+                                android:layout_marginTop="8dp"
+                                android:gravity="center_vertical"
+                                android:orientation="horizontal">
+
+                                <TextView
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="wrap_content"
+                                    android:text="Macro"
+                                    android:textColor="#94A3B8"
+                                    android:textSize="10.5sp" />
+
+                                <TextView
+                                    android:id="@+id/tvWallMacroName"
+                                    android:layout_width="0dp"
+                                    android:layout_height="wrap_content"
+                                    android:layout_marginStart="6dp"
+                                    android:layout_weight="1"
+                                    android:ellipsize="end"
+                                    android:maxLines="1"
+                                    android:text="No wall macro"
+                                    android:textColor="#E6EBF5"
+                                    android:textSize="11sp" />
+
+                                <TextView
+                                    android:id="@+id/btnWallMacro"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="26dp"
+                                    android:gravity="center"
+                                    android:paddingHorizontal="8dp"
+                                    android:text="Change"
+                                    android:textColor="#60A5FA"
+                                    android:textSize="11sp"
+                                    android:textStyle="bold" />
+                            </LinearLayout>
+
+                            <Button
+                                android:id="@+id/btnWallRecord"
+                                android:layout_width="match_parent"
+                                android:layout_height="32dp"
+                                android:layout_marginTop="6dp"
+                                android:backgroundTint="#DC2626"
+                                android:insetTop="0dp"
+                                android:insetBottom="0dp"
+                                android:text="●  Record wall macro"
+                                android:textAllCaps="false"
+                                android:textColor="#FFFFFF"
+                                android:textSize="11.5sp"
+                                android:textStyle="bold" />
 
                             <LinearLayout
                                 android:layout_width="match_parent"
@@ -743,340 +795,144 @@
                                 android:orientation="horizontal">
 
                                 <TextView
-                                    android:id="@+id/tvWallLineText"
-                                    android:layout_width="0dp"
+                                    android:layout_width="wrap_content"
                                     android:layout_height="wrap_content"
-                                    android:layout_weight="1"
-                                    android:ellipsize="end"
-                                    android:maxLines="1"
-                                    android:text="Line · not set"
-                                    android:textColor="#E6EBF5"
-                                    android:textSize="11sp" />
+                                    android:layout_marginEnd="6dp"
+                                    android:text="Pay with"
+                                    android:textColor="#94A3B8"
+                                    android:textSize="10.5sp" />
 
                                 <TextView
-                                    android:id="@+id/btnWallSetLine"
-                                    android:layout_width="wrap_content"
-                                    android:layout_height="28dp"
+                                    android:id="@+id/btnWallModeGold"
+                                    android:layout_width="0dp"
+                                    android:layout_height="26dp"
+                                    android:layout_weight="1"
+                                    android:clickable="true"
+                                    android:focusable="true"
                                     android:gravity="center"
-                                    android:paddingHorizontal="8dp"
-                                    android:text="Set line"
-                                    android:textColor="#60A5FA"
-                                    android:textSize="11sp"
+                                    android:text="Gold"
+                                    android:textColor="#FFFFFF"
+                                    android:textSize="10.5sp"
+                                    android:textStyle="bold" />
+
+                                <TextView
+                                    android:id="@+id/btnWallModeElixir"
+                                    android:layout_width="0dp"
+                                    android:layout_height="26dp"
+                                    android:layout_marginStart="4dp"
+                                    android:layout_weight="1"
+                                    android:clickable="true"
+                                    android:focusable="true"
+                                    android:gravity="center"
+                                    android:text="Elixir"
+                                    android:textColor="#9FB0CF"
+                                    android:textSize="10.5sp"
+                                    android:textStyle="bold" />
+
+                                <TextView
+                                    android:id="@+id/btnWallModeBoth"
+                                    android:layout_width="0dp"
+                                    android:layout_height="26dp"
+                                    android:layout_marginStart="4dp"
+                                    android:layout_weight="1"
+                                    android:clickable="true"
+                                    android:focusable="true"
+                                    android:gravity="center"
+                                    android:text="Both"
+                                    android:textColor="#9FB0CF"
+                                    android:textSize="10.5sp"
                                     android:textStyle="bold" />
                             </LinearLayout>
 
-                            <ProgressBar
-                                android:id="@+id/wallLineProgress"
-                                style="?android:attr/progressBarStyleHorizontal"
+                            <LinearLayout
                                 android:layout_width="match_parent"
-                                android:layout_height="4dp"
-                                android:layout_marginTop="2dp"
-                                android:max="100"
-                                android:progress="0"
-                                android:progressBackgroundTint="#152241"
-                                android:progressTint="#3B82F6" />
+                                android:layout_height="30dp"
+                                android:layout_marginTop="6dp"
+                                android:gravity="center_vertical"
+                                android:orientation="horizontal">
+
+                                <TextView
+                                    android:layout_width="0dp"
+                                    android:layout_height="wrap_content"
+                                    android:layout_weight="1"
+                                    android:text="Cost per wall"
+                                    android:textColor="#E6EBF5"
+                                    android:textSize="11sp" />
+
+                                <EditText
+                                    android:id="@+id/etWallCost"
+                                    android:layout_width="92dp"
+                                    android:layout_height="28dp"
+                                    android:background="@drawable/bg_save_input"
+                                    android:fontFeatureSettings="tnum"
+                                    android:hint="0"
+                                    android:inputType="number"
+                                    android:maxLength="11"
+                                    android:paddingStart="8dp"
+                                    android:paddingEnd="8dp"
+                                    android:singleLine="true"
+                                    android:textColor="#E6EBF5"
+                                    android:textColorHint="#5B6B8A"
+                                    android:textSize="12sp" />
+                            </LinearLayout>
 
                             <TextView
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
-                                android:layout_marginTop="9dp"
-                                android:text="COST PER WALL (what you pay)"
+                                android:text="Walls cost the same in gold and elixir, so this one number covers both."
                                 android:textColor="#94A3B8"
-                                android:textSize="9.5sp"
-                                android:textStyle="bold" />
+                                android:textSize="9.5sp" />
 
                             <LinearLayout
                                 android:layout_width="match_parent"
-                                android:layout_height="32dp"
-                                android:layout_marginTop="3dp"
-                                android:gravity="center_vertical"
-                                android:orientation="horizontal">
-
-                                <ImageView
-                                    android:layout_width="14dp"
-                                    android:layout_height="14dp"
-                                    android:contentDescription="@null"
-                                    android:src="@drawable/ic_gold" />
-
-                                <TextView
-                                    android:layout_width="0dp"
-                                    android:layout_height="wrap_content"
-                                    android:layout_marginStart="6dp"
-                                    android:layout_weight="1"
-                                    android:text="Gold"
-                                    android:textColor="#E6EBF5"
-                                    android:textSize="11sp" />
-
-                                <EditText
-                                    android:id="@+id/etWallGoldCost"
-                                    android:layout_width="84dp"
-                                    android:layout_height="28dp"
-                                    android:background="@drawable/bg_save_input"
-                                    android:fontFeatureSettings="tnum"
-                                    android:hint="0"
-                                    android:inputType="number"
-                                    android:maxLength="11"
-                                    android:paddingStart="8dp"
-                                    android:paddingEnd="8dp"
-                                    android:singleLine="true"
-                                    android:textColor="#E6EBF5"
-                                    android:textColorHint="#5B6B8A"
-                                    android:textSize="12sp" />
-
-                                <Switch
-                                    android:id="@+id/wallGoldSwitch"
-                                    android:layout_width="wrap_content"
-                                    android:layout_height="32dp"
-                                    android:layout_marginStart="6dp" />
-                            </LinearLayout>
-
-                            <LinearLayout
-                                android:layout_width="match_parent"
-                                android:layout_height="32dp"
-                                android:layout_marginTop="2dp"
-                                android:gravity="center_vertical"
-                                android:orientation="horizontal">
-
-                                <ImageView
-                                    android:layout_width="14dp"
-                                    android:layout_height="14dp"
-                                    android:contentDescription="@null"
-                                    android:src="@drawable/ic_elixir" />
-
-                                <TextView
-                                    android:layout_width="0dp"
-                                    android:layout_height="wrap_content"
-                                    android:layout_marginStart="6dp"
-                                    android:layout_weight="1"
-                                    android:text="Elixir"
-                                    android:textColor="#E6EBF5"
-                                    android:textSize="11sp" />
-
-                                <EditText
-                                    android:id="@+id/etWallElixirCost"
-                                    android:layout_width="84dp"
-                                    android:layout_height="28dp"
-                                    android:background="@drawable/bg_save_input"
-                                    android:fontFeatureSettings="tnum"
-                                    android:hint="0"
-                                    android:inputType="number"
-                                    android:maxLength="11"
-                                    android:paddingStart="8dp"
-                                    android:paddingEnd="8dp"
-                                    android:singleLine="true"
-                                    android:textColor="#E6EBF5"
-                                    android:textColorHint="#5B6B8A"
-                                    android:textSize="12sp" />
-
-                                <Switch
-                                    android:id="@+id/wallElixirSwitch"
-                                    android:layout_width="wrap_content"
-                                    android:layout_height="32dp"
-                                    android:layout_marginStart="6dp" />
-                            </LinearLayout>
-
-                            <LinearLayout
-                                android:layout_width="match_parent"
-                                android:layout_height="26dp"
+                                android:layout_height="30dp"
                                 android:layout_marginTop="4dp"
                                 android:gravity="center_vertical"
                                 android:orientation="horizontal">
 
                                 <TextView
-                                    android:id="@+id/btnWallDetect"
-                                    android:layout_width="0dp"
-                                    android:layout_height="match_parent"
-                                    android:layout_weight="1"
-                                    android:gravity="center_vertical"
-                                    android:text="Detect price"
-                                    android:textColor="#60A5FA"
-                                    android:textSize="10.5sp"
-                                    android:textStyle="bold" />
-
-                                <TextView
-                                    android:id="@+id/tvWallReserve"
-                                    android:layout_width="wrap_content"
-                                    android:layout_height="match_parent"
-                                    android:gravity="center_vertical"
-                                    android:maxWidth="190dp"
-                                    android:ellipsize="end"
-                                    android:maxLines="1"
-                                    android:text="Keep at least 2M · 2M ›"
-                                    android:textColor="#94A3B8"
-                                    android:textSize="10.5sp" />
-                            </LinearLayout>
-                        </LinearLayout>
-
-                        <LinearLayout
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="6dp"
-                            android:background="@drawable/bg_card"
-                            android:orientation="vertical"
-                            android:paddingHorizontal="10dp"
-                            android:paddingVertical="4dp">
-
-                            <LinearLayout
-                                android:layout_width="match_parent"
-                                android:layout_height="28dp"
-                                android:gravity="center_vertical"
-                                android:orientation="horizontal">
-
-                                <TextView
-                                    android:id="@+id/tvWallCamera"
                                     android:layout_width="0dp"
                                     android:layout_height="wrap_content"
                                     android:layout_weight="1"
-                                    android:ellipsize="end"
-                                    android:maxLines="1"
-                                    android:text="Walls camera · not set"
+                                    android:text="Keep in reserve"
                                     android:textColor="#E6EBF5"
-                                    android:textSize="10.5sp" />
+                                    android:textSize="11sp" />
 
-                                <TextView
-                                    android:id="@+id/btnWallCamera"
-                                    android:layout_width="wrap_content"
+                                <EditText
+                                    android:id="@+id/etWallReserve"
+                                    android:layout_width="92dp"
                                     android:layout_height="28dp"
-                                    android:gravity="center"
-                                    android:paddingHorizontal="8dp"
-                                    android:text="Pick"
-                                    android:textColor="#60A5FA"
-                                    android:textSize="10.5sp"
-                                    android:textStyle="bold" />
+                                    android:background="@drawable/bg_save_input"
+                                    android:fontFeatureSettings="tnum"
+                                    android:hint="0"
+                                    android:inputType="number"
+                                    android:maxLength="11"
+                                    android:paddingStart="8dp"
+                                    android:paddingEnd="8dp"
+                                    android:singleLine="true"
+                                    android:textColor="#E6EBF5"
+                                    android:textColorHint="#5B6B8A"
+                                    android:textSize="12sp" />
                             </LinearLayout>
 
                             <LinearLayout
                                 android:layout_width="match_parent"
-                                android:layout_height="28dp"
+                                android:layout_height="30dp"
                                 android:gravity="center_vertical"
                                 android:orientation="horizontal">
 
                                 <TextView
-                                    android:id="@+id/tvWallLevel"
                                     android:layout_width="0dp"
                                     android:layout_height="wrap_content"
                                     android:layout_weight="1"
-                                    android:ellipsize="end"
-                                    android:maxLines="1"
-                                    android:text="Wall level · not set"
+                                    android:text="Repeat on the same visit"
                                     android:textColor="#E6EBF5"
-                                    android:textSize="10.5sp" />
+                                    android:textSize="11sp" />
 
-                                <TextView
-                                    android:id="@+id/btnWallLevelMinus"
-                                    android:layout_width="34dp"
-                                    android:layout_height="26dp"
-                                    android:background="@drawable/bg_save_input"
-                                    android:gravity="center"
-                                    android:text="−"
-                                    android:textColor="#E6EBF5"
-                                    android:textSize="15sp" />
-
-                                <TextView
-                                    android:id="@+id/btnWallLevelPlus"
-                                    android:layout_width="34dp"
-                                    android:layout_height="26dp"
-                                    android:layout_marginStart="4dp"
-                                    android:background="@drawable/bg_save_input"
-                                    android:gravity="center"
-                                    android:text="+"
-                                    android:textColor="#E6EBF5"
-                                    android:textSize="15sp" />
-                            </LinearLayout>
-
-                            <LinearLayout
-                                android:layout_width="match_parent"
-                                android:layout_height="28dp"
-                                android:gravity="center_vertical"
-                                android:orientation="horizontal">
-
-                                <TextView
-                                    android:id="@+id/tvWallPriority"
-                                    android:layout_width="0dp"
-                                    android:layout_height="match_parent"
-                                    android:layout_weight="1"
-                                    android:gravity="center_vertical"
-                                    android:text="Priority · Gold first"
-                                    android:textColor="#E6EBF5"
-                                    android:textSize="10.5sp" />
-
-                                <TextView
+                                <Switch
+                                    android:id="@+id/wallRepeatSwitch"
                                     android:layout_width="wrap_content"
-                                    android:layout_height="28dp"
-                                    android:gravity="center"
-                                    android:paddingHorizontal="8dp"
-                                    android:text="Change"
-                                    android:textColor="#60A5FA"
-                                    android:textSize="10.5sp"
-                                    android:textStyle="bold" />
-                            </LinearLayout>
-
-                            <LinearLayout
-                                android:layout_width="match_parent"
-                                android:layout_height="28dp"
-                                android:gravity="center_vertical"
-                                android:orientation="horizontal">
-
-                                <TextView
-                                    android:id="@+id/tvWallMax"
-                                    android:layout_width="0dp"
-                                    android:layout_height="wrap_content"
-                                    android:layout_weight="1"
-                                    android:ellipsize="end"
-                                    android:maxLines="1"
-                                    android:text="Max per cycle · 40"
-                                    android:textColor="#E6EBF5"
-                                    android:textSize="10.5sp" />
-
-                                <TextView
-                                    android:id="@+id/btnWallMaxMinus"
-                                    android:layout_width="34dp"
-                                    android:layout_height="26dp"
-                                    android:background="@drawable/bg_save_input"
-                                    android:gravity="center"
-                                    android:text="−"
-                                    android:textColor="#E6EBF5"
-                                    android:textSize="15sp" />
-
-                                <TextView
-                                    android:id="@+id/btnWallMaxPlus"
-                                    android:layout_width="34dp"
-                                    android:layout_height="26dp"
-                                    android:layout_marginStart="4dp"
-                                    android:background="@drawable/bg_save_input"
-                                    android:gravity="center"
-                                    android:text="+"
-                                    android:textColor="#E6EBF5"
-                                    android:textSize="15sp" />
-                            </LinearLayout>
-
-                            <LinearLayout
-                                android:layout_width="match_parent"
-                                android:layout_height="28dp"
-                                android:gravity="center_vertical"
-                                android:orientation="horizontal">
-
-                                <TextView
-                                    android:id="@+id/tvWallLandmark"
-                                    android:layout_width="0dp"
-                                    android:layout_height="wrap_content"
-                                    android:layout_weight="1"
-                                    android:ellipsize="end"
-                                    android:maxLines="1"
-                                    android:text="Landmark · not marked"
-                                    android:textColor="#E6EBF5"
-                                    android:textSize="10.5sp" />
-
-                                <TextView
-                                    android:id="@+id/btnWallLandmark"
-                                    android:layout_width="wrap_content"
-                                    android:layout_height="28dp"
-                                    android:gravity="center"
-                                    android:paddingHorizontal="8dp"
-                                    android:text="Mark"
-                                    android:textColor="#60A5FA"
-                                    android:textSize="10.5sp"
-                                    android:textStyle="bold" />
+                                    android:layout_height="30dp" />
                             </LinearLayout>
                         </LinearLayout>
 
@@ -1105,7 +961,7 @@
                         android:backgroundTint="#1B2742"
                         android:insetTop="0dp"
                         android:insetBottom="0dp"
-                        android:text="Test (no spend)"
+                        android:text="Test macro"
                         android:textAllCaps="false"
                         android:textColor="#E6EBF5"
                         android:textSize="11.5sp"

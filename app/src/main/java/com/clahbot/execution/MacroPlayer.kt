@@ -55,7 +55,12 @@ class MacroPlayer(
     @Volatile
     private var stopReason: String? = null
 
-    fun play(macro: Macro, scope: CoroutineScope, onFinished: (() -> Unit)? = null) {
+    fun play(
+        macro: Macro,
+        scope: CoroutineScope,
+        onFinished: (() -> Unit)? = null,
+        onLoopBoundary: (suspend () -> Unit)? = null
+    ) {
         active?.let { if (it !== this) it.stop() }
         stopInternal()
 
@@ -170,6 +175,11 @@ class MacroPlayer(
                     }
                     if (iteration < plan.iterations && !stopped) {
                         if (plan.stopOnBackground && !ensureForeground()) break
+                        // The gap between runs is where a wall upgrade may run:
+                        // the village is back and no gesture stream is active.
+                        if (!pauseIfRequested()) break
+                        onLoopBoundary?.invoke()
+                        if (stopped || !isActive) break
                         waitBetweenRepeats(
                             totalMs = macro.effectiveRepeatDelayMs,
                             infinite = plan.infinite,

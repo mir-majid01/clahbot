@@ -37,9 +37,11 @@ data class EpisodeResult(
     val reasons: List<String>,
     val elapsedMs: Long,
     val mainStableAtMs: Long? = null,
-    val bonusSettledAtMs: Long? = null
+    val bonusSettledAtMs: Long? = null,
+    /** Gaps that do not invalidate the record, e.g. dark elixir never rendered. */
+    val partialReasons: List<String> = emptyList()
 ) {
-    val hasMain: Boolean get() = gold != null && elixir != null && darkElixir != null
+    val hasMain: Boolean get() = gold != null && elixir != null
     val hasBonus: Boolean
         get() = bonusGold != null || bonusElixir != null || bonusDarkElixir != null
     val needsReview: Boolean get() = reasons.isNotEmpty()
@@ -54,8 +56,9 @@ sealed interface EpisodeDecision {
  * Decides when a detected results screen has been read well enough to write its
  * one record.
  *
- * Main loot is accepted after two consecutive frames agree on outcome and all
- * three values. The bonus panel animates, so a bonus value (all three together)
+ * Main loot is accepted after two consecutive frames agree on outcome, gold and
+ * elixir; a dark elixir row that never renders is a gap, not a failure. The
+ * bonus panel animates, so a bonus value (all three together)
  * is accepted only after three consecutive equal reads while the panel's row
  * boxes have stopped moving. A panel that never appears within the wait window
  * is recorded as absent. A screen that disappears ends the episode; anything
@@ -73,6 +76,7 @@ class EpisodePolicy(
     private var candidateMain: ResultsRead? = null
     private var stableMain: ResultsRead? = null
     private var stableAtMs: Long? = null
+    private var stableAnnounced = false
 
     private var panelSeen = false
     private var bonusCandidate: LongArray? = null
@@ -132,7 +136,7 @@ class EpisodePolicy(
     fun lastSeenAt(): Long = lastResultsAtMs
 
     private fun acceptMain(read: ResultsRead, atMs: Long) {
-        if (!read.lootComplete) return
+        if (!read.mainLootComplete) return
         val candidate = candidateMain
         if (candidate != null && sameMain(candidate, read)) {
             if (stableMain == null) {
@@ -228,7 +232,8 @@ class EpisodePolicy(
     private fun build(closedEarly: Boolean, atMs: Long): EpisodeResult {
         val main = stableMain ?: candidateMain ?: bestRead
         val reasons = mutableListOf<String>()
-        if (stableMain == null && main?.lootComplete == true) {
+        val partial = mutableListOf<String>()
+        if (stableMain == null && main?.mainLootComplete == true) {
             reasons += "Loot not settled"
         }
 
@@ -237,13 +242,13 @@ class EpisodePolicy(
         val dark = main?.darkElixir
         val missingMain = listOf(
             "Gold" to gold,
-            "Elixir" to elixir,
-            "Dark elixir" to dark
+            "Elixir" to elixir
         ).filter { it.second == null }.map { "${it.first} unreadable" }
-        if (missingMain.size == 3) {
+        if (missingMain.size == 2 && dark == null) {
             reasons += "Loot unreadable"
         } else {
             reasons += missingMain
+            if (dark == null) partial += "Dark elixir unreadable"
         }
 
         val captured = bonusCaptured
@@ -286,7 +291,7 @@ class EpisodePolicy(
             }
         }
 
-        val complete = gold != null && elixir != null && dark != null
+        val complete = gold != null && elixir != null
         val bonusUnresolved = bonusState == AttackRecord.BONUS_NOT_CAPTURED ||
             (!panelSeen && !noPanelWaitElapsed)
         if (closedEarly && (!complete || bonusUnresolved)) {
@@ -336,6 +341,7 @@ class EpisodePolicy(
             bonusResolved = resolved,
             closedEarly = closedEarly,
             reasons = if (resolved && closedEarly) distinct - "Closed early" else distinct,
+            partialReasons = partial.map { it.trim() }.filter { it.isNotEmpty() }.distinct(),
             elapsedMs = (atMs - startMs).coerceAtLeast(0L),
             mainStableAtMs = stableAtMs,
             bonusSettledAtMs = bonusCapturedAtMs
@@ -346,7 +352,19 @@ class EpisodePolicy(
         a.outcome == b.outcome &&
             a.gold == b.gold &&
             a.elixir == b.elixir &&
-            a.darkElixir == b.darkElixir
+            // A dark value that only appears in one frame must not break stability.
+            (a.darkElixir == null || b.darkElixir == null || a.darkElixir == b.darkElixir)
+
+    /**
+     * True once, the first time the main loot becomes stable. The caller saves
+     * the record immediately on this edge instead of waiting for the episode to
+     * close, then updates the same record when the bonus panel settles.
+     */
+    fun stableJustArrived(): Boolean {
+        if (stableMain == null || stableAnnounced) return false
+        stableAnnounced = true
+        return true
+    }
 
     private fun boxesMoved(before: List<OcrBox>, after: List<OcrBox>): Boolean {
         if (before.isEmpty() || before.size != after.size) return true

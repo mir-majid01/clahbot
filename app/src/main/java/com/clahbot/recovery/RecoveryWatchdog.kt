@@ -161,6 +161,8 @@ class RecoveryWatchdog(
     private val context: Context,
     engine: GameScreenEngine,
     reader: AppResultsReader,
+    /** True while a results episode is reading: the watcher must not queue behind it. */
+    private val captureBusy: () -> Boolean = { false },
     private val onPlaybackAborted: (reason: String) -> Unit = {}
 ) {
 
@@ -222,6 +224,7 @@ class RecoveryWatchdog(
     }
 
     private suspend fun tick() {
+        if (captureBusy()) return
         if (screenUnavailable()) {
             if (player?.isRunning() == true) {
                 hardStop("screen off or locked")

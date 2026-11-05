@@ -681,6 +681,7 @@ fun AcMacroRow(
     busy: Boolean,
     selectionMode: Boolean = false,
     checked: Boolean = false,
+    wallLink: String? = null,
     onToggleChecked: () -> Unit = {},
     onSelect: () -> Unit,
     onPlay: () -> Unit,
@@ -740,6 +741,7 @@ fun AcMacroRow(
                     AcChip(acSpeed(macro.speedMultiplier))
                     AcChip(acRepeat(macro.repeatMode))
                     AcChip(acGap(macro.effectiveRepeatDelayMs))
+                    wallLink?.let { AcChip("Walls: $it") }
                 }
             }
             if (!selectionMode) {

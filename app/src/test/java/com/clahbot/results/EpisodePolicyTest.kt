@@ -200,13 +200,25 @@ class EpisodePolicyTest {
     }
 
     @Test
-    fun aMissingDarkRowIsNamedOnTheRecord() {
+    fun aMissingDarkRowIsNamedButDoesNotBlockTheRecord() {
         val noDark = read(dark = null)
-        val policy = EpisodePolicy(0L)
-        policy.onFrame(frame(0, noDark))
-        val result = policy.finishNow(12_000L)
+        // Gold and elixir agreed twice, so the reading is stable: the record is
+        // saved about a second after the screen appears instead of waiting out
+        // the hard limit for a row that is often simply not rendered.
+        val result = run(frame(0, noDark), frame(600, noDark))
         assertNull(result.darkElixir)
-        assertTrue(result.reasons.any { it == "Dark elixir unreadable" })
+        assertTrue(result.hasMain)
+        assertTrue(result.mainStable)
+        assertTrue(result.partialReasons.any { it == "Dark elixir unreadable" })
+        assertFalse(result.reasons.any { it == "Dark elixir unreadable" })
+    }
+
+    @Test
+    fun aMissingGoldRowStillNeedsReview() {
+        val result = run(frame(0, read(gold = null)), frame(600, read(gold = null)))
+        assertFalse(result.hasMain)
+        assertFalse(result.mainStable)
+        assertTrue(result.reasons.any { it == "Gold unreadable" })
     }
 
     @Test

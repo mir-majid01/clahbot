@@ -1,3 +1,202 @@
+# AutoClash 2.12.0 — recorded-macro walls, loot capture fix
+
+Date: 2026-11-03  
+Release: **2.12.0 (versionCode 33)** — built by GitHub Actions, numbers appended
+below once the run finishes.
+
+The wall-line upgrader from 2.11.0 is gone. Walls are now driven only by a
+macro the user recorded themselves, and the loot pipeline writes its record the
+moment the numbers stop moving.
+
+## 1. What was removed (deleted, not hidden)
+
+| File | It used to |
+|---|---|
+| `walls/WallUpgrader.kt` | run the generated A→B tap list |
+| `walls/WallMath.kt` | interpolate wall coordinates along the line |
+| `walls/WallBarReader.kt` | OCR the wall level bar |
+| `walls/WallDialogParser.kt` | parse the upgrade dialog / Wall Ring prices |
+| `walls/CameraAligner.kt` | landmark patch + camera drag alignment |
+| `overlay/WallLineView.kt` | draw the line, A/B markers, drag handles |
+| `res/layout/overlay_wall_setup.xml` | the line-calibration panel |
+| `res/drawable/bg_marker_a.xml`, `bg_marker_b.xml`, `bg_setup_panel.xml` | marker and panel art |
+| `WallMathTest`, `WallDialogParserTest`, `WallBarReaderTest` | tests for the above |
+
+`WallSettings` lost `line`, `camera`, `cameraMacroId`, `goldCost`/`elixirCost`,
+`goldEnabled`/`elixirEnabled`, `reserveGold`/`reserveElixir`, the two
+thresholds, `maxPerCycle`, `wallLevel`, `capSession`, `capDay` and
+`FULLER_FIRST`. The camera macro selector, landmark marking, wall-count and
+"already at max" maths, per-level progress bars and the wall-level/priority
+controls are all gone. A grep for the deleted class names returns nothing
+outside this report.
+
+Kept, because they are general machinery: `AppResultsReader`, the `ocr` module,
+`MacroPlayer`, `GameInput`, the accessibility service and gesture dispatch, the
+screen-state engine, and the recovery watchdog.
+
+## 2. What replaced it
+
+- `walls/WallModels.kt` — one `WallSettings`: `enabled`, `wallMacroId`,
+  `resourceMode` (Gold / Elixir / Both), `priority` (Gold first / Elixir first),
+  one `costPerWall` covering both resources, `minReserve`,
+  `allowRepeatUpgrades`, `testedWallMacroId`, `history` (last 50 runs).
+- `walls/WallLogic.kt` — the whole decision and safety layer as pure functions:
+  `spendable`, `canAfford`, `choose`, `stable`, `stableReadings`, `safeToStart`,
+  `unsafeTaps`, `unsafeDuringRun`, `safeAfterRun`.
+- `walls/WallAutomation.kt` — `Mode.AUTOMATIC` / `MANUAL` / `TEST` over one
+  pipeline: wait for a settled home village → resolve the macro → gates →
+  two balance reads → choose the resource → refuse unsafe taps → replay the
+  recorded gestures with screen checkpoints → verify the village is safe →
+  log.
+- `walls/WallsRepository.kt` — `walls.json`, atomic `.tmp` + rename, defensive
+  decoder, `StateFlow` so both surfaces move together.
+- `res/layout/overlay_wall_picker.xml` — the macro picker as an overlay window,
+  never an Activity.
+
+Trigger: `MacroPlayer.play(..., onLoopBoundary)` calls
+`FloatingMenuService.wallLoopBoundary()` in the gap **between** attack
+repetitions, which is the only moment the village is back and no gesture stream
+is active. `WallAutomation.onHomeVillage` then requires Auto Walls to be on,
+one upgrade per home visit unless repeat upgrades are allowed and a 20 s
+cooldown has passed.
+
+## 3. Wall macros and per-attack linking
+
+- `Macro.kind` (`attack` | `wall`) and `Macro.linkedWallMacroId`. Old files
+  without the fields load as attack macros with no link.
+- "Record wall macro" uses the same passive recorder; the save dialog defaults
+  to "Wall upgrade" and the result is stored with `kind = wall`.
+- Wall macros never enter the attack picker, the attack loop, the library list
+  or the dashboard macro rows — they appear only in the Walls tab, the dashboard
+  Walls card and the per-attack link sheet, so a wall run cannot add an attack
+  statistic.
+- Rename, delete, select and re-record are available from the Walls tab and the
+  dashboard; the dashboard row shows `12 gestures · 8.4 s` for inspection.
+- Resolution order: the attack's linked macro, else the global Walls macro. A
+  linked or selected macro that no longer exists is a clear error
+  ("The wall macro linked to "TH farm" is gone. Re-link it or pick one in
+  Walls.") and the upgrade is skipped — never a silent substitution. At a loop
+  boundary that message goes to the event log and the Walls status line instead
+  of a toast on every repetition.
+- A freshly recorded macro is never spent automatically: only a **Run now**
+  that plays to the end sets `testedWallMacroId`. **Test macro** is a dry run —
+  it reads both counters, shows the numbers, the cost, the reserve and which
+  macro would run, and taps nothing; it does not mark anything as tested.
+  Changing the selected macro clears the tested marker.
+
+## 4. Gem safety
+
+- `WallLogic.unsafeTaps` checks every recorded tap of the macro against the
+  current frame's never-press boxes before a single gesture is dispatched; one
+  hit means the run is refused and logged.
+- During the replay, every 4 gestures (at least 1.2 s apart) the screen is
+  re-read: POPUP, UNKNOWN, NOT_CLASH or BATTLE aborts the run immediately.
+- After the replay the village must be verified safe (HOME / ATTACK_MENU /
+  SEARCHING) before the attack loop is allowed to resume; otherwise
+  `safeToResume = false` and the service stops the loop.
+- Prices still come only from `BitmapIconColorSampler`, so a gem/Wall Ring price
+  can never be classified as a wall cost; recovery actions are born inside
+  `SafeActionFactory`, which refuses any target intersecting a forbidden box.
+- Safety outranks completion: every stop path records a reason.
+
+## 5. Loot detection and statistics
+
+Root cause (measured in the code, not guessed): the record was written **only
+when the whole episode closed**, and an episode closed only after the bonus
+panel resolved or the 12 s cap. Three things made loot look "slow or never
+recorded":
+
+1. `EpisodePolicy.acceptMain` gated stability on `read.lootComplete`, which
+   requires a dark-elixir row. On TH 13+ many results screens have no dark row,
+   so main loot never became stable and the record waited for the 12 s cap.
+2. `sameMain` compared dark elixir strictly, so a frame where the dark row
+   flickered in or out reset stability and the two-frame requirement restarted.
+3. The save itself happened after the episode, so statistics and the dashboard
+   refreshed seconds after the numbers were plainly readable. A 10-minute
+   duplicate window then discarded later legitimate results whose screen hash
+   collided.
+
+Fix: `ResultsParser.mainLootComplete` (gold + elixir only) gates stability;
+`sameMain` tolerates a dark value present in one frame; dark becomes a
+`partialReasons` entry ("Dark elixir unreadable — gold and elixir still count")
+instead of a review blocker; `stableJustArrived()` lets the coordinator save the
+record the moment the two stable frames land and `update` the same row when the
+bonus settles; the duplicate window is 45 s with the reason written down. The
+results screen is still held for the user's 3–4 s — nothing was shortened.
+
+## 6. Migration
+
+`walls.json` from a wall-line release is recognised by its obsolete keys and
+ignored wholesale rather than half-migrated; malformed or truncated JSON, an
+unknown enum value, a missing field, or history rows from the old
+`WallCycleLog` shape all fall back to defaults with no exception. Absent fields
+take the Kotlin defaults (the decoder seeds from a serialized default object,
+because Gson would otherwise put `null` in a non-null enum). `attacks.json` and
+`macros.json` are not touched by this migration, and Auto Walls off leaves the
+attack path exactly as it was.
+
+## 7. Verification
+
+`./gradlew --no-daemon --stacktrace testDebugUnitTest` — the same command CI
+runs, unfiltered, on the whole repo:
+
+- app + ocrlab unit tests: **359 tests, 0 failures, 2 skipped**
+  (309 app + 50 ocrlab; the 2 skips are pre-existing `@Ignore`s unrelated to
+  this batch).
+- Measured in `LootCycleSimulationTest` (simulated frames, real file I/O):
+  10 result cycles → **10 detections, 10 records, 0 duplicates, 0 misses**.
+  Worst detection latency **500 ms** after the first readable frame (two 250 ms
+  polls), worst record write **7 ms**, and the `StateFlow` the dashboard
+  collects already contains the row when the write returns — asserted per cycle
+  by `the dashboard source already holds the row when the write returns`.
+  Before this batch the same screen waited for the bonus panel or the 12 s
+  episode cap.
+- New in this batch: `WallLogicTest` 19 (reserve example from the spec,
+  per-mode choices, priority tie-break, stability tolerances, tap-on-gem
+  refusal, screen gating), `WallsRepositoryTest` 11 (old wall-line file,
+  truncated JSON, unknown enum, stale history rows, bounded history, failed
+  write keeps the good file, summary ordering, amount formatting),
+  `LootCycleSimulationTest` 8 (the ten cycles above, the late-bonus update,
+  missing-dark gap, explicit miss, duplicate, non-duplicate after the window,
+  immediate refresh, totals survive a reopen).
+- Updated: `EpisodePolicyTest` — the test that pinned the old contract ("a
+  missing dark row blocks the record") was rewritten to the new one, and a
+  missing-gold case was added so the blocker still exists where it belongs.
+  `SafeActionFactoryTest` 12, `GameScreenEngineTest` 11 and
+  `BitmapIconColorSamplerTest` 5 still pass, which is what keeps the gem
+  refusal structural.
+- Guard check: the never-press refusal is proved by a test that asserts
+  `SafeActionFactory` returns no action and reports why, and
+  `WallLogicTest` asserts a macro whose tap lands inside a forbidden box is
+  refused before any gesture is dispatched.
+
+Spec §10 matrix status:
+
+| Area | Covered by | Device? |
+|---|---|---|
+| Wall automation (10 cases) | `WallLogicTest`, `WallsRepositoryTest`, code path review | not run |
+| Loot (8 cases) | `EpisodePolicyTest`, `LootCycleSimulationTest`, `CaptureCycleTrackerTest`, `ResultCaptureGateTest` | not run |
+| UI (7 cases) | compile + layout id cross-check (every `wall*` id in the layout is bound in code; no dead wall control remains) | not run |
+| Regression (6 cases) | full unit suite green | not run |
+
+## 8. Honest gaps
+
+- **No device pass.** `adb devices` listed nothing (USB and mDNS), so no APK was
+  installed and no real screen was OCR'd or tapped. Everything above is
+  simulated/unit evidence. The untested parts are exactly the parts that need
+  hardware: real top-bar OCR reads on the home village, the recorded macro
+  landing where it was recorded, popup behaviour mid-run, the wall strip on the
+  Infinix, and 10 real result screens for the loot timings.
+- `LootCycleSimulationTest` measures the policy→record→file pipeline. The
+  on-device "UI refresh" leg (StateFlow → Compose re-render) and the true OCR
+  latency per frame are not measured here.
+- Wall macros show a summary (gesture count, duration) in the Walls card, not the
+  per-gesture timeline the attack sheet has.
+- Auto Walls upgrades in the gap between repetitions of a running loop. After the
+  final repetition of a finite loop nothing is scheduled, by design: §3 gates the
+  workflow on the attack automation still running, and the village-only wait
+  would otherwise race the dashboard auto-open. Use Run now for that last attack.
+
 # AutoClash 2.11.0 — smart recovery + auto wall upgrader
 
 Date: 2026-11-02  
