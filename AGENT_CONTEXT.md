@@ -2,7 +2,16 @@
 
 Last updated: 2026-11-03
 
-## 2.12.0 (versionCode 33) — recorded-macro walls, loot capture fix
+## 2.12.1 (versionCode 34) — recorded-macro walls, loot capture fix
+
+- CI run `42024690292` built `AutoClash-2.12.1.apk` (51,151,886 bytes, sha256
+  `35c864e04de7e5c63aca9eeb9e63db1319e05c98e78bd1d1dcccf85c38166b2b`), downloaded
+  and hash-verified here; the signing cert digest matches 2.11.0, so it installs
+  in place. Tag `v34`. An earlier `v33` (2.12.0) from `a2d4975` stayed published
+  — it lacks the same-visit arming fix, so install 2.12.1.
+- Gates: 311 app + 50 ocrlab unit tests, 0 failures, 2 skipped. **No device
+  pass** (no phone connected), so the walls trigger, the macro replay and the
+  real loot timings are unverified on hardware.
 
 - The wall-line system is **deleted**, not hidden: `WallUpgrader`, `WallMath`,
   `WallBarReader`, `WallDialogParser`, `CameraAligner`, `WallLineView`,
