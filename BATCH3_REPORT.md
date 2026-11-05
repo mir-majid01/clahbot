@@ -1,8 +1,15 @@
-# AutoClash 2.12.0 — recorded-macro walls, loot capture fix
+# AutoClash 2.12.0 / 2.12.1 — recorded-macro walls, loot capture fix
 
 Date: 2026-11-03  
-Release: **2.12.0 (versionCode 33)** — built by GitHub Actions, numbers appended
-below once the run finishes.
+Release: **2.12.0 (versionCode 33)** published from `a2d4975`, then
+**2.12.1 (versionCode 34)** for the same-visit arming fix — both built by
+GitHub Actions, numbers appended below once the v34 run finishes.
+**Install 2.12.1**; it is this batch's single device-pass candidate.
+
+Published so far: `AutoClash-2.12.0.apk` (51,151,890 bytes, sha256
+`fcceab2c064007f17c651c80799a346933b01b62d3af6acad841d47d079b7be8`) from
+commit `a2d4975` — that build has every walls and loot change except the
+same-visit arming fix described in §2.
 
 The wall-line upgrader from 2.11.0 is gone. Walls are now driven only by a
 macro the user recorded themselves, and the loot pipeline writes its record the
