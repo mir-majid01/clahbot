@@ -264,4 +264,45 @@ class WallLogicTest {
         assertFalse(WallLogic.safeAfterRun(GameState.POPUP))
         assertFalse(WallLogic.safeAfterRun(GameState.LOADING))
     }
+
+    @Test
+    fun `a second upgrade in the same visit needs permission and proof`() {
+        assertTrue(
+            WallLogic.mayRepeatUpgrade(
+                status = "ran", allowed = true, verified = true, repeats = 0, maxRepeats = 5
+            )
+        )
+        assertFalse(
+            "the switch is off" ,
+            WallLogic.mayRepeatUpgrade(
+                status = "ran", allowed = false, verified = true, repeats = 0, maxRepeats = 5
+            )
+        )
+        assertFalse(
+            "no balance drop proved the first one",
+            WallLogic.mayRepeatUpgrade(
+                status = "ran", allowed = true, verified = false, repeats = 0, maxRepeats = 5
+            )
+        )
+        assertFalse(
+            "the last run did not spend",
+            WallLogic.mayRepeatUpgrade(
+                status = "stopped", allowed = true, verified = true, repeats = 0, maxRepeats = 5
+            )
+        )
+    }
+
+    @Test
+    fun `repeats stop at the ceiling`() {
+        assertTrue(
+            WallLogic.mayRepeatUpgrade(
+                status = "ran", allowed = true, verified = true, repeats = 4, maxRepeats = 5
+            )
+        )
+        assertFalse(
+            WallLogic.mayRepeatUpgrade(
+                status = "ran", allowed = true, verified = true, repeats = 5, maxRepeats = 5
+            )
+        )
+    }
 }

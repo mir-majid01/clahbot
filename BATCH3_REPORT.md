@@ -60,6 +60,12 @@ is active. `WallAutomation.onHomeVillage` then requires Auto Walls to be on,
 one upgrade per home visit unless repeat upgrades are allowed and a 20 s
 cooldown has passed.
 
+One visit, one wall: `startPlayback` calls `noteLeftHome()`, so each boundary is
+a fresh visit. A second upgrade inside the **same** visit needs
+`allowRepeatUpgrades`, a balance drop proving the first one actually spent, and
+fewer than 5 repeats done — `WallLogic.mayRepeatUpgrade` is that rule as one
+pure function, so a stuck OCR reading cannot drain the storeroom.
+
 ## 3. Wall macros and per-attack linking
 
 - `Macro.kind` (`attack` | `wall`) and `Macro.linkedWallMacroId`. Old files
@@ -140,8 +146,8 @@ attack path exactly as it was.
 `./gradlew --no-daemon --stacktrace testDebugUnitTest` — the same command CI
 runs, unfiltered, on the whole repo:
 
-- app + ocrlab unit tests: **359 tests, 0 failures, 2 skipped**
-  (309 app + 50 ocrlab; the 2 skips are pre-existing `@Ignore`s unrelated to
+- app + ocrlab unit tests: **361 tests, 0 failures, 2 skipped**
+  (311 app + 50 ocrlab; the 2 skips are pre-existing `@Ignore`s unrelated to
   this batch).
 - Measured in `LootCycleSimulationTest` (simulated frames, real file I/O):
   10 result cycles → **10 detections, 10 records, 0 duplicates, 0 misses**.
@@ -151,9 +157,10 @@ runs, unfiltered, on the whole repo:
   by `the dashboard source already holds the row when the write returns`.
   Before this batch the same screen waited for the bonus panel or the 12 s
   episode cap.
-- New in this batch: `WallLogicTest` 19 (reserve example from the spec,
+- New in this batch: `WallLogicTest` 21 (reserve example from the spec,
   per-mode choices, priority tie-break, stability tolerances, tap-on-gem
-  refusal, screen gating), `WallsRepositoryTest` 11 (old wall-line file,
+  refusal, screen gating, the same-visit repeat rule and its ceiling),
+  `WallsRepositoryTest` 11 (old wall-line file,
   truncated JSON, unknown enum, stale history rows, bounded history, failed
   write keeps the good file, summary ordering, amount formatting),
   `LootCycleSimulationTest` 8 (the ten cycles above, the late-bonus update,
