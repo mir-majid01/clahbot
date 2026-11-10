@@ -335,6 +335,21 @@ fun DashboardScreen(
     val triggerFile by triggerRepository.state.collectAsState()
     var editingTrigger by remember { mutableStateOf<com.clahbot.triggers.ImageTrigger?>(null) }
     var triggerBitmap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
+    var editingRule by remember { mutableStateOf<com.clahbot.recovery.RecoveryRule?>(null) }
+    var editingRuleBitmap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
+
+    LaunchedEffect(editingRule?.id) {
+        val rule = editingRule ?: return@LaunchedEffect
+        val unknownId = rule.id.removePrefix("taught_")
+        val unknown = recoveryFile.unknown.firstOrNull { it.id == unknownId }
+        editingRuleBitmap = unknown?.let {
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    android.graphics.BitmapFactory.decodeFile(recoveryRepository.screenshotFile(it).absolutePath)
+                }.getOrNull()
+            }
+        }
+    }
     val macros by viewModel.macros.collectAsState()
     val attackMacros = remember(macros) { macros.filter { it.kind != Macro.KIND_WALL } }
     val wallMacros = remember(macros) { macros.filter { it.kind == Macro.KIND_WALL } }
@@ -804,6 +819,7 @@ fun DashboardScreen(
                     unknownCount = recoveryFile.unknown.size,
                     onOpenGallery = { showUnknownGallery = true },
                     onToggle = { rule, on -> recoveryRepository.setRuleEnabled(rule.id, on) },
+                    onEdit = { editingRule = it },
                     onDelete = { rule -> recoveryRepository.deleteRule(rule.id) }
                 )
             }
@@ -1091,7 +1107,7 @@ fun DashboardScreen(
         AcTeachSheet(
             entry = entry,
             bitmap = teachingBitmap,
-            onSave = { name, action, tapX, tapY ->
+            onSave = { name, purpose, action, tapX, tapY ->
                 val bitmap = teachingBitmap
                 if (bitmap != null) {
                     scope.launch {
@@ -1099,7 +1115,7 @@ fun DashboardScreen(
                             recoveryRepository.hashDistanceFrom(bitmap)
                         }
                         recoveryRepository.saveRule(
-                            taughtRule(entry, name, action, tapX, tapY, hash)
+                            taughtRule(entry, name, purpose, action, tapX, tapY, hash)
                         )
                         recoveryRepository.markTaught(entry.id)
                         recoveryRepository.refresh()
@@ -1154,6 +1170,24 @@ fun DashboardScreen(
             onCancel = {
                 triggerBitmap = null
                 editingTrigger = null
+            }
+        )
+    }
+
+    editingRule?.let { rule ->
+        com.clahbot.ui.dashboard.AcRuleEditor(
+            initial = rule,
+            bitmap = editingRuleBitmap,
+            onSave = { name, purpose, action ->
+                recoveryRepository.updateRule(rule.id) {
+                    it.copy(name = name, purpose = purpose.takeIf { p -> p.isNotBlank() }, action = action)
+                }
+                editingRule = null
+                editingRuleBitmap = null
+            },
+            onCancel = {
+                editingRule = null
+                editingRuleBitmap = null
             }
         )
     }

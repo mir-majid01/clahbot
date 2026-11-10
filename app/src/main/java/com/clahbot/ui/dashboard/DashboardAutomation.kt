@@ -165,10 +165,11 @@ fun AcUnknownGallery(
 fun AcTeachSheet(
     entry: UnknownScreen,
     bitmap: Bitmap?,
-    onSave: (name: String, action: TeachAction, tapX: Float?, tapY: Float?) -> Unit,
+    onSave: (name: String, purpose: String, action: TeachAction, tapX: Float?, tapY: Float?) -> Unit,
     onCancel: () -> Unit
 ) {
     var name by remember { mutableStateOf("Unknown screen rule") }
+    var purpose by remember { mutableStateOf("") }
     var action by remember { mutableStateOf(TeachAction.TAP_HERE) }
     var tapX by remember { mutableStateOf<Float?>(null) }
     var tapY by remember { mutableStateOf<Float?>(null) }
@@ -234,6 +235,20 @@ fun AcTeachSheet(
                     ),
                     modifier = Modifier.fillMaxWidth()
                 )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = purpose,
+                    onValueChange = { purpose = it.take(80) },
+                    label = { Text("Screen purpose (optional)", fontSize = 11.sp) },
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = Color(Ds.TEXT),
+                        unfocusedTextColor = Color(Ds.TEXT),
+                        focusedBorderColor = Color(Ds.ACCENT),
+                        unfocusedBorderColor = Color(Ds.PANEL_BORDER)
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
             }
         },
         confirmButton = {
@@ -241,7 +256,7 @@ fun AcTeachSheet(
                 onClick = {
                     val needsPoint = action == TeachAction.TAP_HERE
                     if (needsPoint && (tapX == null || tapY == null)) return@TextButton
-                    onSave(name.ifBlank { "Unknown screen rule" }, action, tapX, tapY)
+                    onSave(name.ifBlank { "Unknown screen rule" }, purpose, action, tapX, tapY)
                 }
             ) {
                 Text("Save rule", color = Color(Ds.LINK), fontWeight = FontWeight.Bold)
@@ -703,6 +718,7 @@ private fun AcWallsPickerRow(label: String, selected: Boolean, onClick: () -> Un
 fun taughtRule(
     entry: UnknownScreen,
     name: String,
+    purpose: String?,
     action: TeachAction,
     tapX: Float?,
     tapY: Float?,
@@ -710,6 +726,7 @@ fun taughtRule(
 ): RecoveryRule = RecoveryRule(
     id = "taught_${entry.id}",
     name = name,
+    purpose = purpose?.ifBlank { null },
     action = when (action) {
         TeachAction.TAP_HERE -> RecoveryActionType.TAP_POINT
         TeachAction.CLOSE_X -> RecoveryActionType.TAP_CLOSE_X
