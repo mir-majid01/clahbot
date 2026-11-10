@@ -5,6 +5,9 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -36,6 +39,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.clahbot.game.GameState
 import com.clahbot.recovery.RecoveryActionType
 import com.clahbot.recovery.RecoveryRule
 import com.clahbot.recovery.RecoveryStats
@@ -205,18 +209,20 @@ private fun ActivityStat(label: String, value: Int, tone: Int, modifier: Modifie
 fun AcRuleEditor(
     initial: RecoveryRule,
     bitmap: Bitmap?,
-    onSave: (name: String, purpose: String, action: RecoveryActionType) -> Unit,
+    onSave: (name: String, purpose: String, action: RecoveryActionType, expectedState: GameState?, waitForTransition: Boolean) -> Unit,
     onCancel: () -> Unit
 ) {
     var name by remember { mutableStateOf(initial.name) }
     var purpose by remember { mutableStateOf(initial.purpose ?: "") }
     var action by remember { mutableStateOf(initial.action.editableOrDefault()) }
+    var expectedState by remember { mutableStateOf(initial.expectedState) }
+    var waitForTransition by remember { mutableStateOf(initial.waitForTransition) }
     AlertDialog(
         onDismissRequest = onCancel,
         containerColor = Color(Ds.PANEL),
         title = { Text("Edit rule", color = Color(Ds.TEXT), fontWeight = FontWeight.Bold) },
         text = {
-            Column {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
                 if (bitmap != null) {
                     Image(
                         bitmap = bitmap.asImageBitmap(),
@@ -261,6 +267,11 @@ fun AcRuleEditor(
                     )
                 }
                 Spacer(Modifier.height(8.dp))
+                Text("Expected screen", fontSize = 10.sp, color = Color(Ds.MUTED))
+                Spacer(Modifier.height(4.dp))
+                AcExpectedStateChips(expectedState) { expectedState = it }
+                AcWaitToggle(waitForTransition) { waitForTransition = it }
+                Spacer(Modifier.height(8.dp))
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it.take(40) },
@@ -291,7 +302,7 @@ fun AcRuleEditor(
             }
         },
         confirmButton = {
-            TextButton(onClick = { onSave(name.ifBlank { initial.name }, purpose, action) }) {
+            TextButton(onClick = { onSave(name.ifBlank { initial.name }, purpose, action, expectedState, waitForTransition) }) {
                 Text("Save", color = Color(Ds.LINK), fontWeight = FontWeight.Bold)
             }
         },
@@ -317,4 +328,61 @@ private fun RecoveryActionType.ruleLabel(): String = when (this) {
     RecoveryActionType.WAIT -> "Wait"
     RecoveryActionType.GO_HOME -> "Go home"
     else -> name.lowercase()
+}
+
+/** Chips for the screen state a rule expects; null means "any popup". */
+@Composable
+fun AcExpectedStateChips(selected: GameState?, onSelect: (GameState?) -> Unit) {
+    val options = listOf<Pair<GameState?, String>>(
+        null to "Any popup",
+        GameState.SEARCHING to "Searching",
+        GameState.BATTLE to "Battle",
+        GameState.HOME to "Home",
+        GameState.ATTACK_MENU to "Attack menu",
+        GameState.RESULTS to "Results",
+        GameState.UPGRADE_PANEL to "Upgrade panel"
+    )
+    Row(
+        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        options.forEach { (state, label) ->
+            val on = state == selected
+            Box(
+                Modifier
+                    .height(30.dp)
+                    .background(
+                        if (on) Color(Ds.ACCENT) else Color(Ds.BUTTON),
+                        RoundedCornerShape(Ds.RADIUS_BUTTON.dp)
+                    )
+                    .clickable { onSelect(state) }
+                    .padding(horizontal = 10.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    label,
+                    fontSize = 10.5.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = if (on) Color.White else Color(Ds.TEXT)
+                )
+            }
+        }
+    }
+}
+
+/** Waits for the screen to change before continuing (only acts on WAIT rules). */
+@Composable
+fun AcWaitToggle(wait: Boolean, onToggle: (Boolean) -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().padding(top = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            "Wait for the screen to change before continuing (pauses an attack macro)",
+            fontSize = 10.sp,
+            color = Color(Ds.MUTED),
+            modifier = Modifier.weight(1f)
+        )
+        Switch(checked = wait, onCheckedChange = onToggle)
+    }
 }

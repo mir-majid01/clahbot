@@ -55,6 +55,9 @@ class MacroPlayer(
     @Volatile
     private var stopReason: String? = null
 
+    @Volatile
+    private var gateHeld = false
+
     fun play(
         macro: Macro,
         scope: CoroutineScope,
@@ -128,6 +131,7 @@ class MacroPlayer(
                     for (gesture in gestures) {
                         if (!isActive || stopped) break
                         if (!pauseIfRequested()) break
+                        if (!awaitGateClear()) break
                         if (plan.stopOnBackground && !ensureForeground()) break
 
                         val gap = MacroTimeline.gapMillis(
@@ -286,6 +290,7 @@ class MacroPlayer(
         try {
             while (remaining > 0L && !stopped) {
                 if (!pauseIfRequested()) break
+                if (!awaitGateClear()) break
                 if (stopOnBackground && !ensureForeground()) break
                 if (totalMs >= COUNTDOWN_MIN_MS) {
                     val seconds = ((remaining + 999L) / 1000L).toInt()
@@ -314,6 +319,16 @@ class MacroPlayer(
 
     private suspend fun awaitResume() {
         while (paused && !stopped) delay(PAUSE_POLL_MS)
+    }
+
+    /**
+     * Parks the loop while the watchdog reports a taught "wait" screen, and
+     * resumes as soon as that screen is gone. It is a separate flag from the
+     * user's pause, so gating never undoes a manual pause or vice versa.
+     */
+    private suspend fun awaitGateClear(): Boolean {
+        while (gateHeld && !stopped) delay(PAUSE_POLL_MS)
+        return !stopped
     }
 
     private suspend fun dispatch(
@@ -402,6 +417,11 @@ class MacroPlayer(
 
     fun isPaused(): Boolean = paused
 
+    /** Held true by the watchdog while a taught wait screen is showing. */
+    fun setGateHeld(held: Boolean) {
+        gateHeld = held
+    }
+
     fun isRunning(): Boolean = job != null
 
     fun runningElapsedMs(): Long =
@@ -417,6 +437,7 @@ class MacroPlayer(
     private fun stopInternal() {
         stopped = true
         paused = false
+        gateHeld = false
         BotState.setRepeatCountdown(null)
         BotState.setStartCountdown(null)
         job?.cancel()

@@ -1107,7 +1107,7 @@ fun DashboardScreen(
         AcTeachSheet(
             entry = entry,
             bitmap = teachingBitmap,
-            onSave = { name, purpose, action, tapX, tapY ->
+            onSave = { name, purpose, action, tapX, tapY, expectedState, waitForTransition ->
                 val bitmap = teachingBitmap
                 if (bitmap != null) {
                     scope.launch {
@@ -1115,7 +1115,7 @@ fun DashboardScreen(
                             recoveryRepository.hashDistanceFrom(bitmap)
                         }
                         recoveryRepository.saveRule(
-                            taughtRule(entry, name, purpose, action, tapX, tapY, hash)
+                            taughtRule(entry, name, purpose, expectedState, waitForTransition, action, tapX, tapY, hash)
                         )
                         recoveryRepository.markTaught(entry.id)
                         recoveryRepository.refresh()
@@ -1178,9 +1178,15 @@ fun DashboardScreen(
         com.clahbot.ui.dashboard.AcRuleEditor(
             initial = rule,
             bitmap = editingRuleBitmap,
-            onSave = { name, purpose, action ->
+            onSave = { name, purpose, action, expectedState, waitForTransition ->
                 recoveryRepository.updateRule(rule.id) {
-                    it.copy(name = name, purpose = purpose.takeIf { p -> p.isNotBlank() }, action = action)
+                    it.copy(
+                        name = name,
+                        purpose = purpose.takeIf { p -> p.isNotBlank() },
+                        action = action,
+                        expectedState = expectedState,
+                        waitForTransition = waitForTransition
+                    )
                 }
                 editingRule = null
                 editingRuleBitmap = null

@@ -8,6 +8,8 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -165,7 +167,7 @@ fun AcUnknownGallery(
 fun AcTeachSheet(
     entry: UnknownScreen,
     bitmap: Bitmap?,
-    onSave: (name: String, purpose: String, action: TeachAction, tapX: Float?, tapY: Float?) -> Unit,
+    onSave: (name: String, purpose: String, action: TeachAction, tapX: Float?, tapY: Float?, expectedState: com.clahbot.game.GameState?, waitForTransition: Boolean) -> Unit,
     onCancel: () -> Unit
 ) {
     var name by remember { mutableStateOf("Unknown screen rule") }
@@ -173,6 +175,8 @@ fun AcTeachSheet(
     var action by remember { mutableStateOf(TeachAction.TAP_HERE) }
     var tapX by remember { mutableStateOf<Float?>(null) }
     var tapY by remember { mutableStateOf<Float?>(null) }
+    var expectedState by remember { mutableStateOf<com.clahbot.game.GameState?>(null) }
+    var waitForTransition by remember { mutableStateOf(false) }
     AlertDialog(
         onDismissRequest = onCancel,
         containerColor = Color(Ds.PANEL),
@@ -180,7 +184,7 @@ fun AcTeachSheet(
             Text("Teach this screen", color = Color(Ds.TEXT), fontWeight = FontWeight.Bold)
         },
         text = {
-            Column {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
                 TeachImagePicker(
                     bitmap = bitmap,
                     tapX = tapX,
@@ -221,6 +225,11 @@ fun AcTeachSheet(
                         }
                     }
                 }
+                Spacer(Modifier.height(8.dp))
+                Text("Expected screen", fontSize = 10.sp, color = Color(Ds.MUTED))
+                Spacer(Modifier.height(4.dp))
+                AcExpectedStateChips(expectedState) { expectedState = it }
+                AcWaitToggle(waitForTransition) { waitForTransition = it }
                 Spacer(Modifier.height(10.dp))
                 OutlinedTextField(
                     value = name,
@@ -256,7 +265,7 @@ fun AcTeachSheet(
                 onClick = {
                     val needsPoint = action == TeachAction.TAP_HERE
                     if (needsPoint && (tapX == null || tapY == null)) return@TextButton
-                    onSave(name.ifBlank { "Unknown screen rule" }, purpose, action, tapX, tapY)
+                    onSave(name.ifBlank { "Unknown screen rule" }, purpose, action, tapX, tapY, expectedState, waitForTransition)
                 }
             ) {
                 Text("Save rule", color = Color(Ds.LINK), fontWeight = FontWeight.Bold)
@@ -719,6 +728,8 @@ fun taughtRule(
     entry: UnknownScreen,
     name: String,
     purpose: String?,
+    expectedState: com.clahbot.game.GameState?,
+    waitForTransition: Boolean,
     action: TeachAction,
     tapX: Float?,
     tapY: Float?,
@@ -727,6 +738,8 @@ fun taughtRule(
     id = "taught_${entry.id}",
     name = name,
     purpose = purpose?.ifBlank { null },
+    expectedState = expectedState,
+    waitForTransition = waitForTransition,
     action = when (action) {
         TeachAction.TAP_HERE -> RecoveryActionType.TAP_POINT
         TeachAction.CLOSE_X -> RecoveryActionType.TAP_CLOSE_X

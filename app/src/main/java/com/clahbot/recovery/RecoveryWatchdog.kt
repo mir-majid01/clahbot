@@ -193,6 +193,7 @@ class RecoveryWatchdog(
     private var loadingSince = 0L
     private var lastHash: String? = null
     private var hashSince = 0L
+    private var gateActive = false
 
     // -------- sequence learning --------
     private var currentLoop = mutableListOf<GameState>()
@@ -210,6 +211,7 @@ class RecoveryWatchdog(
         unknownSince = 0L
         loadingSince = 0L
         lastHash = null
+        gateActive = false
         job?.cancel()
         job = scope.launch {
             AppEventLog.log("recovery watchdog started")
@@ -285,6 +287,8 @@ class RecoveryWatchdog(
             }
         }
 
+        applyGate(reading)
+
         checkFrozen(reading, now)
     }
 
@@ -325,6 +329,32 @@ class RecoveryWatchdog(
         val label = learnedLoopContext()
         RecoveryRepositoryHolder.get().addUnknownScreen(reading.frame.bitmap, label)
         AppEventLog.log("watchdog saved unknown screen ($label)")
+    }
+
+    /** Holds the attack macro while a taught wait-for-transition screen is showing. */
+    private fun applyGate(reading: RecoveryAgent.Reading) {
+        val p = player ?: return
+        if (!p.isRunning()) {
+            if (gateActive) {
+                gateActive = false
+                p.setGateHeld(false)
+            }
+            return
+        }
+        val repository = RecoveryRepositoryHolder.get()
+        val holder = PlaybackGate.holdingRule(reading.observation, repository.userRules()) { hash ->
+            ScreenHash.distance(reading.observation.hash, hash)
+        }
+        val shouldHold = holder != null
+        if (shouldHold == gateActive) return
+        gateActive = shouldHold
+        p.setGateHeld(shouldHold)
+        if (holder != null) {
+            repository.noteRuleMatch(holder.id)
+            AppEventLog.log("gating: \"${holder.name}\" waits on ${reading.observation.state}")
+        } else {
+            AppEventLog.log("gating: released")
+        }
     }
 
     private fun checkFrozen(reading: RecoveryAgent.Reading, now: Long) {
