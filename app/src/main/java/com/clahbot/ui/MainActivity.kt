@@ -87,7 +87,6 @@ import com.clahbot.data.SessionRepository
 import com.clahbot.data.SettingsStore
 import com.clahbot.session.GameSessionTracker
 import com.clahbot.ui.dashboard.AcEmptyCard
-import com.clahbot.ui.dashboard.AcAutomationSection
 import com.clahbot.ui.dashboard.AcWallsSection
 import com.clahbot.ui.dashboard.AcTeachSheet
 import com.clahbot.ui.dashboard.AcUnknownGallery
@@ -800,10 +799,12 @@ fun DashboardScreen(
                 )
             }
             item {
-                AcAutomationSection(
-                    stats = recoveryFile.stats,
+                com.clahbot.ui.dashboard.AcScreenRulesCard(
+                    rules = recoveryFile.rules,
                     unknownCount = recoveryFile.unknown.size,
-                    onOpenGallery = { showUnknownGallery = true }
+                    onOpenGallery = { showUnknownGallery = true },
+                    onToggle = { rule, on -> recoveryRepository.setRuleEnabled(rule.id, on) },
+                    onDelete = { rule -> recoveryRepository.deleteRule(rule.id) }
                 )
             }
             item {
@@ -814,6 +815,14 @@ fun DashboardScreen(
                     onPriority = { trigger, value -> triggerRepository.setPriority(trigger.id, value) },
                     onEdit = { editingTrigger = it },
                     onDelete = { triggerRepository.deleteTrigger(it.id) }
+                )
+            }
+            item {
+                com.clahbot.ui.dashboard.AcActivityCard(
+                    stats = recoveryFile.stats,
+                    unknownCount = recoveryFile.unknown.size,
+                    rules = recoveryFile.rules,
+                    triggers = triggerFile.triggers
                 )
             }
             item {

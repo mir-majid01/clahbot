@@ -81,7 +81,9 @@ class RecoveryAgent(
     }
 
     fun nextAction(observation: ScreenObservation): SafeActionFactory.RecoveryAction? {
-        val rules = RecoveryRepositoryHolder.get().userRules() + BuiltInRecoveryRules.all
+        val repository = RecoveryRepositoryHolder.get()
+        val userRules = repository.userRules()
+        val rules = userRules + BuiltInRecoveryRules.all
         for (rule in rules) {
             if (!rule.matches(observation) { hash ->
                     ScreenHash.distance(observation.hash, hash)
@@ -90,7 +92,10 @@ class RecoveryAgent(
                 continue
             }
             val attempt = SafeActionFactory.resolve(observation, rule)
-            if (attempt.action != null) return attempt.action
+            if (attempt.action != null) {
+                if (rule in userRules) repository.noteRuleMatch(rule.id)
+                return attempt.action
+            }
             AppEventLog.log("recovery rule ${rule.id} refused: ${attempt.refusal}")
         }
         return SafeActionFactory.resolveGeneric(observation)
