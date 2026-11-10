@@ -37,6 +37,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
@@ -90,7 +91,12 @@ import com.clahbot.ui.design.Ds
 import com.clahbot.util.Haptics
 import com.clahbot.util.PermissionHelper
 import com.clahbot.util.Plural
+import com.clahbot.update.UpdateDownloadProgress
+import com.clahbot.update.UpdateDownloadStage
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -161,36 +167,56 @@ fun SettingsScreenV2(
     var availableUpdate by remember { mutableStateOf<com.clahbot.update.UpdateRelease?>(null) }
     var downloadedUpdate by remember { mutableStateOf<java.io.File?>(null) }
     var autoUpdateHandled by remember { mutableStateOf(false) }
+    var downloadProgress by remember { mutableStateOf<UpdateDownloadProgress?>(null) }
+    var downloadJob by remember { mutableStateOf<Job?>(null) }
 
     fun installUpdate(release: com.clahbot.update.UpdateRelease) {
         if (updateBusy) return
         updateBusy = true
-        scope.launch {
-            val file = downloadedUpdate ?: run {
-                updateStatus = "Downloading ${release.title}…"
-                when (val result = com.clahbot.update.GitHubUpdater.download(context, release)) {
-                    is com.clahbot.update.GitHubUpdater.DownloadResult.Ready -> {
-                        downloadedUpdate = result.file
-                        updateStatus = "Downloaded and checksum verified."
-                        result.file
-                    }
-
-                    is com.clahbot.update.GitHubUpdater.DownloadResult.Failure -> {
-                        updateStatus = result.message
-                        null
+        downloadProgress = null
+        downloadJob = scope.launch {
+            try {
+                val file = downloadedUpdate ?: run {
+                    updateStatus = "Connecting to GitHub…"
+                    when (val result = com.clahbot.update.GitHubUpdater.download(context, release) { progress ->
+                        withContext(Dispatchers.Main.immediate) {
+                            downloadProgress = progress
+                            updateStatus = when (progress.stage) {
+                                UpdateDownloadStage.CONNECTING -> "Connecting to GitHub…"
+                                UpdateDownloadStage.DOWNLOADING -> "Downloading ${release.title}…"
+                                UpdateDownloadStage.VERIFYING -> "Verifying download size and SHA-256…"
+                                UpdateDownloadStage.READY -> "Downloaded and checksum verified."
+                            }
+                        }
+                    }) {
+                        is com.clahbot.update.GitHubUpdater.DownloadResult.Ready -> {
+                            downloadedUpdate = result.file
+                            result.file
+                        }
+                        is com.clahbot.update.GitHubUpdater.DownloadResult.Failure -> {
+                            updateStatus = result.message
+                            downloadProgress = null
+                            null
+                        }
                     }
                 }
-            }
-            if (file != null) {
-                when (val launch = com.clahbot.update.GitHubUpdater.launchInstaller(context, file)) {
-                    is com.clahbot.update.GitHubUpdater.InstallResult.Started ->
-                        updateStatus = "Android installer opened. Allow installs from this source, then confirm."
-
-                    is com.clahbot.update.GitHubUpdater.InstallResult.Failure ->
-                        updateStatus = launch.message
+                ensureActive()
+                if (file != null) {
+                    when (val result = com.clahbot.update.GitHubUpdater.launchInstaller(context, file)) {
+                        is com.clahbot.update.GitHubUpdater.InstallResult.Started ->
+                            updateStatus = "Android installer opened. Allow installs from this source, then confirm."
+                        is com.clahbot.update.GitHubUpdater.InstallResult.Failure ->
+                            updateStatus = result.message
+                    }
                 }
+            } catch (cancelled: CancellationException) {
+                downloadProgress = null
+                updateStatus = "Download cancelled. No partial APK will be installed."
+                throw cancelled
+            } finally {
+                updateBusy = false
+                downloadJob = null
             }
-            updateBusy = false
         }
     }
 
@@ -200,22 +226,22 @@ fun SettingsScreenV2(
         updateStatus = "Checking GitHub…"
         availableUpdate = null
         downloadedUpdate = null
+        downloadProgress = null
         scope.launch {
-            val result = runCatching { com.clahbot.update.GitHubUpdater.check() }.getOrNull()
+            val result = try {
+                com.clahbot.update.GitHubUpdater.check()
+            } finally {
+                updateBusy = false
+            }
             updateStatus = when (result) {
                 is com.clahbot.update.GitHubUpdater.CheckResult.UpToDate -> "You are up to date."
                 is com.clahbot.update.GitHubUpdater.CheckResult.Available -> {
                     availableUpdate = result.release
                     "Update available: ${result.release.title}"
                 }
-
                 is com.clahbot.update.GitHubUpdater.CheckResult.Failure -> result.message
-                null -> "Could not check for updates."
             }
-            updateBusy = false
-            if (autoInstall &&
-                result is com.clahbot.update.GitHubUpdater.CheckResult.Available
-            ) {
+            if (autoInstall && result is com.clahbot.update.GitHubUpdater.CheckResult.Available) {
                 installUpdate(result.release)
             }
         }
@@ -840,6 +866,32 @@ fun SettingsScreenV2(
                             updateStatus?.let {
                                 Text(it, fontSize = 10.sp, color = Color(Ds.MUTED))
                             }
+                            downloadProgress?.let { progress ->
+                                Spacer(Modifier.height(8.dp))
+                                val fraction = progress.fraction
+                                if (progress.stage == UpdateDownloadStage.DOWNLOADING && fraction != null) {
+                                    LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth())
+                                } else if (progress.stage != UpdateDownloadStage.READY) {
+                                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                                }
+                                if (progress.stage != UpdateDownloadStage.CONNECTING) {
+                                    val total = progress.totalBytes?.let { " / ${formatBytesV2(it)}" }.orEmpty()
+                                    val percent = fraction?.let { " · ${(it * 100).toInt()}%" }.orEmpty()
+                                    val speed = if (progress.stage == UpdateDownloadStage.DOWNLOADING) {
+                                        " · ${formatBytesV2(progress.bytesPerSecond)}/s"
+                                    } else ""
+                                    Text(
+                                        "${formatBytesV2(progress.downloadedBytes)}$total$percent$speed",
+                                        fontSize = 10.sp, color = Color(Ds.MUTED)
+                                    )
+                                }
+                            }
+                            if (downloadJob != null && updateBusy) {
+                                TextButton(onClick = {
+                                    updateStatus = "Cancelling download…"
+                                    downloadJob?.cancel()
+                                }) { Text("Cancel download") }
+                            }
                             availableUpdate?.let { release ->
                                 Spacer(Modifier.height(8.dp))
                                 Text(
@@ -852,7 +904,7 @@ fun SettingsScreenV2(
                                     if (release.apk.size > 0) {
                                         "APK ${formatBytesV2(release.apk.size)}"
                                     } else {
-                                        "Latest release APK · checksum verified"
+                                        "Latest release APK · size available when downloading"
                                     },
                                     fontSize = 10.sp,
                                     color = Color(Ds.MUTED)

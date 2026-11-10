@@ -9,6 +9,7 @@ import com.clahbot.data.models.totalGold
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -69,7 +70,7 @@ class SessionRepositoryTest {
     }
 
     @Test
-    fun totalsAddBonusAndExcludeIncompleteAttacks() = runBlocking {
+    fun totalsAddBonusAndCountPartialLootWhileFlaggingIncomplete() = runBlocking {
         val session = repository.ensureActive(1_000L)
         val complete = record(
             id = 1,
@@ -111,10 +112,13 @@ class SessionRepositoryTest {
         )!!
         assertEquals(session.id, updated.id)
         assertEquals(4, updated.attackCount)
+        // bonusUnread and noLoot are flagged incomplete, but the base loot that
+        // bonusUnread actually read still counts; dropping it whole is what once
+        // left Lifetime at zero. noLoot read nothing, so it adds nothing.
         assertEquals(2, updated.incompleteAttacks)
-        assertEquals(150L, updated.gold)
-        assertEquals(260L, updated.elixir)
-        assertEquals(37L, updated.darkElixir)
+        assertEquals(1149L, updated.gold)
+        assertEquals(1259L, updated.elixir)
+        assertEquals(1036L, updated.darkElixir)
         assertEquals(10L, updated.bonusGold)
         assertEquals(20L, updated.bonusElixir)
         assertEquals(3L, updated.bonusDarkElixir)
@@ -236,6 +240,27 @@ class SessionRepositoryTest {
         assertTrue(!File(directory, "attacks.json").exists())
         val text = file.readText()
         assertTrue(text.contains("\"schemaVersion\":1"))
+    }
+
+    @Test
+    fun unreadableSessionFileIsQuarantinedNotSilentlyEmptied() = runBlocking {
+        // A directory at the session path exists but cannot be read as text. The original
+        // must be preserved aside so a later write cannot clobber session history.
+        assertTrue(file.mkdir())
+
+        assertEquals(0, repository.refresh().size)
+        assertFalse("the unreadable session file was left in place to be overwritten", file.exists())
+        val quarantined = directory.listFiles()?.any { it.name.contains("corrupt") } ?: false
+        assertTrue("the unreadable session file was not preserved", quarantined)
+    }
+
+    @Test
+    fun corruptSessionFileIsQuarantinedAndTreatedAsEmpty() = runBlocking {
+        file.writeText("{ this is not json")
+
+        assertEquals(0, repository.refresh().size)
+        val quarantined = directory.listFiles()?.any { it.name.contains("corrupt") } ?: false
+        assertTrue("the corrupt session file was not preserved", quarantined)
     }
 
     private fun record(

@@ -15,7 +15,7 @@ import com.clahbot.data.models.RecordedGesture
 import com.clahbot.execution.MacroTimeline
 import com.clahbot.game.GameState
 import com.clahbot.game.ScreenObservation
-import com.clahbot.ocr.OcrBox
+import com.clahbot.ocr.BitmapIconColorSampler
 import com.clahbot.recovery.RecoveryAgent
 import com.clahbot.results.AppResultsReader
 import com.clahbot.service.ClahAccessibilityService
@@ -137,9 +137,17 @@ class WallAutomation(
         if (busy) return Outcome("skipped", "a wall run is already in progress")
         busy = true
         stopRequested = false
+        // The strip goes up before the village wait and the two counter reads, so
+        // "a run is in progress" is something the user can see and stop. Without
+        // it a pending run looked like a stale lock: nothing on screen, and every
+        // further Test/Run answered "already going".
+        BotState.setWallStrip(
+            WallStripUi(if (mode == Mode.TEST) "Walls · checking" else "Walls · waiting for the village")
+        )
         try {
             val home = waitForHome()
-                ?: return Outcome("skipped", "Clash is not on the home village")
+            if (stopRequested) return Outcome("stopped", "stopped by you")
+            if (home == null) return Outcome("skipped", "Clash is not on the home village")
             val macro = when (val lookup = resolveMacro(settings, attackMacro)) {
                 is MacroLookup.Found -> lookup.macro
                 is MacroLookup.Missing -> {
@@ -183,7 +191,7 @@ class WallAutomation(
             if (mode.needsResources && gold == null && elixir == null) {
                 return Outcome(
                     "skipped",
-                    "The counters were not readable twice with the same value"
+                    "The counters did not read the same value twice · ${lastReading.describe()}"
                 )
             }
 
@@ -207,8 +215,23 @@ class WallAutomation(
 
             val unsafe = WallLogic.unsafeTaps(macro, second.observation)
             if (unsafe.isNotEmpty()) {
-                val message = "Wall macro ${unsafe.first()}"
-                log(macro, chosen, gold, elixir, null, null, "stopped", message)
+                AppEventLog.log(
+                    "walls: never-press refusal — " +
+                        WallLogic.describeForbidden(
+                            second.observation,
+                            WallLogic.firstForbiddenHit(macro, second.observation)
+                        )
+                )
+                // A dry run reports the same refusal but writes no history entry:
+                // nothing was run, so nothing may look like an upgrade attempt.
+                val message = if (mode.taps) {
+                    "Wall macro ${unsafe.first()}"
+                } else {
+                    "Dry run: Wall macro ${unsafe.first()}"
+                }
+                if (mode.taps) {
+                    log(macro, chosen, gold, elixir, null, null, "stopped", message)
+                }
                 notify(ResultToastUi.Kind.WARNING, message)
                 return Outcome("stopped", message, chosen, gold, elixir, macro.name)
             }
@@ -298,6 +321,7 @@ class WallAutomation(
     private suspend fun waitForHome(): RecoveryAgent.Reading? {
         var waited = 0L
         while (waited < HOME_WAIT_MS) {
+            if (stopRequested) return null
             val reading = agent.observe() ?: return null
             when (reading.observation.state) {
                 GameState.HOME -> {
@@ -350,19 +374,21 @@ class WallAutomation(
 
     private data class Balances(val gold: Long?, val elixir: Long?)
 
-    private suspend fun readBalances(bitmap: Bitmap): Balances = Balances(
-        gold = read(bitmap, GOLD_TOP, GOLD_BOTTOM),
-        elixir = read(bitmap, ELIXIR_TOP, ELIXIR_BOTTOM)
-    )
+    /** What the last counter read produced, for the Walls status line. */
+    var lastReading: WallCounters.Reading = WallCounters.Reading()
+        private set
 
-    private suspend fun read(bitmap: Bitmap, topFraction: Float, bottomFraction: Float): Long? {
-        val box = OcrBox(
-            left = (bitmap.width * BALANCE_LEFT).toInt(),
-            top = (bitmap.height * topFraction).toInt().coerceIn(0, bitmap.height - 1),
-            right = (bitmap.width * BALANCE_RIGHT).toInt().coerceAtMost(bitmap.width),
-            bottom = (bitmap.height * bottomFraction).toInt().coerceIn(1, bitmap.height)
-        )
-        return runCatching { reader.readNumber(bitmap, box, "", null) }.getOrNull()
+    private suspend fun readBalances(bitmap: Bitmap): Balances {
+        val page = reader.page(bitmap)
+        val sampler = BitmapIconColorSampler(bitmap)
+        val reading = WallCounters.read(page.lines, page.width, page.height) { box ->
+            sampler.classify(box)
+        }
+        lastReading = reading
+        if (!reading.anything) {
+            AppEventLog.log("walls: counters not found (${reading.describe()})")
+        }
+        return Balances(gold = reading.gold, elixir = reading.elixir)
     }
 
     private fun spend(before: Long?, after: Long?): Long? =
@@ -521,11 +547,5 @@ class WallAutomation(
         private const val CHECKPOINT_EVERY_GESTURES = 4
         private const val CHECKPOINT_MIN_MS = 1_200L
         private const val DISPATCH_SLACK_MS = 1_500L
-        private const val BALANCE_LEFT = 0.58f
-        private const val BALANCE_RIGHT = 0.96f
-        private const val GOLD_TOP = 0.026f
-        private const val GOLD_BOTTOM = 0.090f
-        private const val ELIXIR_TOP = 0.092f
-        private const val ELIXIR_BOTTOM = 0.156f
     }
 }

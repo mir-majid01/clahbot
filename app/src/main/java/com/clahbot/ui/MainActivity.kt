@@ -326,6 +326,8 @@ fun DashboardScreen(
     val sessionRepository = remember { SessionRepository.get(context) }
     val recoveryRepository = remember { RecoveryRepository.get(context) }
     val wallsRepository = remember { WallsRepository.get(context) }
+    val settingsStore = remember { SettingsStore.get(context) }
+    val dashboardSettings by settingsStore.settings.collectAsState()
     val attacks by attackRepository.records.collectAsState()
     val sessions by sessionRepository.sessions.collectAsState()
     val recoveryFile by recoveryRepository.state.collectAsState()
@@ -333,6 +335,10 @@ fun DashboardScreen(
     val macros by viewModel.macros.collectAsState()
     val attackMacros = remember(macros) { macros.filter { it.kind != Macro.KIND_WALL } }
     val wallMacros = remember(macros) { macros.filter { it.kind == Macro.KIND_WALL } }
+    val wallLinkCounts = remember(attackMacros) {
+        attackMacros.filter { it.linkedWallMacroId > 0L }
+            .groupingBy { it.linkedWallMacroId }.eachCount()
+    }
     fun wallNameFor(id: Long): String? = macros.firstOrNull { it.id == id }?.name
     val selectedId by BotState.selectedMacroId.collectAsState()
     val controllerState by BotState.state.collectAsState()
@@ -407,7 +413,6 @@ fun DashboardScreen(
         attackRepository.refresh()
         sessionRepository.refresh()
         recoveryRepository.refresh()
-        wallsRepository.refresh()
         viewModel.refresh()
         val active = sessionRepository.sessions.value.firstOrNull { it.active }
         statsScope = if ((active?.attackCount ?: 0) > 0) 0 else 1
@@ -483,6 +488,11 @@ fun DashboardScreen(
         val current = BotState.selectedMacroId.value
         val reconciled = com.clahbot.data.MacroSelection.reconcile(current, attackMacros)
         if (reconciled != current) BotState.setSelectedMacroId(reconciled)
+        val wallIds = wallMacros.mapTo(mutableSetOf()) { it.id }
+        val currentWalls = wallsRepository.settings()
+        if (currentWalls.reconciled(wallIds) != currentWalls) {
+            wallsRepository.updateSettings { it.reconciled(wallIds) }
+        }
         if (selectionMode) {
             val existing = attackMacros.mapTo(mutableSetOf()) { it.id }
             val filtered = selectedMacros.filter { it in existing }.toSet()
@@ -648,12 +658,11 @@ fun DashboardScreen(
         !notificationsOk
 
     val statsSession = activeSession ?: visibleSessions.firstOrNull()
-    val statsAttacks = remember(statsScope, statsSession, confirmedAttacks) {
-        if (statsScope == 0) {
-            statsSession?.let { scopedAttacks(it, confirmedAttacks) } ?: emptyList()
-        } else {
-            confirmedAttacks
-        }
+    val cardSessionAttacks = remember(statsSession, confirmedAttacks) {
+        statsSession?.let { scopedAttacks(it, confirmedAttacks) } ?: emptyList()
+    }
+    val statsAttacks = remember(statsScope, cardSessionAttacks, confirmedAttacks) {
+        if (statsScope == 0) cardSessionAttacks else confirmedAttacks
     }
     val statsTotals = remember(statsAttacks) { SessionAggregator.totals(statsAttacks) }
     val statsSessions = remember(visibleSessions) {
@@ -675,10 +684,17 @@ fun DashboardScreen(
             rescanning = true
             rescanStatus = null
             scope.launch {
-                val summary = ResultsRescan.run(context, attackRepository)
-                attackRepository.refresh()
-                rescanStatus = ResultsRescan.summaryText(summary)
-                rescanning = false
+                try {
+                    val summary = ResultsRescan.run(context, attackRepository)
+                    attackRepository.refresh()
+                    rescanStatus = ResultsRescan.summaryText(summary)
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (error: Exception) {
+                    rescanStatus = "Re-scan failed: ${error.message ?: "could not read saved captures"}"
+                } finally {
+                    rescanning = false
+                }
             }
         }
     }
@@ -730,6 +746,7 @@ fun DashboardScreen(
                     gameStatus = if (gamePackage != null) "Installed · ready" else "Not installed",
                     gameIcon = gameIcon,
                     session = activeSession ?: visibleSessions.firstOrNull(),
+                    sessionAttacks = cardSessionAttacks,
                     now = nowProvider,
                     onLaunch = launchGame
                 )
@@ -758,6 +775,12 @@ fun DashboardScreen(
                 AcWallsSection(
                     settings = wallsFile.settings,
                     wallMacros = wallMacros,
+                    linkCounts = wallLinkCounts,
+                    expanded = dashboardSettings.wallsCardExpanded,
+                    onExpandedChange = { open ->
+                        settingsStore.update { it.copy(wallsCardExpanded = open) }
+                    },
+                    saveError = wallsRepository.writeError,
                     onToggle = { checked ->
                         wallsRepository.updateSettings { it.copy(enabled = checked) }
                     },
@@ -879,7 +902,7 @@ fun DashboardScreen(
             if (unreadableCount > 0 && reviewBannerDismissed) {
                 item(key = "stats-review-count") {
                     Text(
-                        Plural.needReview(unreadableCount) + " — excluded from totals",
+                        Plural.needReview(unreadableCount) + " — loot read so far is counted",
                         fontSize = 11.sp,
                         color = PauseAmber
                     )
@@ -1041,23 +1064,40 @@ fun DashboardScreen(
             wallMacros = wallMacros,
             onDismiss = { settingsMacro = null },
             onSave = { draft ->
-                viewModel.update(draft.toMacro(macro))
-                settingsMacro = null
-                Toast.makeText(context, "Saved \"${draft.name}\"", Toast.LENGTH_SHORT).show()
+                val result = viewModel.update(draft.toMacro(macro))
+                if (result is com.clahbot.data.MacroWriteResult.Saved) {
+                    Toast.makeText(context, "Saved \"${result.macro.name}\"", Toast.LENGTH_SHORT).show()
+                }
+                result
             },
             onDuplicate = { draft ->
                 scope.launch {
-                    val copy = viewModel.duplicate(macro.id)
-                    if (copy == null) {
+                    try {
+                        val copy = viewModel.duplicate(macro.id)
+                        if (copy == null) {
+                            Toast.makeText(context, "Duplicate failed", Toast.LENGTH_SHORT).show()
+                        } else {
+                            when (
+                                val result = viewModel.update(draft.toMacro(copy).copy(name = copy.name))
+                            ) {
+                                is com.clahbot.data.MacroWriteResult.Saved -> {
+                                    settingsMacro = null
+                                    Toast.makeText(
+                                        context,
+                                        "Duplicated as \"${result.macro.name}\"",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                                is com.clahbot.data.MacroWriteResult.Rejected -> {
+                                    viewModel.deleteMany(setOf(copy.id))
+                                    Toast.makeText(context, result.message, Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        }
+                    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                        throw cancelled
+                    } catch (_: Exception) {
                         Toast.makeText(context, "Duplicate failed", Toast.LENGTH_SHORT).show()
-                    } else {
-                        viewModel.update(draft.toMacro(copy).copy(name = copy.name))
-                        settingsMacro = null
-                        Toast.makeText(
-                            context,
-                            "Duplicated as \"${copy.name}\"",
-                            Toast.LENGTH_SHORT
-                        ).show()
                     }
                 }
             },
@@ -1067,46 +1107,36 @@ fun DashboardScreen(
     }
 
     lootEditing?.let { record ->
+        var saving by remember(record.id) { mutableStateOf(false) }
+        var saveError by remember(record.id) { mutableStateOf<String?>(null) }
         LootEditDialog(
             record = record,
-            onDismiss = { lootEditing = null },
-            onSave = { gold, elixir, dark, bonusGold, bonusElixir, bonusDark ->
-                scope.launch {
-                    val anyLoot = listOf(
-                        gold,
-                        elixir,
-                        dark,
-                        bonusGold,
-                        bonusElixir,
-                        bonusDark
-                    ).any { it != null }
-                    attackRepository.update(
-                        record.copy(
-                            gold = gold,
-                            elixir = elixir,
-                            darkElixir = dark,
-                            bonusGold = bonusGold,
-                            bonusElixir = bonusElixir,
-                            bonusDarkElixir = bonusDark,
-                            lootSource = if (anyLoot) {
-                                AttackRecord.LOOT_MANUAL
+            saving = saving,
+            saveError = saveError,
+            onDismiss = { if (!saving) lootEditing = null },
+            onSave = { gold, elixir, dark, bonusGold, bonusElixir, bonusDark, noBonus ->
+                if (!saving) {
+                    saving = true
+                    saveError = null
+                    scope.launch {
+                        try {
+                            val edited = com.clahbot.data.models.AttackRecordPolicy.correctLoot(
+                                record, gold, elixir, dark, bonusGold, bonusElixir, bonusDark, noBonus
+                            )
+                            if (attackRepository.update(edited, expected = record) != null) {
+                                lootEditing = null
                             } else {
-                                AttackRecord.LOOT_NONE
-                            },
-                            captureSource = AttackRecord.SOURCE_MANUAL,
-                            verified = anyLoot,
-                            complete = gold != null && elixir != null && dark != null,
-                            bonusState = when {
-                                bonusGold != null || bonusElixir != null || bonusDark != null ->
-                                    AttackRecord.BONUS_CAPTURED
-                                else -> record.bonusState
-                            },
-                            reviewReason = null,
-                            confirmed = true
-                        )
-                    )
+                                saveError = "This record changed or was removed. Reopen it before saving."
+                            }
+                        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                            throw cancelled
+                        } catch (error: Exception) {
+                            saveError = "Could not save loot: ${error.message ?: "storage error"}"
+                        } finally {
+                            saving = false
+                        }
+                    }
                 }
-                lootEditing = null
             }
         )
     }
@@ -1149,8 +1179,10 @@ private fun LootChip(iconRes: Int, value: Long?) {
 @Composable
 private fun LootEditDialog(
     record: AttackRecord,
+    saving: Boolean,
+    saveError: String?,
     onDismiss: () -> Unit,
-    onSave: (Long?, Long?, Long?, Long?, Long?, Long?) -> Unit
+    onSave: (Long?, Long?, Long?, Long?, Long?, Long?, Boolean) -> Unit
 ) {
     fun initial(value: Long?) = value?.toString() ?: ""
     var gold by remember(record.id) { mutableStateOf(initial(record.gold)) }
@@ -1159,6 +1191,8 @@ private fun LootEditDialog(
     var bonusGold by remember(record.id) { mutableStateOf(initial(record.bonusGold)) }
     var bonusElixir by remember(record.id) { mutableStateOf(initial(record.bonusElixir)) }
     var bonusDark by remember(record.id) { mutableStateOf(initial(record.bonusDarkElixir)) }
+    var noBonus by remember(record.id) { mutableStateOf(record.bonusState == AttackRecord.BONUS_NONE && !record.hasBonus) }
+    var inputError by remember(record.id) { mutableStateOf<String?>(null) }
 
     fun parse(value: String): Long? = LootInput.parse(value)
 
@@ -1177,7 +1211,7 @@ private fun LootEditDialog(
                     fontSize = 11.sp,
                     color = TextMuted
                 )
-                record.reviewReason?.let { reason ->
+                record.reviewExplanation?.let { reason ->
                     Spacer(Modifier.height(8.dp))
                     Text(
                         "Needs review: $reason",
@@ -1197,6 +1231,7 @@ private fun LootEditDialog(
                     OutlinedTextField(
                         value = value,
                         onValueChange = setter,
+                        enabled = !saving,
                         label = { Text(label) },
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
@@ -1205,6 +1240,14 @@ private fun LootEditDialog(
                     Spacer(Modifier.height(8.dp))
                 }
                 Text("Bonus (separate panel)", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    androidx.compose.material3.Checkbox(
+                        checked = noBonus,
+                        onCheckedChange = { noBonus = it },
+                        enabled = !saving
+                    )
+                    Text("I confirm there was no bonus", fontSize = 11.sp)
+                }
                 Spacer(Modifier.height(6.dp))
                 listOf(
                     Triple("Bonus gold", bonusGold) { v: String -> bonusGold = v },
@@ -1214,6 +1257,7 @@ private fun LootEditDialog(
                     OutlinedTextField(
                         value = value,
                         onValueChange = setter,
+                        enabled = !saving && !noBonus,
                         label = { Text(label) },
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
@@ -1224,17 +1268,27 @@ private fun LootEditDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = {
-                onSave(
-                    parse(gold), parse(elixir), parse(dark),
-                    parse(bonusGold), parse(bonusElixir), parse(bonusDark)
-                )
-            }) {
-                Text(if (record.confirmed) "Save" else "Confirm")
+            Column {
+                (inputError ?: saveError)?.let { Text(it, color = RecordRed, fontSize = 11.sp) }
+                TextButton(enabled = !saving, onClick = {
+                    val values = listOf(gold, elixir, dark) +
+                        if (noBonus) emptyList() else listOf(bonusGold, bonusElixir, bonusDark)
+                    if (values.any { it.isNotBlank() && parse(it) == null }) {
+                        inputError = "Enter whole, non-negative numbers, or leave a field blank."
+                    } else {
+                        inputError = null
+                        onSave(
+                            parse(gold), parse(elixir), parse(dark),
+                            parse(bonusGold), parse(bonusElixir), parse(bonusDark), noBonus
+                        )
+                    }
+                }) {
+                    Text(if (saving) "Saving…" else if (record.confirmed) "Save" else "Confirm")
+                }
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(enabled = !saving, onClick = onDismiss) { Text("Cancel") }
         }
     )
 }

@@ -5,12 +5,24 @@ import android.content.Intent
 import android.util.Log
 import androidx.core.content.FileProvider
 import com.clahbot.BuildConfig
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.io.File
-import java.net.HttpURLConnection
-import java.net.URL
 import java.security.MessageDigest
+import java.util.concurrent.TimeUnit
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.Response
 
 object GitHubUpdater {
 
@@ -22,6 +34,11 @@ object GitHubUpdater {
     private const val MAX_JSON_BYTES = 2_000_000L
     private const val MAX_CHECKSUM_BYTES = 8_192L
     private const val MAX_APK_BYTES = 200L * 1024L * 1024L
+    private val downloadMutex = Mutex()
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(12, TimeUnit.SECONDS)
+        .readTimeout(20, TimeUnit.SECONDS)
+        .build()
 
     sealed interface CheckResult {
         data object UpToDate : CheckResult
@@ -52,12 +69,9 @@ object GitHubUpdater {
         checkApi()
     }
 
-    private fun checkApi(): CheckResult {
-        var connection: HttpURLConnection? = null
-        return try {
-            val conn = open(API_URL)
-            connection = conn
-            val code = conn.responseCode
+    private suspend fun checkApi(): CheckResult = try {
+        connected(API_URL, "application/vnd.github+json") { response ->
+            val code = response.code
             when {
                 code == 404 -> CheckResult.Failure(
                     "No public release found. The repository or release may still be private."
@@ -69,7 +83,7 @@ object GitHubUpdater {
 
                 code !in 200..299 -> CheckResult.Failure("GitHub returned HTTP $code.")
                 else -> {
-                    val text = conn.inputStream.bufferedReader()
+                    val text = requireNotNull(response.body).charStream()
                         .use { it.readLimited(MAX_JSON_BYTES) }
                     val release = GitHubReleaseParser.parse(text)
                     if (release == null) {
@@ -81,142 +95,152 @@ object GitHubUpdater {
                     }
                 }
             }
-        } catch (t: Throwable) {
-            Log.w(TAG, "Update check failed", t)
-            CheckResult.Failure(
-                "Could not reach GitHub: ${t.message ?: "network error"}"
-            )
-        } finally {
-            connection?.disconnect()
         }
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        currentCoroutineContext().ensureActive()
+        Log.w(TAG, "Update check failed", error)
+        CheckResult.Failure("Could not reach GitHub: ${error.message ?: "network error"}")
     }
 
     suspend fun download(
         context: Context,
-        release: UpdateRelease
+        release: UpdateRelease,
+        onProgress: suspend (UpdateDownloadProgress) -> Unit = {}
     ): DownloadResult = withContext(Dispatchers.IO) {
-        val directory = File(context.cacheDir, "updates").apply { mkdirs() }
-        val safeName = release.apk.name
-            .replace(Regex("[^A-Za-z0-9._-]"), "_")
-            .ifBlank { "AutoClash-update.apk" }
+        if (!downloadMutex.tryLock()) {
+            return@withContext DownloadResult.Failure("An update download is already active.")
+        }
+        val directory = File(context.cacheDir, "updates")
+        val safeName = release.apk.name.replace(Regex("[^A-Za-z0-9._-]"), "_")
         val destination = File(directory, safeName)
         val temporary = File(directory, "$safeName.part")
         try {
+            require(safeName.endsWith(".apk", ignoreCase = true)) { "Invalid update APK name." }
+            require(release.apk.size <= MAX_APK_BYTES) { "The update APK is too large." }
+            check(directory.isDirectory || directory.mkdirs()) { "Cannot create update directory." }
+            onProgress(UpdateDownloadProgress(UpdateDownloadStage.CONNECTING))
             val expected = UpdateChecksum.fromDigest(release.apk.digest)
                 ?: release.checksum?.let { asset ->
                     val text = fetchText(asset.url, MAX_CHECKSUM_BYTES)
                     UpdateChecksum.fromText(text.orEmpty())
                 }
             if (expected == null) {
-                return@withContext DownloadResult.Failure(
-                    "The release has no SHA-256 checksum."
-                )
+                return@withContext DownloadResult.Failure("The release has no SHA-256 checksum.")
             }
 
             val urls = buildList {
                 add(release.apk.url)
-                // A blocked or slow github.com download host must not make the
-                // in-app updater unusable when the API is still reachable.
                 release.apk.id?.let { add("$ASSET_API/$it") }
             }.distinct()
             var failure: String? = null
-            for ((index, url) in urls.withIndex()) {
-                val attempt = downloadTo(
-                    url = url,
-                    accept = if (index == 0) {
-                        "application/vnd.github+json"
-                    } else {
-                        "application/octet-stream"
-                    },
-                    temporary = temporary
-                )
-                when (attempt) {
+            for (url in urls) {
+                currentCoroutineContext().ensureActive()
+                onProgress(UpdateDownloadProgress(UpdateDownloadStage.CONNECTING))
+                when (val attempt = downloadTo(url, temporary, release.apk.size, onProgress)) {
                     is Attempt.Failed -> failure = attempt.message
-
                     is Attempt.Ok -> {
-                        if (release.apk.size > 0 && attempt.bytes != release.apk.size) {
-                            temporary.delete()
+                        onProgress(attempt.progress.copy(stage = UpdateDownloadStage.VERIFYING))
+                        currentCoroutineContext().ensureActive()
+                        if (release.apk.size > 0 && attempt.progress.downloadedBytes != release.apk.size) {
                             failure = "Downloaded size does not match the release."
                         } else if (!attempt.sha256.equals(expected, ignoreCase = true)) {
-                            temporary.delete()
                             failure = "Checksum mismatch. The update was not installed."
                         } else {
-                            if (destination.exists()) destination.delete()
-                            if (!temporary.renameTo(destination)) {
-                                temporary.copyTo(destination, overwrite = true)
-                                temporary.delete()
-                            }
+                            currentCoroutineContext().ensureActive()
+                            Files.move(
+                                temporary.toPath(), destination.toPath(),
+                                StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING
+                            )
+                            onProgress(attempt.progress.copy(stage = UpdateDownloadStage.READY))
+                            currentCoroutineContext().ensureActive()
                             return@withContext DownloadResult.Ready(destination)
                         }
                     }
                 }
             }
-            temporary.delete()
             DownloadResult.Failure(failure ?: "Could not download the update.")
-        } catch (t: Throwable) {
-            temporary.delete()
-            Log.w(TAG, "Update download failed", t)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            currentCoroutineContext().ensureActive()
+            Log.w(TAG, "Update download failed", error)
             DownloadResult.Failure(
-                "Could not download the update: ${t.message ?: "network error"}"
+                "Could not download the update: ${error.message ?: "network error"}"
             )
+        } finally {
+            temporary.delete()
+            downloadMutex.unlock()
         }
     }
 
     private sealed interface Attempt {
-        data class Ok(val bytes: Long, val sha256: String) : Attempt
+        data class Ok(val progress: UpdateDownloadProgress, val sha256: String) : Attempt
         data class Failed(val message: String) : Attempt
     }
 
-    private fun downloadTo(
+    private suspend fun downloadTo(
         url: String,
-        accept: String,
-        temporary: File
-    ): Attempt {
-        var connection: HttpURLConnection? = null
-        return try {
-            val conn = open(url, accept)
-            connection = conn
-            val code = conn.responseCode
-            if (code !in 200..299) {
-                return Attempt.Failed("Download failed with HTTP $code.")
+        temporary: File,
+        releaseSize: Long,
+        onProgress: suspend (UpdateDownloadProgress) -> Unit
+    ): Attempt = try {
+        connected(url, "application/octet-stream") { response ->
+            val code = response.code
+            check(code in 200..299) { "Download failed with HTTP $code." }
+            val body = requireNotNull(response.body) { "The update response is empty." }
+            val announcedSize = body.contentLength().takeIf { it >= 0L }
+            check(announcedSize == null || announcedSize <= MAX_APK_BYTES) { "The update APK is too large." }
+            check(releaseSize <= 0L || announcedSize == null || announcedSize == releaseSize) {
+                "Downloaded size does not match the release."
             }
-            val announcedSize = conn.contentLengthLong
-            if (announcedSize > MAX_APK_BYTES) {
-                return Attempt.Failed("The update APK is too large.")
-            }
-
+            val expectedSize = announcedSize ?: releaseSize.takeIf { it > 0L }
+            val started = System.nanoTime()
+            var reportedAt = 0L
             val digest = MessageDigest.getInstance("SHA-256")
             var total = 0L
-            temporary.delete()
-            conn.inputStream.use { input ->
+            fun progress(): UpdateDownloadProgress {
+                val seconds = (System.nanoTime() - started).coerceAtLeast(1L) / 1_000_000_000.0
+                return UpdateDownloadProgress(
+                    UpdateDownloadStage.DOWNLOADING, total, expectedSize, (total / seconds).toLong()
+                )
+            }
+            body.byteStream().use { input ->
                 temporary.outputStream().use { output ->
                     val buffer = ByteArray(16 * 1024)
                     while (true) {
+                        currentCoroutineContext().ensureActive()
                         val read = input.read(buffer)
+                        currentCoroutineContext().ensureActive()
                         if (read < 0) break
+                        if (read == 0) continue
                         total += read
-                        if (total > MAX_APK_BYTES) {
-                            throw IllegalStateException("The update APK is too large.")
-                        }
+                        check(total <= MAX_APK_BYTES) { "The update APK is too large." }
+                        check(expectedSize == null || total <= expectedSize) { "The update exceeds its declared size." }
                         digest.update(buffer, 0, read)
                         output.write(buffer, 0, read)
+                        val now = System.nanoTime()
+                        if (reportedAt == 0L || now - reportedAt >= 150_000_000L) {
+                            onProgress(progress())
+                            reportedAt = now
+                        }
                     }
+                    output.fd.sync()
                 }
             }
-            Attempt.Ok(
-                bytes = total,
-                sha256 = digest.digest().joinToString("") {
-                    "%02x".format(it.toInt() and 0xff)
-                }
-            )
-        } catch (t: Throwable) {
-            Log.w(TAG, "Download attempt failed", t)
-            Attempt.Failed(
-                "Could not download the update: ${t.message ?: "network error"}"
-            )
-        } finally {
-            connection?.disconnect()
+            check(total > 0L) { "The downloaded update is empty." }
+            check(announcedSize == null || total == announcedSize) { "The update download was incomplete." }
+            val progress = progress()
+            onProgress(progress)
+            Attempt.Ok(progress, digest.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) })
         }
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        currentCoroutineContext().ensureActive()
+        Log.w(TAG, "Download attempt failed", error)
+        Attempt.Failed("Could not download the update: ${error.message ?: "network error"}")
     }
 
     fun launchInstaller(context: Context, file: File): InstallResult {
@@ -224,6 +248,11 @@ object GitHubUpdater {
             return InstallResult.Failure("The downloaded update file is missing.")
         }
         return try {
+            if (!file.name.endsWith(".apk", ignoreCase = true) ||
+                file.canonicalFile.parentFile != File(context.cacheDir, "updates").canonicalFile
+            ) {
+                return InstallResult.Failure("Only a verified update APK can be installed.")
+            }
             val uri = FileProvider.getUriForFile(
                 context,
                 "${context.packageName}.updates",
@@ -245,35 +274,46 @@ object GitHubUpdater {
         }
     }
 
-    private fun open(
-        url: String,
-        accept: String = "application/vnd.github+json"
-    ): HttpURLConnection {
-        return (URL(url).openConnection() as HttpURLConnection).apply {
-            requestMethod = "GET"
-            connectTimeout = 12_000
-            readTimeout = 20_000
-            instanceFollowRedirects = true
-            setRequestProperty("Accept", accept)
-            setRequestProperty("User-Agent", "AutoClash/${BuildConfig.VERSION_NAME}")
-        }
-    }
-
-    private fun fetchText(
+    private suspend fun fetchText(
         url: String,
         limit: Long,
         accept: String = "application/vnd.github+json"
-    ): String? {
-        var connection: HttpURLConnection? = null
-        return try {
-            val conn = open(url, accept)
-            connection = conn
-            if (conn.responseCode !in 200..299) return null
-            conn.inputStream.bufferedReader().use { it.readLimited(limit) }
-        } catch (_: Throwable) {
-            null
+    ): String? = try {
+        connected(url, accept) { response ->
+            if (!response.isSuccessful) null
+            else response.body?.charStream()?.use { it.readLimited(limit) }
+        }
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (_: Exception) {
+        currentCoroutineContext().ensureActive()
+        null
+    }
+
+    private suspend fun <T> connected(
+        url: String,
+        accept: String,
+        block: suspend (Response) -> T
+    ): T = coroutineScope {
+        val request = Request.Builder().url(url)
+            .header("Accept", accept)
+            .header("Accept-Encoding", "identity")
+            .header("User-Agent", "AutoClash/${BuildConfig.VERSION_NAME}")
+            .build()
+        val call = client.newCall(request)
+        // Call.cancel closes the socket even while response-body reads are blocked.
+        val closer = launch(Dispatchers.IO, start = CoroutineStart.UNDISPATCHED) {
+            try {
+                awaitCancellation()
+            } finally {
+                call.cancel()
+            }
+        }
+        try {
+            currentCoroutineContext().ensureActive()
+            call.execute().use { block(it) }
         } finally {
-            connection?.disconnect()
+            closer.cancel()
         }
     }
 

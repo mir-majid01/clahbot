@@ -68,6 +68,7 @@ import com.clahbot.data.ControllerState
 import com.clahbot.data.MacroNaming
 import com.clahbot.data.MacroRepository
 import com.clahbot.data.MacroSelection
+import com.clahbot.data.MacroWriteResult
 import com.clahbot.data.RecordingMode
 import com.clahbot.data.SessionRepository
 import com.clahbot.data.SettingsStore
@@ -241,13 +242,12 @@ class FloatingMenuService : Service() {
     private var gestureSeq: Int = 0
     private var lastPulseCount: Int = -1
     private var reviewName: String = ""
-    private var saveToastAt: Long = 0L
     private var savePending = false
+    private var saveJob: Job? = null
     private var savedMacro: Macro? = null
     private var discardedGestures: List<RecordedGesture>? = null
-    private var saveAutoRunnable: Runnable? = null
+    private var discardedWallMacro = false
     private var saveUndoRunnable: Runnable? = null
-    private var saveTickRunnable: Runnable? = null
     private var pendingRecAction: RecConfirmAction? = null
     private var confirmRevert: Runnable? = null
 
@@ -616,7 +616,6 @@ class FloatingMenuService : Service() {
         }
         prepareSource = null
         stopPlaybackTicker()
-        stopSaveCountdown()
         handler.removeCallbacksAndMessages(null)
         MacroInputRelay.pending = null
         BotState.setInterrupted(true)
@@ -643,6 +642,13 @@ class FloatingMenuService : Service() {
     private fun onMacrosChanged(list: List<Macro>) {
         wallMacros = list.filter { it.kind == Macro.KIND_WALL }
         macros = list.filter { it.kind != Macro.KIND_WALL }
+        // A wall macro deleted here or on the dashboard must not stay selected
+        // against a missing id; clear the selection without touching the switch.
+        val wallIds = wallMacros.mapTo(mutableSetOf()) { it.id }
+        val currentWalls = wallsRepository.settings()
+        if (currentWalls.reconciled(wallIds) != currentWalls) {
+            wallsRepository.updateSettings { it.reconciled(wallIds) }
+        }
         // Adopt a selection made on the dashboard, then validate it against the
         // library so a deleted macro can never stay selected.
         val desired = if (selectedId > 0) selectedId else BotState.selectedMacroId.value
@@ -882,6 +888,9 @@ class FloatingMenuService : Service() {
         view.findViewById<ImageButton>(R.id.btnRecMinimize).setOnClickListener {
             haptic()
             minimizeRecordingBar()
+        }
+        view.findViewById<ImageButton>(R.id.btnRecUndo).setOnClickListener {
+            undoLastRecordedAction()
         }
         view.findViewById<ImageButton>(R.id.btnRecRestart).setOnClickListener {
             haptic()
@@ -2556,10 +2565,7 @@ class FloatingMenuService : Service() {
             }
         }
         if (next == PAGE_WALLS) {
-            scope.launch {
-                wallsRepository.refresh()
-                refreshWalls()
-            }
+            refreshWalls()
         }
     }
 
@@ -2986,7 +2992,7 @@ class FloatingMenuService : Service() {
         if (totals.incompleteAttacks > 0) {
             content.addView(
                 Ds.text(uiContext, 10f, Ds.WARN).apply {
-                    text = Plural.needReview(totals.incompleteAttacks) + " — excluded from totals"
+                    text = Plural.needReview(totals.incompleteAttacks) + " — loot read so far is counted"
                     setPadding(0, dp(4), 0, 0)
                 }
             )
@@ -3458,50 +3464,33 @@ class FloatingMenuService : Service() {
 
     private fun beginSaveToast() {
         if (recorded.isEmpty()) return
-        reviewName = MacroNaming.uniqueDefault(defaultMacroName(), macros.map { it.name })
+        val suggestion = MacroNaming.uniqueDefault(
+            if (recordingWallMacro) "Wall upgrade" else defaultMacroName(),
+            (if (recordingWallMacro) wallMacros else macros).map { it.name }
+        )
+        reviewName = ""
         savePending = true
         savedMacro = null
         discardedGestures = null
         val view = controllerView ?: return
         view.findViewById<EditText>(R.id.etMacroName)?.apply {
-            setText(reviewName)
-            setSelection(text.length)
+            // The field starts empty on purpose: a name is asked for, never
+            // assumed. The suggestion is only a hint until the user types.
+            setText("")
+            hint = suggestion
         }
         enterReviewChrome()
-        startSaveCountdown()
+        showNamePrompt(view)
+        setSaveTyping(true)
         refreshUi()
     }
 
-    private fun startSaveCountdown() {
-        stopSaveCountdown()
-        saveToastAt = SystemClock.uptimeMillis() + SAVE_AUTO_MS
-        val tick = object : Runnable {
-            override fun run() {
-                if (!savePending) return
-                val view = controllerView ?: return
-                val remaining = (saveToastAt - SystemClock.uptimeMillis()).coerceAtLeast(0L)
-                val seconds = ((remaining + 999L) / 1000L).toInt()
-                view.findViewById<TextView>(R.id.tvSaveCountdown)?.text =
-                    if (seconds <= 0) "Saving…" else "Saving in $seconds s"
-                view.findViewById<ProgressBar>(R.id.saveProgress)?.progress =
-                    ((remaining * 100L) / SAVE_AUTO_MS).toInt().coerceIn(0, 100)
-                if (remaining > 0L) handler.postDelayed(this, 250L)
-            }
-        }
-        saveTickRunnable = tick
-        handler.post(tick)
-        val auto = Runnable {
-            if (savePending) saveRecording()
-        }
-        saveAutoRunnable = auto
-        handler.postDelayed(auto, SAVE_AUTO_MS)
-    }
-
-    private fun stopSaveCountdown() {
-        saveAutoRunnable?.let { handler.removeCallbacks(it) }
-        saveAutoRunnable = null
-        saveTickRunnable?.let { handler.removeCallbacks(it) }
-        saveTickRunnable = null
+    /**
+     * A recording is never saved on the user's behalf: the panel waits for a
+     * name and a Save press. The suggested name is only a starting point.
+     */
+    private fun showNamePrompt(view: View) {
+        view.findViewById<TextView>(R.id.tvSaveCountdown)?.text = "Name it, then Save"
     }
 
     private fun enterReviewChrome() {
@@ -3581,6 +3570,7 @@ class FloatingMenuService : Service() {
     }
 
     private fun saveRecording() {
+        if (saveJob?.isActive == true) return
         if (!savePending) {
             if (recorded.isEmpty()) {
                 toast("Nothing to save")
@@ -3593,19 +3583,21 @@ class FloatingMenuService : Service() {
             return
         }
         val view = controllerView ?: return
-        val entered = view.findViewById<EditText>(R.id.etMacroName)?.text?.toString()?.trim().orEmpty()
-        val fallback = if (recordingWallMacro) "Wall upgrade" else defaultMacroName()
-        val name = entered.ifBlank { reviewName.ifBlank { fallback } }.take(40)
-        reviewName = name
-        savePending = false
-        stopSaveCountdown()
-        setSaveTyping(false)
+        val input = view.findViewById<EditText>(R.id.etMacroName)
+        val entered = input?.text?.toString()?.trim().orEmpty()
+        val validation = MacroNaming.validationError(entered, repository.macros.value.map { it.name })
+        if (validation != null) {
+            toast(validation)
+            BotState.setStatus(validation)
+            input?.requestFocus()
+            setSaveTyping(true)
+            return
+        }
         val prefs = settingsStore.settings.value
         val asWall = recordingWallMacro
-        recordingWallMacro = false
         val macro = Macro(
-            id = nextMacroId(),
-            name = name,
+            id = 0L,
+            name = entered,
             createdAt = System.currentTimeMillis(),
             durationMs = MacroTimeline.totalDuration(gestures),
             deviceWidth = screenWidth,
@@ -3616,42 +3608,73 @@ class FloatingMenuService : Service() {
             speedMultiplier = MacroTimeline.clampSpeed(prefs.defaultSpeed),
             kind = if (asWall) Macro.KIND_WALL else Macro.KIND_ATTACK
         )
-        AppEventLog.log("recording: saving name=\"$name\" gestures=${gestures.size}")
-        scope.launch {
-            val saved = repository.save(macro)
-            if (saved == null) {
-                savePending = true
-                toast("Could not save macro")
-                return@launch
-            }
-            hapticEvent()
-            savedMacro = saved
-            recorded.clear()
-            BotState.clearRecording()
-            if (asWall) {
-                // Newly recorded wall macros are never run automatically until
-                // the user has tested them once.
-                wallsRepository.updateSettings {
-                    it.copy(wallMacroId = saved.id, testedWallMacroId = -1L)
+        savePending = false
+        setSaveTyping(false)
+        view.findViewById<View>(R.id.btnSaveNameSave)?.isEnabled = false
+        view.findViewById<View>(R.id.btnSaveNameDiscard)?.isEnabled = false
+        AppEventLog.log("recording: saving name=\"$entered\" gestures=${gestures.size}")
+        saveJob = scope.launch {
+            try {
+                when (val result = repository.create(macro)) {
+                    is MacroWriteResult.Rejected -> {
+                        savePending = true
+                        recordingWallMacro = asWall
+                        toast(result.message)
+                        BotState.setStatus(result.message)
+                        input?.requestFocus()
+                        setSaveTyping(true)
+                    }
+                    is MacroWriteResult.Saved -> {
+                        val saved = result.macro
+                        hapticEvent()
+                        savedMacro = saved
+                        reviewName = saved.name
+                        recorded.clear()
+                        BotState.clearRecording()
+                        recordingWallMacro = false
+                        if (asWall) {
+                            // Newly recorded wall macros are never run automatically until
+                            // the user has tested them once.
+                            wallsRepository.updateSettings {
+                                it.copy(wallMacroId = saved.id, testedWallMacroId = -1L)
+                            }
+                            toast("Wall macro saved · test it before automating")
+                        } else {
+                            selectedId = saved.id
+                            BotState.setSelectedMacroId(saved.id)
+                        }
+                        BotState.setStatus("Saved \"${saved.name}\"")
+                        reviewPhase = ReviewPhase.SAVED
+                        view.findViewById<TextView>(R.id.tvSavedText).text = "Saved · ${saved.name}"
+                        applyReviewChrome()
+                        scheduleReviewDismiss(SAVED_UNDO_MS)
+                    }
                 }
-                toast("Wall macro saved · test it before automating")
-            } else {
-                selectedId = saved.id
-                BotState.setSelectedMacroId(saved.id)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                AppEventLog.log("recording: save failed ${error.message}")
+                savePending = true
+                recordingWallMacro = asWall
+                toast("Could not save macro")
+                BotState.setStatus("Could not save macro")
+                input?.requestFocus()
+                setSaveTyping(true)
+            } finally {
+                saveJob = null
+                view.findViewById<View>(R.id.btnSaveNameSave)?.isEnabled = true
+                view.findViewById<View>(R.id.btnSaveNameDiscard)?.isEnabled = true
             }
-            BotState.setStatus("Saved \"${saved.name}\"")
-            reviewPhase = ReviewPhase.SAVED
-            view.findViewById<TextView>(R.id.tvSavedText).text = "Saved · ${saved.name}"
-            applyReviewChrome()
-            scheduleReviewDismiss(SAVED_UNDO_MS)
         }
     }
 
     private fun discardReviewedRecording() {
         if (!savePending && savedMacro == null) return
+        saveJob?.cancel()
+        saveJob = null
         savePending = false
-        stopSaveCountdown()
         setSaveTyping(false)
+        discardedWallMacro = recordingWallMacro
         recordingWallMacro = false
         discardedGestures = recorded.toList()
         recorded.clear()
@@ -3662,12 +3685,53 @@ class FloatingMenuService : Service() {
         scheduleReviewDismiss(SAVED_UNDO_MS)
     }
 
+    /**
+     * Drops the last recorded action and refreshes the strip. It only works on
+     * a recording that has not been saved: once a macro exists, Undo never
+     * touches it, because that is a delete, not an edit.
+     */
+    private fun undoLastRecordedAction() {
+        haptic()
+        if (savedMacro != null && !savePending) {
+            toast("This recording is already saved")
+            return
+        }
+        if (recorded.isEmpty()) {
+            toast("Nothing to undo yet")
+            return
+        }
+        val removed = recorded.removeAt(recorded.size - 1)
+        AppEventLog.log(
+            "recording: undo dropped ${removed.gestureType} at ${removed.timestampMs}ms, " +
+                "${recorded.size} left"
+        )
+        BotState.setRecordedCount(recorded.size)
+        updateRecordingInfo()
+        BotState.setStatus(
+            if (recorded.isEmpty()) "Recording — no actions yet"
+            else "Recording — ${Plural.of(recorded.size, "gesture")}"
+        )
+    }
+
     private fun undoSavedMacro() {
         val saved = savedMacro ?: return
         saveUndoRunnable?.let { handler.removeCallbacks(it) }
         saveUndoRunnable = null
         scope.launch {
-            repository.delete(saved.id)
+            if (!repository.delete(saved.id)) {
+                toast("Could not undo — the macro is still saved")
+                BotState.setStatus("Undo failed — macro still saved")
+                return@launch
+            }
+            if (saved.kind == Macro.KIND_WALL) {
+                wallsRepository.updateSettings {
+                    it.copy(
+                        wallMacroId = if (it.wallMacroId == saved.id) -1L else it.wallMacroId,
+                        testedWallMacroId = if (it.testedWallMacroId == saved.id) -1L else it.testedWallMacroId
+                    )
+                }
+            }
+            recordingWallMacro = saved.kind == Macro.KIND_WALL
             savedMacro = null
             recorded.clear()
             recorded.addAll(saved.gestures)
@@ -3681,7 +3745,7 @@ class FloatingMenuService : Service() {
                 setSelection(text.length)
             }
             applyReviewChrome()
-            startSaveCountdown()
+            controllerView?.let { showNamePrompt(it) }
         }
     }
 
@@ -3692,16 +3756,17 @@ class FloatingMenuService : Service() {
         discardedGestures = null
         recorded.clear()
         recorded.addAll(gestures)
+        recordingWallMacro = discardedWallMacro
         reviewPhase = ReviewPhase.SAVE
         savePending = true
         BotState.setState(ControllerState.REVIEW)
         BotState.setStatus("Name this macro")
         controllerView?.findViewById<EditText>(R.id.etMacroName)?.apply {
-            setText(reviewName.ifBlank { defaultMacroName() })
+            setText(reviewName)
             setSelection(text.length)
         }
         applyReviewChrome()
-        startSaveCountdown()
+        controllerView?.let { showNamePrompt(it) }
     }
 
     private fun scheduleReviewDismiss(delayMs: Long) {
@@ -3781,15 +3846,22 @@ class FloatingMenuService : Service() {
 
         fun draftMacro(): Macro = draft.toMacro(macro)
 
+        var settingsSaving = false
+
         fun persist(onSaved: (Macro) -> Unit) {
             clearError()
-            if (draft.name.isBlank()) {
-                showError("Enter a macro name")
-                return
-            }
+            if (settingsSaving) return
+            val candidate = draftMacro()
+            settingsSaving = true
             scope.launch {
-                val saved = repository.save(draftMacro())
-                if (saved == null) showError("Save failed") else onSaved(saved)
+                try {
+                    when (val result = repository.updateSettings(candidate)) {
+                        is MacroWriteResult.Saved -> onSaved(result.macro)
+                        is MacroWriteResult.Rejected -> showError(result.message)
+                    }
+                } finally {
+                    settingsSaving = false
+                }
             }
         }
 
@@ -4034,7 +4106,7 @@ class FloatingMenuService : Service() {
             setOnClickListener {
                 haptic()
                 openTextEditor("Macro name", draft.name, MacroInputActivity.KIND_NAME) { result ->
-                    val trimmed = result?.trim()?.take(40).orEmpty()
+                    val trimmed = result?.trim().orEmpty()
                     if (trimmed.isNotEmpty()) {
                         draft.name = trimmed
                         renderPage()
@@ -4636,15 +4708,16 @@ class FloatingMenuService : Service() {
         item(if (draft.pinned) "Unpin" else "Pin to top") {
             draft.pinned = !draft.pinned
             scope.launch {
-                val saved = repository.save(draft.toMacro(macro))
-                closeMacroSettings()
-                toast(
-                    if (saved != null) {
-                        if (saved.pinned) "Pinned to top" else "Unpinned"
-                    } else {
-                        "Could not update"
+                when (val result = repository.updateSettings(draft.toMacro(macro))) {
+                    is MacroWriteResult.Saved -> {
+                        closeMacroSettings()
+                        toast(if (result.macro.pinned) "Pinned to top" else "Unpinned")
                     }
-                )
+                    is MacroWriteResult.Rejected -> {
+                        draft.pinned = !draft.pinned
+                        toast(result.message)
+                    }
+                }
             }
         }
         item("Duplicate") {
@@ -4654,14 +4727,17 @@ class FloatingMenuService : Service() {
                     toast("Duplicate failed")
                     return@launch
                 }
-                val updated = repository.save(
-                    draft.toMacro(copy).copy(name = copy.name)
-                )
-                closeMacroSettings()
-                toast(
-                    if (updated != null) "Duplicated as \"${updated.name}\""
-                    else "Duplicate failed"
-                )
+                val candidate = draft.toMacro(copy).copy(name = copy.name)
+                when (val result = repository.updateSettings(candidate)) {
+                    is MacroWriteResult.Saved -> {
+                        closeMacroSettings()
+                        toast("Duplicated as \"${result.macro.name}\"")
+                    }
+                    is MacroWriteResult.Rejected -> {
+                        repository.delete(copy.id)
+                        toast(result.message)
+                    }
+                }
             }
         }
         item("Reset to defaults") {
@@ -4967,12 +5043,6 @@ class FloatingMenuService : Service() {
             val restored = repository.save(macro)
             toast(if (restored != null) "Restored \"${macro.name}\"" else "Undo failed")
         }
-    }
-
-    private fun nextMacroId(): Long {
-        val now = System.currentTimeMillis()
-        val highest = macros.maxOfOrNull { it.id } ?: 0L
-        return maxOf(now, highest + 1)
     }
 
     // -------------------------------------------------------------------- ui
@@ -5310,7 +5380,6 @@ class FloatingMenuService : Service() {
         playbackMinimized = false
         pendingPlaybackPoint = null
         stopPlaybackTicker()
-        stopSaveCountdown()
         setSaveTyping(false)
         view.findViewById<View>(R.id.saveBox).visibility = View.GONE
         view.findViewById<View>(R.id.savedBox).visibility = View.GONE
@@ -6307,7 +6376,9 @@ class FloatingMenuService : Service() {
             settings.wallMacroId > 0L -> "Selected macro is gone"
             else -> "No wall macro"
         }
-        view.findViewById<TextView>(R.id.tvWallStatus)?.text = settings.summary(macroName)
+        view.findViewById<TextView>(R.id.tvWallStatus)?.text =
+            settings.summary(macroName) + wallsRepository.writeError?.let { " · not saved: $it" }
+                .orEmpty()
         val history = view.findViewById<TextView>(R.id.tvWallHistory)
         val recent = settings.history.takeLast(3).reversed()
         if (history != null) {
@@ -6554,7 +6625,6 @@ class FloatingMenuService : Service() {
         private const val REC_STRIP_NARROW_BELOW = 362
         private const val REC_STRIP_HEIGHT = 44
         private const val REC_CONFIRM_MS = 3_000L
-        private const val SAVE_AUTO_MS = 8_000L
         private const val SAVED_UNDO_MS = 2_000L
         private const val PLAY_STRIP_LANDSCAPE_W = 368
         private const val PLAY_STRIP_PORTRAIT_W = 328

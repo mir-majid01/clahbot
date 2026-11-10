@@ -21,6 +21,10 @@ object LootSanity {
         val reasons = mutableListOf<String>()
         fun take(value: Long?, max: Long, label: String): Long? {
             if (value == null) return null
+            if (value < 0L) {
+                reasons += "$label $value cannot be negative"
+                return null
+            }
             if (value > max) {
                 reasons += "$label $value is above the plausible maximum ($max)"
                 return null

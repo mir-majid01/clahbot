@@ -6,6 +6,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -64,7 +65,33 @@ class WallsRepositoryTest {
     }
 
     @Test
-    fun `a wall-line file from the old release is ignored wholesale`() {
+    fun `reconciling clears a wall selection whose macro was deleted`() {
+        val settings = WallSettings(wallMacroId = 17L, testedWallMacroId = 17L, enabled = true)
+
+        val reconciled = settings.reconciled(setOf(17L, 23L))
+        assertEquals(17L, reconciled.wallMacroId)
+        assertEquals(17L, reconciled.testedWallMacroId)
+
+        val gone = settings.reconciled(setOf(23L))
+        assertEquals(-1L, gone.wallMacroId)
+        assertEquals(-1L, gone.testedWallMacroId)
+        // Deleting the macro must not silently turn the feature off.
+        assertTrue(gone.enabled)
+    }
+
+    @Test
+    fun `reconciling leaves an empty selection and unrelated settings alone`() {
+        val settings = WallSettings(costPerWall = 500L, minReserve = 1_000L)
+        val reconciled = settings.reconciled(emptySet())
+        assertEquals(-1L, reconciled.wallMacroId)
+        assertEquals(-1L, reconciled.testedWallMacroId)
+        assertEquals(500L, reconciled.costPerWall)
+        assertEquals(1_000L, reconciled.minReserve)
+        assertEquals(settings, reconciled)
+    }
+
+    @Test
+    fun `a wall-line file keeps the settings the new system can still use`() {
         write(
             """
             {"settings":{"enabled":true,"goldCost":600000,"elixirCost":600000,
@@ -82,11 +109,26 @@ class WallsRepositoryTest {
         )
 
         val settings = repository().settings()
-        assertFalse(settings.enabled)
+        // The switch, the price and the reserve still mean the same thing.
+        assertTrue(settings.enabled)
+        assertEquals(600_000L, settings.costPerWall)
+        assertEquals(1_000_000L, settings.minReserve)
+        assertEquals(WallPriority.GOLD_FIRST, settings.priority)
+        // The geometry-era state cannot survive: there is no macro to point at
+        // and no line to read history from.
         assertEquals(-1L, settings.wallMacroId)
-        assertEquals(0L, settings.costPerWall)
+        assertEquals(-1L, settings.testedWallMacroId)
         assertEquals(WallResourceMode.BOTH, settings.resourceMode)
         assertTrue(settings.history.isEmpty())
+    }
+
+    @Test
+    fun `a legacy file with only elixir configured still gets a cost`() {
+        write("""{"settings":{"enabled":false,"goldCost":0,"elixirCost":850000}}""")
+
+        val settings = repository().settings()
+        assertFalse(settings.enabled)
+        assertEquals(850_000L, settings.costPerWall)
     }
 
     @Test
@@ -111,6 +153,30 @@ class WallsRepositoryTest {
         val settings = repository().settings()
         assertFalse(settings.enabled)
         assertEquals(-1L, settings.wallMacroId)
+    }
+
+    @Test
+    fun `an unreadable file is preserved aside instead of left to be overwritten`() {
+        // A directory at the file path exists but cannot be read as text: the
+        // read-failure branch. Falling back to defaults is fine, but the original
+        // must be moved aside so the next save cannot clobber recoverable bytes.
+        assertTrue(file.mkdir())
+
+        val settings = repository().settings()
+        assertFalse(settings.enabled)
+        assertFalse("the unreadable walls file was left in place to be overwritten", file.exists())
+        val quarantined = directory.listFiles()?.any { it.name.contains("corrupt") } ?: false
+        assertTrue("the unreadable walls file was not preserved", quarantined)
+    }
+
+    @Test
+    fun `a corrupt file is preserved aside instead of left to be overwritten`() {
+        write("{ this is not json")
+
+        val settings = repository().settings()
+        assertFalse(settings.enabled)
+        val quarantined = directory.listFiles()?.any { it.name.contains("corrupt") } ?: false
+        assertTrue("the corrupt walls file was not preserved", quarantined)
     }
 
     @Test
@@ -189,6 +255,24 @@ class WallsRepositoryTest {
     }
 
     @Test
+    fun `a migrated file stays enabled after the first save`() {
+        write("""{"settings":{"enabled":true,"goldCost":600000,"reserveGold":1000000}}""")
+
+        val repository = repository()
+        assertTrue("the wall-line switch has to carry over", repository.settings().enabled)
+
+        repository.updateSettings { it.copy(costPerWall = 700_000L) }
+
+        val reloaded = repository().settings()
+        assertTrue(
+            "saving once must not turn Auto Walls off again on the next load",
+            reloaded.enabled
+        )
+        assertEquals(700_000L, reloaded.costPerWall)
+        assertNull(repository.writeError)
+    }
+
+    @Test
     fun `a failed write keeps the previous file readable`() {
         val repository = repository()
         repository.updateSettings { it.copy(costPerWall = 100L) }
@@ -200,6 +284,23 @@ class WallsRepositoryTest {
         assertEquals(100L, repository().settings().costPerWall)
         assertTrue(file.readText() == good)
         assertFalse(File(directory, "walls.json.tmp").exists())
+    }
+
+    @Test
+    fun `a failed write is reported instead of silently lost`() {
+        val blocker = File(directory, "blocker")
+        blocker.writeText("not a directory")
+        val repository = WallsRepository(File(blocker, "walls.json"))
+
+        repository.updateSettings { it.copy(enabled = true) }
+
+        assertNotNull("the save must say it failed", repository.writeError)
+        // The screen still shows the choice; only the persistence is missing.
+        assertTrue(repository.settings().enabled)
+
+        val healthy = repository()
+        healthy.updateSettings { it.copy(enabled = true) }
+        assertNull(healthy.writeError)
     }
 
     @Test

@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.clahbot.data.BotState
 import com.clahbot.data.MacroRepository
+import com.clahbot.data.MacroWriteResult
 import com.clahbot.data.models.Macro
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -37,13 +38,9 @@ class MainViewModel(private val repository: MacroRepository) : ViewModel() {
 
     suspend fun restoreMany(items: List<Macro>): Int = repository.restoreMany(items)
 
-    fun rename(id: Long, name: String) {
-        viewModelScope.launch { repository.rename(id, name) }
-    }
+    suspend fun rename(id: Long, name: String): MacroWriteResult = repository.rename(id, name)
 
-    fun update(macro: Macro) {
-        viewModelScope.launch { repository.save(macro) }
-    }
+    suspend fun update(macro: Macro): MacroWriteResult = repository.updateSettings(macro)
 
     suspend fun importShared(macro: Macro): Macro? = repository.importShared(macro)
 

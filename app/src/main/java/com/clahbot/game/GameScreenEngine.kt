@@ -13,7 +13,7 @@ import kotlin.math.min
 /**
  * Classifies a captured game frame into a [GameState] using text anchors in
  * screen fractions (resolution independent) plus colour/shape anchors (red
- * close X, wide green confirm, gem icons, dimmed scrim). OCR is injected as
+ * close X, wide green confirm, blue wall ring, dimmed scrim). OCR is injected as
  * an [OcrPage] whose boxes share the bitmap's pixel space.
  */
 class GameScreenEngine {
@@ -53,14 +53,17 @@ class GameScreenEngine {
 
         val elements = detectElements(bitmap, lines)
         val observation = classify(base, lines, elements, meanValue, meanSat)
-        if (observation.state != GameState.POPUP) {
-            return observation
-        }
-        val safeTargets = buildSafeTargets(elements, frameW, frameH)
+        // The boxes travel with every state: the wall upgrader must be able to
+        // refuse a recorded tap on a Wall Ring control while the screen still
+        // looks like the ordinary village, which is when most of them are.
         return observation.copy(
             closeButton = elements.closeButton,
             confirmButton = elements.confirmButton,
-            safeTargets = safeTargets,
+            safeTargets = if (observation.state == GameState.POPUP) {
+                buildSafeTargets(elements, frameW, frameH)
+            } else {
+                observation.safeTargets
+            },
             forbidden = elements.forbidden
         )
     }
@@ -105,6 +108,8 @@ class GameScreenEngine {
         if (lines.any { it.text.contains("shop") && it.left > 0.70f && it.top in 0.25f..0.75f }) menu += 0.15f
         if (menu >= 0.55f) return base.copy(state = GameState.ATTACK_MENU, confidence = min(0.9f, menu))
 
+        upgradePanelState(base)?.let { return it }
+
         var home = 0f
         if (lines.any { it.text.contains("battle") && it.left < 0.30f && it.top > 0.72f }) home += 0.45f
         if (lines.any { it.text.contains("build") && it.left > 0.70f && it.top > 0.72f }) home += 0.45f
@@ -128,6 +133,27 @@ class GameScreenEngine {
         }
 
         return base
+    }
+
+    /**
+     * The build panel and an item's upgrade dialog. Both belong to the village,
+     * and the wall macro is recorded inside them, so they must not fall through
+     * to the colour popup heuristic just because a red X or a green plus shows
+     * up. Village labels such as "Upgrade" or "Army Upgrades" are not enough:
+     * only the panel's own captions count.
+     */
+    private fun upgradePanelState(base: ScreenObservation): ScreenObservation? {
+        val lines = base.lines
+        var score = 0f
+        if (lines.any { it.text.contains("buildingsheroes") }) score += 0.50f
+        if (lines.any { it.text.contains("upgrademore") || it.text.contains("selectrow") }) {
+            score += 0.35f
+        }
+        if (lines.any { it.text.contains("walllevel") }) score += 0.40f
+        if (lines.any { it.text.startsWith("wallx") }) score += 0.25f
+        if (lines.any { it.text.contains("filtered") && it.top < 0.20f }) score += 0.20f
+        if (score < 0.50f) return null
+        return base.copy(state = GameState.UPGRADE_PANEL, confidence = min(0.9f, score))
     }
 
     private fun resultsState(base: ScreenObservation): ScreenObservation? {
@@ -243,15 +269,24 @@ class GameScreenEngine {
             .maxByOrNull { (it.right - it.left) * (it.bottom - it.top) }
             ?.let { toFrameBox(it.left, it.top, it.right, it.bottom) }
 
-        val gemBoxes = greenBlobs
+        /**
+         * The blue Wall Ring button. It sits directly right of the gold and
+         * elixir Upgrade buttons in the same row and pays with rings bought for
+         * gems, so a recorded tap that drifts one button width lands on it.
+         * Nothing here ever taps these boxes, and refusing is the safe failure.
+         */
+        val ringBoxes = blobs(pixels, w, h, minCells = 6) { r, g, b ->
+            b > 150 && b - r > 55 && g in 110..210 && r < 130
+        }
             .filter { blob ->
                 val pw = blob.pixelWidth()
                 val ph = blob.pixelHeight()
                 pw > 0 && ph > 0 &&
-                    pw >= bitmap.width * 0.008f && pw <= bitmap.width * 0.055f &&
-                    pw.toFloat() / ph in 0.45f..1.7f
+                    pw >= bitmap.width * 0.06f && pw <= bitmap.width * 0.22f &&
+                    pw.toFloat() / ph in 0.7f..1.9f &&
+                    (blob.top * scaleY) >= bitmap.height * 0.45f
             }
-            .map { toFrameBox(it.left, it.top, it.right, it.bottom) }
+            .map { toFrameBox(it.left, it.top, it.right, it.bottom).copy(kind = "ring") }
 
         val scrim = isScrimmed(pixels, w, h)
 
@@ -264,13 +299,14 @@ class GameScreenEngine {
                 right = (line.right * bitmap.width).toInt(),
                 bottom = (line.bottom * bitmap.height).toInt()
             )
-            if (NEVER_CAPTIONS.any { line.text.contains(it) }) {
+            val neverCaption = NEVER_CAPTIONS.firstOrNull { line.text.contains(it) }
+            if (neverCaption != null) {
                 forbidden += frameLine.expanded(
                     marginX = bitmap.width / 64,
                     marginY = bitmap.height / 40,
                     frameW = bitmap.width,
                     frameH = bitmap.height
-                )
+                ).copy(kind = "caption:$neverCaption")
             }
             for (caption in CAPTION_PRIORITY) {
                 if (line.text.contains(caption)) {
@@ -279,10 +315,10 @@ class GameScreenEngine {
                 }
             }
         }
-        for (gem in gemBoxes) {
-            forbidden += gem.expanded(
-                marginX = gem.width,
-                marginY = gem.height,
+        for (ring in ringBoxes) {
+            forbidden += ring.expanded(
+                marginX = ring.width / 6,
+                marginY = ring.height / 6,
                 frameW = bitmap.width,
                 frameH = bitmap.height
             )
@@ -456,7 +492,8 @@ class GameScreenEngine {
         )
 
         private val NEVER_CAPTIONS = listOf(
-            "buy", "surrender", "endbattle", "quit", "exit", "charge", "topup", "gems"
+            "buy", "surrender", "endbattle", "quit", "exit", "charge", "topup", "gems",
+            "wallring"
         )
 
         fun normalize(text: String): String =

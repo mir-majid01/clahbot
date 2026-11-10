@@ -215,6 +215,37 @@ class WallLogicTest {
     }
 
     @Test
+    fun `stored paths cannot bypass the never press guard`() {
+        val safeStart = macroWith(0.2f to 0.2f)
+        val gesture = safeStart.gestures.single().copy(
+            paths = listOf(com.clahbot.data.models.GesturePath(
+                points = listOf(GesturePoint(0.75f, 0.65f, 0L))
+            ))
+        )
+        val macro = safeStart.copy(gestures = listOf(gesture))
+        assertTrue(WallLogic.unsafeTaps(macro, observation(listOf(ScreenBox(720, 310, 780, 340)))).isNotEmpty())
+    }
+
+    @Test
+    fun `long presses on a forbidden control are refused`() {
+        val macro = macroWith(0.75f to 0.65f).let {
+            it.copy(gestures = listOf(it.gestures.single().copy(gestureType = "long_press")))
+        }
+        assertTrue(WallLogic.unsafeTaps(macro, observation(listOf(ScreenBox(720, 310, 780, 340)))).isNotEmpty())
+    }
+
+    @Test
+    fun `swipes crossing a forbidden control are refused`() {
+        val macro = macroWith(0.2f to 0.65f).let {
+            it.copy(gestures = listOf(it.gestures.single().copy(
+                gestureType = "swipe", normalizedEndX = 0.9f, normalizedEndY = 0.65f,
+                points = listOf(GesturePoint(0.2f, 0.65f), GesturePoint(0.9f, 0.65f, 500))
+            )))
+        }
+        assertTrue(WallLogic.unsafeTaps(macro, observation(listOf(ScreenBox(720, 310, 780, 340)))).isNotEmpty())
+    }
+
+    @Test
     fun `no frame geometry means the macro cannot be cleared to run`() {
         val macro = macroWith(0.5f to 0.5f)
         val noGeometry = observation(emptyList()).copy(frameWidth = 0, frameHeight = 0)
@@ -304,5 +335,68 @@ class WallLogicTest {
                 status = "ran", allowed = true, verified = true, repeats = 5, maxRepeats = 5
             )
         )
+    }
+
+    // ---------- refusal diagnostics (the drag reported on 2026-11-08) ----------
+
+    /** The refused wall swipe: right-edge drag (0.907,0.598) -> (0.936,0.271). */
+    private fun reportedDrag(): Macro = macroWith(0.907f to 0.598f).let { macro ->
+        macro.copy(
+            gestures = listOf(
+                macro.gestures.single().copy(
+                    timestampMs = 3372L,
+                    gestureType = "swipe",
+                    normalizedEndX = 0.936f,
+                    normalizedEndY = 0.271f,
+                    points = listOf(
+                        GesturePoint(0.907f, 0.598f),
+                        GesturePoint(0.936f, 0.271f, 900L)
+                    )
+                )
+            )
+        )
+    }
+
+    @Test
+    fun `the reported drag is still refused when a control sits on it`() {
+        // 1000x500 frame: the drag runs (907,299) -> (936,135); this box is on it.
+        val gem = ScreenBox(900, 200, 945, 240, kind = "gem")
+        assertTrue(WallLogic.unsafeTaps(reportedDrag(), observation(listOf(gem))).isNotEmpty())
+    }
+
+    @Test
+    fun `the same drag is allowed when nothing forbidden is on it`() {
+        // Near the right edge but well below the path: scenery, not a control.
+        val scenery = ScreenBox(880, 400, 960, 460, kind = "ring")
+        assertTrue(WallLogic.unsafeTaps(reportedDrag(), observation(listOf(scenery))).isEmpty())
+    }
+
+    @Test
+    fun `a box at the drag start is refused`() {
+        val start = ScreenBox(900, 290, 915, 310, kind = "gem")
+        assertTrue(WallLogic.unsafeTaps(reportedDrag(), observation(listOf(start))).isNotEmpty())
+    }
+
+    @Test
+    fun `a refusal names the box and the frame it came from`() {
+        val gem = ScreenBox(900, 200, 945, 240, kind = "gem")
+        val observed = observation(listOf(gem))
+        val hit = WallLogic.firstForbiddenHit(reportedDrag(), observed)
+        assertEquals("gem", hit?.kind)
+        assertEquals(gem, hit?.box)
+        val detail = WallLogic.describeForbidden(observed, hit)
+        assertTrue(detail, detail.contains("state=HOME"))
+        assertTrue(detail, detail.contains("frame=1000x500"))
+        assertTrue(detail, detail.contains("hit=gem@900,200-945,240"))
+        assertTrue(detail, detail.contains("gesture=3372ms"))
+    }
+
+    @Test
+    fun `caption boxes keep the word that refused the gesture`() {
+        val caption = ScreenBox(900, 200, 945, 240, kind = "caption:gems")
+        val observed = observation(listOf(caption))
+        val hit = WallLogic.firstForbiddenHit(reportedDrag(), observed)
+        assertEquals("caption:gems", hit?.kind)
+        assertTrue(WallLogic.describeForbidden(observed, hit).contains("caption:gems"))
     }
 }

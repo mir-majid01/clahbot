@@ -72,6 +72,11 @@ class GameScreenEngineTest {
         canvas.drawRect(400f, 380f, 600f, 440f, paint)
     }
 
+    private fun drawRing(canvas: Canvas) {
+        val paint = Paint().apply { color = Color.rgb(60, 140, 220) }
+        canvas.drawRect(600f, 300f, 740f, 400f, paint)
+    }
+
     @Test
     fun `home needs battle bottom-left and build bottom-right`() {
         val observation = engine.inspect(
@@ -183,7 +188,7 @@ class GameScreenEngineTest {
         )
         assertEquals(GameState.POPUP, observation.state)
         assertEquals(PopupKind.GEM_SPEND, observation.popupKind)
-        assertTrue("gem icon must become a forbidden box", observation.forbidden.isNotEmpty())
+        assertTrue("the gem dialog must forbid the buy/gems caption", observation.forbidden.isNotEmpty())
         val buyBox = buy.box
         assertNotNull(buyBox)
         val buyScreenBox = ScreenBox(
@@ -231,5 +236,127 @@ class GameScreenEngineTest {
         val observation = engine.inspect(frame(), null, "com.supercell.clashofclans")
         assertEquals(GameState.UNKNOWN, observation.state)
         assertNull(observation.popupKind)
+    }
+
+    @Test
+    fun `a wall upgrade dialog is not a colour popup`() {
+        val observation = engine.inspect(
+            frame(draw = {
+                drawRedX(it)
+                drawConfirm(it)
+            }),
+            page(
+                line("Wall Level 8", 0.06f, 0.10f, 0.24f, 0.15f),
+                line("Upgrade More", 0.62f, 0.78f, 0.80f, 0.84f)
+            ),
+            "com.supercell.clashofclans"
+        )
+        assertEquals(GameState.UPGRADE_PANEL, observation.state)
+    }
+
+    @Test
+    fun `the build panel caption alone identifies the upgrade panel`() {
+        val observation = engine.inspect(
+            frame(),
+            page(
+                line("Buildings & Heroes", 0.05f, 0.06f, 0.28f, 0.11f),
+                line("Filtered", 0.05f, 0.14f, 0.15f, 0.19f)
+            ),
+            "com.supercell.clashofclans"
+        )
+        assertEquals(GameState.UPGRADE_PANEL, observation.state)
+    }
+
+    @Test
+    fun `an ordinary village Upgrade button keeps the screen at home`() {
+        val observation = engine.inspect(
+            frame(),
+            page(
+                line("Battle", 0.04f, 0.86f, 0.14f, 0.93f),
+                line("Build", 0.84f, 0.86f, 0.93f, 0.93f),
+                line("Upgrade", 0.40f, 0.50f, 0.52f, 0.56f)
+            ),
+            "com.supercell.clashofclans"
+        )
+        assertEquals(GameState.HOME, observation.state)
+    }
+
+    @Test
+    fun `the gem wall ring is forbidden even while the village looks normal`() {
+        val observation = engine.inspect(
+            frame(draw = { drawRing(it) }),
+            page(
+                line("Battle", 0.04f, 0.86f, 0.14f, 0.93f),
+                line("Build", 0.84f, 0.86f, 0.93f, 0.93f)
+            ),
+            "com.supercell.clashofclans"
+        )
+        assertEquals(GameState.HOME, observation.state)
+        val ring = ScreenBox(600, 300, 740, 400)
+        assertTrue(
+            "the Wall Ring button must sit on a forbidden box, got ${observation.forbidden}",
+            observation.forbidden.any { it.intersects(ring) }
+        )
+    }
+
+    @Test
+    fun `forbidden boxes travel with every state, not only popups`() {
+        val observation = engine.inspect(
+            frame(draw = { drawGem(it) }),
+            page(
+                line("Buy", 0.72f, 0.60f, 0.78f, 0.66f),
+                line("Wall Level 8", 0.06f, 0.10f, 0.24f, 0.15f),
+                line("Upgrade More", 0.62f, 0.78f, 0.80f, 0.84f)
+            ),
+            "com.supercell.clashofclans"
+        )
+        assertEquals(GameState.UPGRADE_PANEL, observation.state)
+        assertTrue(
+            "a non-popup state still has to carry the forbidden boxes",
+            observation.forbidden.isNotEmpty()
+        )
+    }
+
+    @Test
+    fun `village grass and foliage are not forbidden gem boxes`() {
+        // Gem colour detection is removed, so olive-green terrain never becomes
+        // a never-press box that refuses an ordinary wall tap.
+        val grass = Color.rgb(114, 145, 70)
+        val observation = engine.inspect(
+            frame(draw = { canvas ->
+                val paint = Paint().apply { color = grass }
+                canvas.drawRect(430f, 230f, 470f, 270f, paint)
+                canvas.drawRect(560f, 300f, 600f, 340f, paint)
+                canvas.drawRect(640f, 380f, 680f, 420f, paint)
+                canvas.drawRect(300f, 150f, 336f, 186f, paint)
+            }),
+            page(
+                line("Battle", 0.04f, 0.86f, 0.14f, 0.93f),
+                line("Build", 0.84f, 0.86f, 0.93f, 0.93f)
+            ),
+            "com.supercell.clashofclans"
+        )
+        assertEquals(GameState.HOME, observation.state)
+        assertTrue(
+            "grass must not produce forbidden gem boxes, got ${observation.forbidden}",
+            observation.forbidden.none { it.kind == "gem" }
+        )
+    }
+
+    @Test
+    fun `gem safety removed so a vivid gem icon is not forbidden in the open village`() {
+        val observation = engine.inspect(
+            frame(draw = { drawGem(it) }),
+            page(
+                line("Battle", 0.04f, 0.86f, 0.14f, 0.93f),
+                line("Build", 0.84f, 0.86f, 0.93f, 0.93f)
+            ),
+            "com.supercell.clashofclans"
+        )
+        assertEquals(GameState.HOME, observation.state)
+        assertTrue(
+            "gem safety is removed: no gem never-press box, got ${observation.forbidden}",
+            observation.forbidden.none { it.kind == "gem" }
+        )
     }
 }

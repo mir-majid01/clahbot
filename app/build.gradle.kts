@@ -13,8 +13,8 @@ android {
         applicationId = "com.clahbot"
         minSdk = 26
         targetSdk = 34
-        versionCode = 34
-        versionName = "2.12.1"
+        versionCode = 35
+        versionName = "2.12.2"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         // The current build is for the arm64 test phone; the OCR stack's
@@ -107,6 +107,7 @@ dependencies {
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
     implementation("com.google.code.gson:gson:2.10.1")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
     // Shizuku runs getevent in the user-service process with shell UID.
     implementation("dev.rikka.shizuku:api:13.1.5")

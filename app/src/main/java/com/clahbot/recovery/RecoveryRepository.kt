@@ -36,26 +36,49 @@ data class RecoveryFile(
  * Persists recovery counters, user-taught rules and the capped Unknown
  * screens gallery (screenshots in files/unknown_screens/).
  */
-class RecoveryRepository private constructor(context: Context) {
+class RecoveryRepository internal constructor(
+    private val file: File,
+    private val dir: File
+) {
+
+    constructor(context: Context) : this(
+        File(context.filesDir, FILE_NAME),
+        File(context.filesDir, SCREEN_DIR)
+    )
 
     private val gson = Gson()
-    private val file = File(context.filesDir, FILE_NAME)
-    private val dir = File(context.filesDir, SCREEN_DIR)
 
-    private val mutable = MutableStateFlow(RecoveryFile())
+    private val mutable = MutableStateFlow(load())
     val state: StateFlow<RecoveryFile> = mutable
+
+    // Load at construction: the watchdog writes from the service without a prior refresh().
+    private fun load(): RecoveryFile {
+        if (!file.exists()) return RecoveryFile()
+        val parsed = runCatching { gson.fromJson(file.readText(), RecoveryFile::class.java) }
+            .getOrElse {
+                quarantine()
+                return RecoveryFile()
+            }
+        if (parsed == null) {
+            quarantine()
+            return RecoveryFile()
+        }
+        return parsed
+    }
 
     @Synchronized
     fun refresh(): RecoveryFile {
-        val loaded = runCatching {
-            if (file.exists()) {
-                gson.fromJson(file.readText(), RecoveryFile::class.java)
-            } else {
-                null
-            }
-        }.getOrNull() ?: RecoveryFile()
+        val loaded = load()
         mutable.value = loaded
         return loaded
+    }
+
+    private fun quarantine() {
+        try {
+            file.renameTo(File(file.parentFile, "${file.name}.corrupt-${System.currentTimeMillis()}"))
+        } catch (_: Exception) {
+            // An unreadable file is treated as empty; nothing else to preserve.
+        }
     }
 
     private fun update(transform: (RecoveryFile) -> RecoveryFile) {

@@ -52,12 +52,14 @@ class AttackRepository(private val file: File) {
         }
     }
 
-    suspend fun update(record: AttackRecord): AttackRecord? = withContext(Dispatchers.IO) {
+    suspend fun update(record: AttackRecord, expected: AttackRecord? = null): AttackRecord? = withContext(Dispatchers.IO) {
         mutex.withLock {
             val sanitized = sanitizeAttack(record) ?: return@withLock null
             val all = readLocked().toMutableList()
             val index = all.indexOfFirst { it.id == sanitized.id }
             if (index < 0) return@withLock null
+            if (expected != null && all[index] != sanitizeAttack(expected)) return@withLock null
+            if (all[index] == sanitized) return@withLock sanitized
             all[index] = sanitized
             writeLocked(all)
             publish(all)
@@ -168,6 +170,9 @@ class AttackRepository(private val file: File) {
         val text = try {
             file.readText()
         } catch (_: Exception) {
+            // Preserve the unreadable original aside before treating history as empty, so a
+            // later add cannot clobber irreplaceable attack records.
+            quarantine()
             return emptyList()
         }
         if (text.isBlank()) return emptyList()

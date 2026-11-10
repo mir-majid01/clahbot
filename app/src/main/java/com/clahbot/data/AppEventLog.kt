@@ -30,7 +30,13 @@ object AppEventLog {
     }
 
     fun log(message: String) {
-        val target = file ?: return
+        val target = file
+        // Mirrored to logcat so a release build stays diagnosable: the private
+        // files directory is not readable without root, and `run-as` only works
+        // on a debuggable build. Plain JVM tests have no android.util.Log, so a
+        // diagnostic must never be the reason a call fails.
+        runCatching { Log.i(TAG, message) }
+        if (target == null) return
         synchronized(lock) {
             try {
                 if (target.length() > MAX_BYTES) rotate(target)

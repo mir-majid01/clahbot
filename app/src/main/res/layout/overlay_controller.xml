@@ -311,6 +311,17 @@
                     </LinearLayout>
 
                     <ImageButton
+                        android:id="@+id/btnRecUndo"
+                        android:layout_width="32dp"
+                        android:layout_height="32dp"
+                        android:layout_marginEnd="2dp"
+                        android:background="?android:attr/selectableItemBackgroundBorderless"
+                        android:contentDescription="Undo last action"
+                        android:padding="8dp"
+                        android:scaleType="fitCenter"
+                        android:src="@drawable/ic_back" />
+
+                    <ImageButton
                         android:id="@+id/btnRecRestart"
                         android:layout_width="32dp"
                         android:layout_height="32dp"
@@ -925,7 +936,7 @@
                                     android:layout_width="0dp"
                                     android:layout_height="wrap_content"
                                     android:layout_weight="1"
-                                    android:text="Repeat on the same visit"
+                                    android:text="Upgrade again on the same visit"
                                     android:textColor="#E6EBF5"
                                     android:textSize="11sp" />
 
@@ -1146,7 +1157,7 @@
                     android:id="@+id/tvSaveCountdown"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="Saving in 8 s"
+                    android:text="Name it, then Save"
                     android:textColor="#9FB0CF"
                     android:textSize="11sp" />
             </LinearLayout>
@@ -1167,7 +1178,6 @@
                     android:hint="Macro name"
                     android:imeOptions="actionDone"
                     android:inputType="textCapSentences"
-                    android:maxLength="40"
                     android:paddingStart="12dp"
                     android:paddingEnd="12dp"
                     android:singleLine="true"
@@ -1201,17 +1211,6 @@
                     android:src="@drawable/ic_close"
                     android:tint="#FCA5A5" />
             </LinearLayout>
-
-            <ProgressBar
-                android:id="@+id/saveProgress"
-                style="?android:attr/progressBarStyleHorizontal"
-                android:layout_width="match_parent"
-                android:layout_height="3dp"
-                android:layout_marginTop="8dp"
-                android:max="100"
-                android:progress="100"
-                android:progressTint="#2563EB"
-                android:progressBackgroundTint="#1B2742" />
         </LinearLayout>
 
         <LinearLayout

@@ -30,7 +30,7 @@ data class MacroSettingsDraft(
         }
 
     fun toMacro(base: Macro): Macro = base.copy(
-        name = name.trim().take(40),
+        name = name.trim(),
         speedMultiplier = MacroTimeline.clampSpeed(speed),
         repeatMode = repeatMode(),
         repeatDelayMs = delayMs.coerceIn(0L, Macro.MAX_REPEAT_DELAY_MS),

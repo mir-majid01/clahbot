@@ -5,6 +5,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Path
+import android.os.Looper
 import android.os.SystemClock
 import android.view.Choreographer
 import android.view.View
@@ -61,13 +62,24 @@ class TouchEffectsView(context: Context) : View(context) {
     var suppressed: Boolean = false
         set(value) {
             field = value
-            if (value) {
-                points.clear()
-                trails.clear()
-                paths.clear()
+            if (!value) return
+            if (Looper.myLooper() == Looper.getMainLooper()) {
+                clearEffects()
                 invalidate()
+            } else {
+                // Callers may sit on a worker thread; view state is main-only.
+                post {
+                    clearEffects()
+                    invalidate()
+                }
             }
         }
+
+    private fun clearEffects() {
+        points.clear()
+        trails.clear()
+        paths.clear()
+    }
 
     private var recordingConfig: TouchEffectConfig? = null
     private var playingConfig: TouchEffectConfig? = null

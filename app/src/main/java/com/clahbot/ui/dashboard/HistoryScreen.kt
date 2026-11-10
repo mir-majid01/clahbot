@@ -635,7 +635,8 @@ private fun AttackDetailSheet(
                         color = HistWarn
                     )
                     Text(
-                        record.reviewReason ?: "Some values could not be read from the result screen.",
+                        record.reviewExplanation
+                            ?: "Some values could not be read from the result screen.",
                         fontSize = 12.sp,
                         color = HistWarn,
                         modifier = Modifier.padding(top = 2.dp)

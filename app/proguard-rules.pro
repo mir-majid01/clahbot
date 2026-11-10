@@ -2,6 +2,11 @@
 -keepattributes Signature
 -keepattributes *Annotation*
 -keep class com.clahbot.data.models.** { *; }
+# Wall and recovery models are Gson schemas. A release build renamed them once:
+# walls.json was written as {"a":{"a":true,...}}, so every reload read defaults
+# and Auto Walls turned itself off. Keep the field names of both packages.
+-keep class com.clahbot.walls.** { *; }
+-keep class com.clahbot.recovery.** { *; }
 -keep class com.clahbot.data.AttackRepository$AttackFile { *; }
 -keep class com.clahbot.data.MacroRepository$MacroFile { *; }
 -keep class com.clahbot.data.SessionRepository$SessionFile { *; }

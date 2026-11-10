@@ -32,7 +32,7 @@ data class GameSession(
     }
 }
 
-/** Totals for display; incomplete records are counted but excluded from loot. */
+/** Totals for display; loot read by a partial attack counts, missing loot is absent. */
 data class SessionTotals(
     val attackCount: Int = 0,
     val incompleteAttacks: Int = 0,
@@ -63,10 +63,10 @@ object SessionAggregator {
         for (record in records) {
             if (!record.confirmed) continue
             duration += record.durationMs.coerceAtLeast(0L)
-            if (isIncomplete(record)) {
-                incomplete++
-                continue
-            }
+            if (isIncomplete(record)) incomplete++
+            // An incomplete read is missing some loot; what it did read is still
+            // real. Skipping the whole record here kept every flagged attack out
+            // of the totals, which is why Lifetime could sit at zero for ever.
             gold += record.gold ?: 0L
             elixir += record.elixir ?: 0L
             dark += record.darkElixir ?: 0L

@@ -4,6 +4,20 @@ import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 
+enum class UpdateDownloadStage { CONNECTING, DOWNLOADING, VERIFYING, READY }
+
+data class UpdateDownloadProgress(
+    val stage: UpdateDownloadStage,
+    val downloadedBytes: Long = 0L,
+    val totalBytes: Long? = null,
+    val bytesPerSecond: Long = 0L
+) {
+    val fraction: Float?
+        get() = totalBytes?.takeIf { it > 0L }?.let {
+            (downloadedBytes.toDouble() / it).coerceIn(0.0, 1.0).toFloat()
+        }
+}
+
 data class UpdateAsset(
     val name: String,
     val url: String,

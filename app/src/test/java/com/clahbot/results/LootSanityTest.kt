@@ -34,6 +34,15 @@ class LootSanityTest {
     )
 
     @Test
+    fun negativeLootIsRemovedAndExplained() {
+        val sanitized = LootSanity.sanitize(read(gold = -1, dark = -2, bonusElixir = -3))
+        assertNull(sanitized.read.gold)
+        assertNull(sanitized.read.darkElixir)
+        assertNull(sanitized.read.bonusElixir)
+        assertEquals(3, sanitized.reasons.size)
+    }
+
+    @Test
     fun anImpossibleGoldValueIsRemovedAndExplained() {
         val sanitized = LootSanity.sanitize(read(gold = 25_412_267))
         assertNull(sanitized.read.gold)

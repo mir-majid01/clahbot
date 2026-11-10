@@ -71,6 +71,20 @@ class AttackHistoryTest {
     }
 
     @Test
+    fun unreadableHistoryIsQuarantinedNotSilentlyEmptied() = runBlocking {
+        // A directory at the history path exists but cannot be read as text: the read-failure
+        // branch must preserve the original aside so a later add cannot clobber irreplaceable
+        // attack history by treating an unreadable file as empty.
+        val file = File(directory, "attacks.json")
+        assertTrue(file.mkdir())
+
+        assertEquals(0, repository.refresh().size)
+        assertFalse("the unreadable history was left in place to be overwritten", file.exists())
+        val quarantined = directory.listFiles()?.any { it.name.contains("corrupt") } ?: false
+        assertTrue("the unreadable history was not preserved", quarantined)
+    }
+
+    @Test
     fun unreadableLootStaysNullAndIsNotZero() = runBlocking {
         repository.add(record(1))
         val stored = repository.records.value.single()
@@ -126,6 +140,25 @@ class AttackHistoryTest {
         assertEquals(500_000L, reread.gold)
         assertEquals(AttackRecord.LOOT_MANUAL, reread.lootSource)
         assertTrue(reread.verified)
+    }
+
+    @Test
+    fun staleRescanCannotOverwriteAManualCorrection() = runBlocking {
+        val original = repository.add(record(1, gold = 500_000))!!
+        val corrected = repository.update(original.copy(gold = 520_000, lootSource = AttackRecord.LOOT_MANUAL))!!
+        assertNull(repository.update(original.copy(gold = 510_000), expected = original))
+        assertEquals(corrected, repository.refresh().single())
+    }
+
+    @Test
+    fun repeatingACorrectionChangesTotalsOnlyOnce() = runBlocking {
+        val original = repository.add(record(1, gold = 500_000))!!
+        val baseline = AttackStats.summarize(repository.records.value).gold
+        val updated = repository.update(original.copy(gold = 520_000), expected = original)!!
+        repository.update(updated, expected = updated)
+        val loaded = AttackRepository(File(directory, "attacks.json")).refresh()
+        assertEquals(1, loaded.size)
+        assertEquals(20_000L, AttackStats.summarize(loaded).gold - baseline)
     }
 
     @Test

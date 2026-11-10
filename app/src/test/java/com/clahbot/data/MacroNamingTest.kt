@@ -1,6 +1,8 @@
 package com.clahbot.data
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class MacroNamingTest {
@@ -41,6 +43,29 @@ class MacroNamingTest {
         assertEquals(
             "Macro Nov 02 14:21 2",
             MacroNaming.uniqueDefault("Macro Nov 02 14:21", listOf("  macro nov 02 14:21 "))
+        )
+    }
+
+    @Test
+    fun anExactValidNameIsAccepted() {
+        assertNull(MacroNaming.validationError("Farm  LOOP", listOf("Other macro")))
+        assertNull(MacroNaming.validationError("x".repeat(40), emptyList()))
+    }
+
+    @Test
+    fun blankNamesAreRejected() {
+        assertNotNull(MacroNaming.validationError("   ", emptyList()))
+    }
+
+    @Test
+    fun overlongNamesAreRejectedInsteadOfTruncated() {
+        assertNotNull(MacroNaming.validationError("x".repeat(41), emptyList()))
+    }
+
+    @Test
+    fun duplicateNamesAreRejectedIgnoringCaseAndOuterSpaces() {
+        assertNotNull(
+            MacroNaming.validationError("Farm Loop", listOf("  farm loop  "))
         )
     }
 }

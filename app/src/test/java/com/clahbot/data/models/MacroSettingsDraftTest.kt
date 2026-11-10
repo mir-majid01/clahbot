@@ -70,11 +70,19 @@ class MacroSettingsDraftTest {
     }
 
     @Test
-    fun aCustomRepeatUsesTheCountAndACustomNameIsCapped() {
+    fun aCustomRepeatUsesTheCountAndDoesNotSilentlyShortenTheName() {
         val draft = MacroSettingsDraft.from(macro(repeat = "3"))
-        val saved = draft.copy(name = "x".repeat(80)).toMacro(macro(repeat = "3"))
+        val longName = "x".repeat(80)
+        val saved = draft.copy(name = longName).toMacro(macro(repeat = "3"))
         assertEquals(MacroTimeline.customRepeatMode(3), saved.repeatMode)
-        assertEquals(40, saved.name.length)
+        assertEquals(longName, saved.name)
+    }
+
+    @Test
+    fun aValidNameKeepsItsCaseAndInternalSpacing() {
+        val draft = MacroSettingsDraft.from(macro())
+        val saved = draft.copy(name = "  Farm  LOOP  ").toMacro(macro())
+        assertEquals("Farm  LOOP", saved.name)
     }
 
     @Test

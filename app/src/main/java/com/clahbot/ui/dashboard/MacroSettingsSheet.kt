@@ -37,6 +37,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -49,11 +50,15 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.clahbot.R
+import com.clahbot.data.MacroNaming
+import com.clahbot.data.MacroWriteResult
 import com.clahbot.data.models.Macro
 import com.clahbot.data.models.MacroSettingsDraft
 import com.clahbot.execution.MacroTimeline
 import com.clahbot.execution.StopSummary
 import com.clahbot.ui.design.Ds
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
 import java.util.Locale
 import kotlin.math.roundToInt
 
@@ -68,7 +73,7 @@ fun MacroSettingsSheet(
     macro: Macro,
     wallMacros: List<Macro> = emptyList(),
     onDismiss: () -> Unit,
-    onSave: (MacroSettingsDraft) -> Unit,
+    onSave: suspend (MacroSettingsDraft) -> MacroWriteResult,
     onDuplicate: (MacroSettingsDraft) -> Unit,
     onReset: () -> Unit,
     onDelete: () -> Unit
@@ -76,7 +81,9 @@ fun MacroSettingsSheet(
     var draft by remember(macro.id) { mutableStateOf(MacroSettingsDraft.from(macro)) }
     var page by remember(macro.id) { mutableStateOf(0) }
     var menuOpen by remember { mutableStateOf(false) }
-    var nameError by remember { mutableStateOf(false) }
+    var saving by remember { mutableStateOf(false) }
+    var saveError by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
     var editing by remember { mutableStateOf<EditField?>(null) }
     var pickWallMacro by remember { mutableStateOf(false) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -120,6 +127,31 @@ fun MacroSettingsSheet(
         }
     }
 
+    fun persist(value: MacroSettingsDraft, dismissOnSuccess: Boolean) {
+        if (saving) return
+        val validation = MacroNaming.validationError(value.name, emptyList())
+        if (validation != null) {
+            saveError = validation
+            return
+        }
+        saving = true
+        saveError = null
+        scope.launch {
+            try {
+                when (val result = onSave(value)) {
+                    is MacroWriteResult.Saved -> if (dismissOnSuccess) onDismiss()
+                    is MacroWriteResult.Rejected -> saveError = result.message
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                saveError = "Could not save macro"
+            } finally {
+                saving = false
+            }
+        }
+    }
+
     editing?.let { field ->
         NumberEditDialog(
             title = field.title,
@@ -134,7 +166,7 @@ fun MacroSettingsSheet(
     }
 
     ModalBottomSheet(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { if (!saving) onDismiss() },
         sheetState = sheetState,
         containerColor = Color(Ds.PANEL),
         contentColor = Color(Ds.TEXT),
@@ -165,7 +197,7 @@ fun MacroSettingsSheet(
                     modifier = Modifier.weight(1f)
                 )
                 Box {
-                    IconButton(onClick = { menuOpen = true }) {
+                    IconButton(onClick = { menuOpen = true }, enabled = !saving) {
                         androidx.compose.foundation.Image(
                             painterResource(R.drawable.ic_more),
                             contentDescription = "More actions",
@@ -187,19 +219,22 @@ fun MacroSettingsSheet(
                                 val next = draft.copy(pinned = !draft.pinned)
                                 draft = next
                                 menuOpen = false
-                                onSave(next)
+                                persist(next, dismissOnSuccess = false)
                             }
                         )
                         DropdownMenuItem(
                             text = { Text("Duplicate", fontSize = 13.sp) },
                             onClick = {
-                                menuOpen = false
-                                onDuplicate(draft)
+                                if (!saving) {
+                                    menuOpen = false
+                                    onDuplicate(draft)
+                                }
                             }
                         )
                         DropdownMenuItem(
                             text = { Text("Reset to defaults", fontSize = 13.sp) },
                             onClick = {
+                                if (saving) return@DropdownMenuItem
                                 menuOpen = false
                                 draft = MacroSettingsDraft.from(
                                     macro.copy(
@@ -221,13 +256,14 @@ fun MacroSettingsSheet(
                                 Text("Delete", fontSize = 13.sp, color = Color(Ds.DANGER_TEXT))
                             },
                             onClick = {
+                                if (saving) return@DropdownMenuItem
                                 menuOpen = false
                                 onDelete()
                             }
                         )
                     }
                 }
-                IconButton(onClick = onDismiss) {
+                IconButton(onClick = onDismiss, enabled = !saving) {
                     androidx.compose.foundation.Image(
                         painterResource(R.drawable.ic_close),
                         contentDescription = "Close",
@@ -255,11 +291,12 @@ fun MacroSettingsSheet(
                         OutlinedTextField(
                             value = draft.name,
                             onValueChange = {
-                                draft = draft.copy(name = it.take(40))
-                                nameError = false
+                                draft = draft.copy(name = it)
+                                saveError = null
                             },
                             singleLine = true,
-                            isError = nameError,
+                            enabled = !saving,
+                            isError = saveError != null,
                             modifier = Modifier.widthIn(max = 170.dp).heightIn(min = 48.dp)
                         )
                     }
@@ -480,9 +517,9 @@ fun MacroSettingsSheet(
                     )
                 }
             }
-            if (nameError) {
+            saveError?.let { message ->
                 Text(
-                    "Enter a macro name",
+                    message,
                     fontSize = 11.sp,
                     color = Color(Ds.DANGER_TEXT),
                     modifier = Modifier.padding(top = 4.dp)
@@ -492,6 +529,7 @@ fun MacroSettingsSheet(
             Row {
                 OutlinedButton(
                     onClick = onDismiss,
+                    enabled = !saving,
                     modifier = Modifier.weight(1f).height(44.dp),
                     shape = RoundedCornerShape(10.dp),
                     border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF3A4A70))
@@ -500,15 +538,17 @@ fun MacroSettingsSheet(
                 }
                 Spacer(Modifier.width(10.dp))
                 Button(
-                    onClick = {
-                        if (draft.name.isBlank()) nameError = true
-                        else onSave(draft)
-                    },
+                    onClick = { persist(draft, dismissOnSuccess = true) },
+                    enabled = !saving,
                     modifier = Modifier.weight(1.4f).height(44.dp),
                     shape = RoundedCornerShape(10.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = Color(Ds.ACCENT))
                 ) {
-                    Text("Save", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        if (saving) "Saving..." else "Save",
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
                 }
             }
         }

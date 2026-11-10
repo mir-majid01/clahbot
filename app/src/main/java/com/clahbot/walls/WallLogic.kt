@@ -2,7 +2,11 @@ package com.clahbot.walls
 
 import com.clahbot.game.ScreenObservation
 import com.clahbot.game.GameState
+import com.clahbot.data.models.GesturePoint
 import com.clahbot.data.models.Macro
+import com.clahbot.data.models.RecordedGesture
+import com.clahbot.execution.MacroTimeline
+import com.clahbot.game.ScreenBox
 
 /**
  * Pure wall decisions. Nothing here touches Android, so every rule the
@@ -72,26 +76,107 @@ object WallLogic {
     /** Screens the wall macro may never start on. */
     fun safeToStart(state: GameState?): Boolean = state == GameState.HOME
 
-    /**
-     * A wall macro is a recorded touch script. Before it runs, every tap is
-     * checked against the current frame's never-press boxes: a recorded tap on
-     * a gem price, Buy, Surrender or Shop control stops the automation.
-     */
     fun unsafeTaps(macro: Macro, observation: ScreenObservation): List<String> {
-        val frameW = observation.frameWidth
-        val frameH = observation.frameHeight
-        if (frameW <= 0 || frameH <= 0) return listOf("no frame geometry")
-        val reasons = mutableListOf<String>()
-        for (gesture in macro.gestures) {
-            if (gesture.gestureType != "tap") continue
-            val x = (gesture.normalizedStartX * frameW).toInt()
-            val y = (gesture.normalizedStartY * frameH).toInt()
-            val hit = observation.forbidden.firstOrNull { it.contains(x, y) }
-            if (hit != null) {
-                reasons += "tap at ${gesture.timestampMs}ms hits a never-press box"
+        if (observation.frameWidth <= 0 || observation.frameHeight <= 0) return listOf("no frame geometry")
+        return macro.gestures.mapNotNull { unsafeGesture(it, macro.speedMultiplier, observation) }
+    }
+
+    fun unsafeGesture(gesture: RecordedGesture, speed: Float, observation: ScreenObservation): String? {
+        val paths = MacroTimeline.playbackPaths(gesture, speed, observation.frameWidth, observation.frameHeight)
+        if (paths.isEmpty()) return "no gesture geometry"
+        if (paths.any { path -> path.points.any { !it.x.isFinite() || !it.y.isFinite() } }) {
+            return "invalid gesture geometry"
+        }
+        val hit = firstHit(gesture.timestampMs, observation) { paths.map { it.points } }
+        return if (hit != null) "gesture at ${gesture.timestampMs}ms hits a never-press box" else null
+    }
+
+    /** Where a refused gesture actually meets a never-press box. Diagnostics only. */
+    data class ForbiddenHit(
+        val gestureMs: Long,
+        val kind: String,
+        val box: ScreenBox,
+        val x: Float,
+        val y: Float
+    )
+
+    /**
+     * The same decision [unsafeTaps] makes, but returning the first box that is
+     * actually touched. A refusal can then be explained from the device log
+     * instead of guessed at, without changing what is refused.
+     */
+    fun firstForbiddenHit(macro: Macro, observation: ScreenObservation): ForbiddenHit? =
+        macro.gestures.firstNotNullOfOrNull { gesture ->
+            val paths = MacroTimeline.playbackPaths(
+                gesture,
+                macro.speedMultiplier,
+                observation.frameWidth,
+                observation.frameHeight
+            )
+            val invalid = paths.isEmpty() || paths.any { path ->
+                path.points.any { !it.x.isFinite() || !it.y.isFinite() }
+            }
+            if (invalid) null else firstHit(gesture.timestampMs, observation) { paths.map { it.points } }
+        }
+
+    /** One-line, log-friendly description of a refusal: state, frame, hit and boxes. */
+    fun describeForbidden(observation: ScreenObservation, hit: ForbiddenHit?): String {
+        val boxes = observation.forbidden.take(8).joinToString(";") { box ->
+            "${box.kind.ifBlank { "box" }}:${box.left},${box.top}-${box.right},${box.bottom}"
+        }
+        val where = hit?.let {
+            "hit=${it.kind.ifBlank { "box" }}@${it.box.left},${it.box.top}-${it.box.right},${it.box.bottom}" +
+                " point=${it.x.toInt()},${it.y.toInt()} gesture=${it.gestureMs}ms"
+        } ?: "hit=none"
+        return "state=${observation.state} frame=${observation.frameWidth}x${observation.frameHeight} " +
+            "forbidden=${observation.forbidden.size} $where boxes=[$boxes]"
+    }
+
+    private fun firstHit(
+        gestureMs: Long,
+        observation: ScreenObservation,
+        pathsFor: () -> List<List<GesturePoint>>
+    ): ForbiddenHit? {
+        val paths = pathsFor()
+        for (box in observation.forbidden) {
+            for (path in paths) {
+                path.firstOrNull {
+                    it.x >= box.left && it.x <= box.right && it.y >= box.top && it.y <= box.bottom
+                }?.let { return ForbiddenHit(gestureMs, box.kind, box, it.x, it.y) }
+                for ((start, end) in path.zipWithNext()) {
+                    if (crossesBox(start.x, start.y, end.x, end.y, box)) {
+                        return ForbiddenHit(
+                            gestureMs,
+                            box.kind,
+                            box,
+                            (start.x + end.x) / 2f,
+                            (start.y + end.y) / 2f
+                        )
+                    }
+                }
             }
         }
-        return reasons
+        return null
+    }
+
+    private fun crossesBox(x1: Float, y1: Float, x2: Float, y2: Float, box: ScreenBox): Boolean {
+        var enter = 0f
+        var exit = 1f
+        for ((start, delta, bounds) in listOf(
+            Triple(x1, x2 - x1, box.left.toFloat() to box.right.toFloat()),
+            Triple(y1, y2 - y1, box.top.toFloat() to box.bottom.toFloat())
+        )) {
+            if (delta == 0f) {
+                if (start < bounds.first || start > bounds.second) return false
+            } else {
+                val first = (bounds.first - start) / delta
+                val second = (bounds.second - start) / delta
+                enter = maxOf(enter, minOf(first, second))
+                exit = minOf(exit, maxOf(first, second))
+                if (enter > exit) return false
+            }
+        }
+        return true
     }
 
     /** Screens that mean the wall macro must stop immediately. */
@@ -102,7 +187,7 @@ object WallLogic {
 
     /** Screens that mean the village is back under control. */
     fun safeAfterRun(state: GameState?): Boolean = when (state) {
-        GameState.HOME, GameState.ATTACK_MENU, GameState.SEARCHING -> true
+        GameState.HOME, GameState.ATTACK_MENU, GameState.SEARCHING, GameState.UPGRADE_PANEL -> true
         else -> false
     }
 

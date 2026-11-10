@@ -1,6 +1,9 @@
 package com.clahbot.ui.dashboard
 
 import android.graphics.Bitmap
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -33,9 +36,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
@@ -48,6 +53,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.KeyboardType
+import com.clahbot.data.MacroNaming
+import com.clahbot.data.MacroWriteResult
 import com.clahbot.data.models.Macro
 import com.clahbot.recovery.RecoveryStats
 import com.clahbot.recovery.UnknownScreen
@@ -57,6 +64,8 @@ import com.clahbot.ui.design.Ds
 import com.clahbot.walls.WallResourceMode
 import com.clahbot.walls.WallRunLog
 import com.clahbot.walls.WallSettings
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 enum class TeachAction(val label: String) {
@@ -327,6 +336,10 @@ fun AcTeachSheet(
 fun AcWallsSection(
     settings: WallSettings,
     wallMacros: List<Macro>,
+    linkCounts: Map<Long, Int> = emptyMap(),
+    expanded: Boolean = false,
+    onExpandedChange: (Boolean) -> Unit = {},
+    saveError: String? = null,
     onToggle: (Boolean) -> Unit,
     onSelectMacro: (Long) -> Unit,
     onMode: (WallResourceMode) -> Unit,
@@ -335,12 +348,16 @@ fun AcWallsSection(
     onRepeat: (Boolean) -> Unit,
     onRun: () -> Unit,
     onTest: () -> Unit,
-    onRenameMacro: (Macro, String) -> Unit,
+    onRenameMacro: suspend (Macro, String) -> MacroWriteResult,
     onDeleteMacro: (Macro) -> Unit
 ) {
     var showPicker by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf<Macro?>(null) }
+    var pendingDelete by remember { mutableStateOf<Macro?>(null) }
     var renameText by remember { mutableStateOf("") }
+    var renameSaving by remember { mutableStateOf(false) }
+    var renameError by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
     val selected = wallMacros.firstOrNull { it.id == settings.wallMacroId }
     val costState = remember(settings.costPerWall) {
         mutableStateOf(if (settings.costPerWall > 0) settings.costPerWall.toString() else "")
@@ -364,152 +381,186 @@ fun AcWallsSection(
                 color = Color(Ds.TEXT),
                 modifier = Modifier.weight(1f)
             )
+            Text(
+                if (settings.enabled) "ON" else "OFF",
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                color = if (settings.enabled) Color(Ds.SUCCESS) else Color(Ds.MUTED)
+            )
+            Spacer(Modifier.width(8.dp))
             Switch(checked = settings.enabled, onCheckedChange = onToggle)
+            Box(
+                Modifier
+                    .size(34.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable { onExpandedChange(!expanded) },
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    if (expanded) "▴" else "▾",
+                    fontSize = 15.sp,
+                    color = Color(Ds.LINK)
+                )
+            }
         }
         Text(
-            settings.summary(selected?.name),
+            settings.summary(selected?.name) +
+                if (saveError == null) "" else " · not saved: $saveError",
             fontSize = 11.sp,
             color = Color(Ds.MUTED)
         )
-        Spacer(Modifier.height(10.dp))
 
-        AcWallsLabel("Wall upgrade macro")
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .height(38.dp)
-                .background(Color(Ds.INPUT), RoundedCornerShape(Ds.RADIUS_ROW.dp))
-                .clickable { showPicker = true }
-                .padding(horizontal = 10.dp),
-            contentAlignment = Alignment.CenterStart
+        AnimatedVisibility(
+            visible = expanded,
+            enter = expandVertically(),
+            exit = shrinkVertically()
         ) {
-            Text(
-                selected?.name ?: "Choose a wall macro",
-                fontSize = 12.5.sp,
-                color = Color(Ds.TEXT)
-            )
-        }
+            Column(Modifier.padding(top = 10.dp)) {
+            AcWallsLabel("Wall upgrade macro")
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(38.dp)
+                    .background(Color(Ds.INPUT), RoundedCornerShape(Ds.RADIUS_ROW.dp))
+                    .clickable { showPicker = true }
+                    .padding(horizontal = 10.dp),
+                contentAlignment = Alignment.CenterStart
+            ) {
+                Text(
+                    selected?.name ?: "Choose a wall macro",
+                    fontSize = 12.5.sp,
+                    color = Color(Ds.TEXT)
+                )
+            }
 
-        Spacer(Modifier.height(10.dp))
-        AcWallsLabel("Pay with")
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            WallResourceMode.entries.forEach { mode ->
-                val on = mode == settings.resourceMode
-                Box(
-                    Modifier
-                        .weight(1f)
-                        .height(34.dp)
-                        .background(
-                            if (on) Color(Ds.ACCENT) else Color(Ds.BUTTON),
-                            RoundedCornerShape(Ds.RADIUS_BUTTON.dp)
+            Spacer(Modifier.height(10.dp))
+            AcWallsLabel("Pay with")
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                WallResourceMode.entries.forEach { mode ->
+                    val on = mode == settings.resourceMode
+                    Box(
+                        Modifier
+                            .weight(1f)
+                            .height(34.dp)
+                            .background(
+                                if (on) Color(Ds.ACCENT) else Color(Ds.BUTTON),
+                                RoundedCornerShape(Ds.RADIUS_BUTTON.dp)
+                            )
+                            .clickable { onMode(mode) },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            mode.label,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (on) Color.White else Color(Ds.MUTED)
                         )
-                        .clickable { onMode(mode) },
-                    contentAlignment = Alignment.Center
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(Modifier.weight(1f)) {
+                    AcWallsLabel("Cost per wall")
+                    AcWallsNumber(costState.value) { raw ->
+                        costState.value = raw
+                        onCost(raw.toLongOrNull() ?: 0L)
+                    }
+                }
+                Column(Modifier.weight(1f)) {
+                    AcWallsLabel("Keep in reserve")
+                    AcWallsNumber(reserveState.value) { raw ->
+                        reserveState.value = raw
+                        onReserve(raw.toLongOrNull() ?: 0L)
+                    }
+                }
+            }
+            Text(
+                "Walls cost the same in gold and elixir, so one number covers both.",
+                fontSize = 10.sp,
+                color = Color(Ds.MUTED)
+            )
+            Spacer(Modifier.height(6.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Upgrade again on the same visit",
+                    fontSize = 12.sp,
+                    color = Color(Ds.TEXT),
+                    modifier = Modifier.weight(1f)
+                )
+                Switch(checked = settings.allowRepeatUpgrades, onCheckedChange = onRepeat)
+            }
+            Text(
+                "Only repeats after the last upgrade is confirmed by a balance drop, up to 5 per visit.",
+                fontSize = 10.sp,
+                color = Color(Ds.MUTED)
+            )
+
+            Spacer(Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = onTest,
+                    modifier = Modifier.weight(1f).height(38.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(Ds.BUTTON)),
+                    shape = RoundedCornerShape(Ds.RADIUS_BUTTON.dp)
                 ) {
+                    Text("Test macro", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(Ds.TEXT))
+                }
+                Button(
+                    onClick = onRun,
+                    modifier = Modifier.weight(1f).height(38.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(Ds.ACCENT)),
+                    shape = RoundedCornerShape(Ds.RADIUS_BUTTON.dp)
+                ) {
+                    Text("Run now", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                }
+            }
+
+            if (wallMacros.isNotEmpty()) {
+                Spacer(Modifier.height(12.dp))
+                AcWallsLabel("Wall macros")
+                wallMacros.forEach { macro ->
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(macro.name, fontSize = 12.5.sp, color = Color(Ds.TEXT))
+                            Text(
+                                com.clahbot.util.Plural.of(macro.gestures.size, "gesture"),
+                                fontSize = 10.sp,
+                                color = Color(Ds.MUTED)
+                            )
+                        }
+                        TextButton(onClick = {
+                            renaming = macro
+                            renameText = macro.name
+                            renameError = null
+                        }) {
+                            Text("Rename", fontSize = 11.5.sp, color = Color(Ds.LINK))
+                        }
+                        TextButton(onClick = { pendingDelete = macro }) {
+                            Text("Delete", fontSize = 11.5.sp, color = Color(Ds.DANGER_TEXT))
+                        }
+                    }
+                }
+            }
+
+            val recent = settings.history.takeLast(3).reversed()
+            if (recent.isNotEmpty()) {
+                Spacer(Modifier.height(10.dp))
+                AcWallsLabel("Last upgrades")
+                recent.forEach { entry ->
                     Text(
-                        mode.label,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = if (on) Color.White else Color(Ds.MUTED)
+                        "${acClock(entry.at)} · ${entry.status} · ${entry.detail}",
+                        fontSize = 10.5.sp,
+                        color = Color(Ds.MUTED)
                     )
                 }
             }
-        }
-
-        Spacer(Modifier.height(10.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Column(Modifier.weight(1f)) {
-                AcWallsLabel("Cost per wall")
-                AcWallsNumber(costState.value) { raw ->
-                    costState.value = raw
-                    onCost(raw.toLongOrNull() ?: 0L)
-                }
-            }
-            Column(Modifier.weight(1f)) {
-                AcWallsLabel("Keep in reserve")
-                AcWallsNumber(reserveState.value) { raw ->
-                    reserveState.value = raw
-                    onReserve(raw.toLongOrNull() ?: 0L)
-                }
-            }
-        }
-        Text(
-            "Walls cost the same in gold and elixir, so one number covers both.",
-            fontSize = 10.sp,
-            color = Color(Ds.MUTED)
-        )
-        Spacer(Modifier.height(6.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                "Upgrade again on the same visit",
-                fontSize = 12.sp,
-                color = Color(Ds.TEXT),
-                modifier = Modifier.weight(1f)
-            )
-            Switch(checked = settings.allowRepeatUpgrades, onCheckedChange = onRepeat)
-        }
-
-        Spacer(Modifier.height(10.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(
-                onClick = onTest,
-                modifier = Modifier.weight(1f).height(38.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Color(Ds.BUTTON)),
-                shape = RoundedCornerShape(Ds.RADIUS_BUTTON.dp)
-            ) {
-                Text("Test macro", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(Ds.TEXT))
-            }
-            Button(
-                onClick = onRun,
-                modifier = Modifier.weight(1f).height(38.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Color(Ds.ACCENT)),
-                shape = RoundedCornerShape(Ds.RADIUS_BUTTON.dp)
-            ) {
-                Text("Run now", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White)
-            }
-        }
-
-        if (wallMacros.isNotEmpty()) {
-            Spacer(Modifier.height(12.dp))
-            AcWallsLabel("Wall macros")
-            wallMacros.forEach { macro ->
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text(macro.name, fontSize = 12.5.sp, color = Color(Ds.TEXT))
-                        Text(
-                            "${macro.gestures.size} gestures · ${(macro.durationMs / 1000L)}s",
-                            fontSize = 10.sp,
-                            color = Color(Ds.MUTED)
-                        )
-                    }
-                    TextButton(onClick = {
-                        renaming = macro
-                        renameText = macro.name
-                    }) {
-                        Text("Rename", fontSize = 11.5.sp, color = Color(Ds.LINK))
-                    }
-                    TextButton(onClick = { onDeleteMacro(macro) }) {
-                        Text("Delete", fontSize = 11.5.sp, color = Color(Ds.DANGER_TEXT))
-                    }
-                }
-            }
-        }
-
-        val recent = settings.history.takeLast(3).reversed()
-        if (recent.isNotEmpty()) {
-            Spacer(Modifier.height(10.dp))
-            AcWallsLabel("Last upgrades")
-            recent.forEach { entry ->
-                Text(
-                    "${acClock(entry.at)} · ${entry.status} · ${entry.detail}",
-                    fontSize = 10.5.sp,
-                    color = Color(Ds.MUTED)
-                )
             }
         }
     }
@@ -556,35 +607,115 @@ fun AcWallsSection(
         )
     }
 
-    renaming?.let { macro ->
+    pendingDelete?.let { macro ->
+        val links = linkCounts[macro.id] ?: 0
+        val isSelected = settings.wallMacroId == macro.id
         AlertDialog(
-            onDismissRequest = { renaming = null },
+            onDismissRequest = { pendingDelete = null },
             containerColor = Color(Ds.PANEL),
-            title = { Text("Rename macro", color = Color(Ds.TEXT)) },
+            title = { Text("Delete wall macro?", color = Color(Ds.TEXT)) },
             text = {
-                OutlinedTextField(
-                    value = renameText,
-                    onValueChange = { renameText = it.take(40) },
-                    label = { Text("Name", fontSize = 11.sp) },
-                    singleLine = true,
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = Color(Ds.TEXT),
-                        unfocusedTextColor = Color(Ds.TEXT),
-                        focusedBorderColor = Color(Ds.ACCENT),
-                        unfocusedBorderColor = Color(Ds.PANEL_BORDER)
-                    )
+                Text(
+                    buildString {
+                        append("\"${macro.name}\" will be removed.")
+                        if (isSelected) append("\nIt is currently selected for Auto Walls.")
+                        if (links > 0) {
+                            append(
+                                "\n${com.clahbot.util.Plural.of(links, "attack macro")} " +
+                                    "link to it; those links will be cleared."
+                            )
+                        }
+                    },
+                    fontSize = 12.5.sp,
+                    color = Color(Ds.TEXT)
                 )
             },
             confirmButton = {
                 TextButton(onClick = {
-                    if (renameText.isNotBlank()) onRenameMacro(macro, renameText.trim())
-                    renaming = null
+                    onDeleteMacro(macro)
+                    pendingDelete = null
                 }) {
-                    Text("Save", color = Color(Ds.LINK))
+                    Text("Delete", color = Color(Ds.DANGER_TEXT))
                 }
             },
             dismissButton = {
-                TextButton(onClick = { renaming = null }) {
+                TextButton(onClick = { pendingDelete = null }) {
+                    Text("Cancel", color = Color(Ds.LINK))
+                }
+            }
+        )
+    }
+
+    renaming?.let { macro ->
+        AlertDialog(
+            onDismissRequest = { if (!renameSaving) renaming = null },
+            containerColor = Color(Ds.PANEL),
+            title = { Text("Rename macro", color = Color(Ds.TEXT)) },
+            text = {
+                Column {
+                    OutlinedTextField(
+                        value = renameText,
+                        onValueChange = {
+                            renameText = it
+                            renameError = null
+                        },
+                        label = { Text("Name", fontSize = 11.sp) },
+                        singleLine = true,
+                        enabled = !renameSaving,
+                        isError = renameError != null,
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = Color(Ds.TEXT),
+                            unfocusedTextColor = Color(Ds.TEXT),
+                            focusedBorderColor = Color(Ds.ACCENT),
+                            unfocusedBorderColor = Color(Ds.PANEL_BORDER)
+                        ),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    renameError?.let { message ->
+                        Text(
+                            message,
+                            fontSize = 11.sp,
+                            color = Color(Ds.DANGER_TEXT),
+                            modifier = Modifier.padding(top = 6.dp)
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = !renameSaving,
+                    onClick = {
+                        val validation = MacroNaming.validationError(
+                            renameText,
+                            wallMacros.filter { it.id != macro.id }.map { it.name }
+                        )
+                        if (validation != null) {
+                            renameError = validation
+                        } else {
+                            renameSaving = true
+                            renameError = null
+                            scope.launch {
+                                try {
+                                    when (val result = onRenameMacro(macro, renameText.trim())) {
+                                        is MacroWriteResult.Saved -> renaming = null
+                                        is MacroWriteResult.Rejected -> renameError = result.message
+                                    }
+                                } catch (cancelled: CancellationException) {
+                                    throw cancelled
+                                } catch (_: Exception) {
+                                    renameError = "Could not rename macro"
+                                } finally {
+                                    renameSaving = false
+                                }
+                            }
+                        }
+                    }
+                ) {
+                    Text(if (renameSaving) "Saving..." else "Save", color = Color(Ds.LINK))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { renaming = null }, enabled = !renameSaving) {
                     Text("Cancel", color = Color(Ds.MUTED))
                 }
             }

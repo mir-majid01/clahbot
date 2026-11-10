@@ -3,9 +3,12 @@ package com.clahbot.data
 import com.clahbot.data.models.GesturePoint
 import com.clahbot.data.models.Macro
 import com.clahbot.data.models.RecordedGesture
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -57,6 +60,62 @@ class MacroRepositoryTest {
     }
 
     @Test
+    fun createPreservesTheExactNameAndNeverReusesASuppliedId() = runBlocking {
+        val existing = repository.save(sampleMacro(id = 1, name = "Existing"))!!
+        val result = repository.create(
+            sampleMacro(id = 1, name = "  Farm  LOOP  ").copy(kind = Macro.KIND_WALL)
+        )
+        val created = (result as MacroWriteResult.Saved).macro
+
+        assertTrue(created.id != existing.id)
+        assertEquals("Farm  LOOP", created.name)
+        assertEquals(Macro.KIND_WALL, created.kind)
+        assertEquals("Existing", repository.get(existing.id)?.name)
+        assertEquals(2, repository.load().size)
+    }
+
+    @Test
+    fun createRejectsDuplicateNamesWithoutWriting() = runBlocking {
+        repository.save(sampleMacro(id = 1, name = "One"))
+
+        val result = repository.create(sampleMacro(id = 2, name = " one "))
+
+        assertTrue(result is MacroWriteResult.Rejected)
+        assertEquals(1, repository.load().size)
+        assertNull(repository.get(2))
+    }
+
+    @Test
+    fun createRejectsBlankAndOverlongNamesWithoutWriting() = runBlocking {
+        assertTrue(repository.create(sampleMacro(name = "   ")) is MacroWriteResult.Rejected)
+        assertTrue(
+            repository.create(sampleMacro(name = "x".repeat(41))) is MacroWriteResult.Rejected
+        )
+        assertEquals(0, repository.load().size)
+    }
+
+    @Test
+    fun createRejectsARecordingWithoutActions() = runBlocking {
+        val result = repository.create(sampleMacro().copy(gestures = emptyList()))
+        assertTrue(result is MacroWriteResult.Rejected)
+        assertEquals(0, repository.load().size)
+    }
+
+    @Test
+    fun concurrentCreatesAllocateUniqueIdsAndPersistEveryRecording() = runBlocking {
+        val results = (1..8).map { index ->
+            async { repository.create(sampleMacro(id = 1, name = "Macro $index")) }
+        }.awaitAll()
+
+        val saved = results.map {
+            assertTrue(it is MacroWriteResult.Saved)
+            (it as MacroWriteResult.Saved).macro
+        }
+        assertEquals(8, saved.map { it.id }.toSet().size)
+        assertEquals(8, repository.load().size)
+    }
+
+    @Test
     fun zeroSpeedIsResetToDefault() = runBlocking {
         val saved = repository.save(sampleMacro(speed = 0f))
         assertEquals(1f, saved?.speedMultiplier ?: 0f, 0.0001f)
@@ -67,16 +126,83 @@ class MacroRepositoryTest {
         val first = repository.save(sampleMacro(id = 1, name = "One"))!!
         repository.save(sampleMacro(id = 2, name = "Two"))
 
-        val renamed = repository.rename(first.id, "Renamed")
-        assertEquals("Renamed", renamed?.name)
+        val renamed = repository.rename(first.id, "Renamed") as MacroWriteResult.Saved
+        assertEquals("Renamed", renamed.macro.name)
+        assertEquals(first.id, renamed.macro.id)
+        assertEquals(first.gestures, renamed.macro.gestures)
         assertEquals("Two", repository.get(2)?.name)
     }
 
     @Test
     fun renameRejectsBlankName() = runBlocking {
         val saved = repository.save(sampleMacro())!!
-        assertNull(repository.rename(saved.id, "   "))
+        assertTrue(repository.rename(saved.id, "   ") is MacroWriteResult.Rejected)
         assertEquals("Test macro", repository.get(saved.id)?.name)
+    }
+
+    @Test
+    fun renameRejectsDuplicateAndOverlongNames() = runBlocking {
+        repository.save(sampleMacro(id = 1, name = "One"))
+        val second = repository.save(sampleMacro(id = 2, name = "Two"))!!
+
+        assertTrue(repository.rename(second.id, " ONE ") is MacroWriteResult.Rejected)
+        assertTrue(
+            repository.rename(second.id, "x".repeat(41)) is MacroWriteResult.Rejected
+        )
+        assertEquals("Two", repository.get(second.id)?.name)
+    }
+
+    @Test
+    fun renameAllowsTheSameMacroToKeepItsName() = runBlocking {
+        val saved = repository.save(sampleMacro(name = "Farm Loop"))!!
+        val result = repository.rename(saved.id, " farm loop ")
+        assertEquals("farm loop", (result as MacroWriteResult.Saved).macro.name)
+    }
+
+    @Test
+    fun renameRejectsAMissingMacro() = runBlocking {
+        assertTrue(repository.rename(999, "Ghost") is MacroWriteResult.Rejected)
+        assertEquals(0, repository.load().size)
+    }
+
+    @Test
+    fun settingsUpdatePreservesIdentityActionsAndStats() = runBlocking {
+        val source = repository.save(sampleMacro(name = "Original"))!!
+        val candidate = source.copy(
+            name = "Renamed",
+            gestures = emptyList(),
+            createdAt = 999L,
+            kind = Macro.KIND_WALL,
+            playCount = 99,
+            speedMultiplier = 2f,
+            repeatMode = "3"
+        )
+
+        val updated = (repository.updateSettings(candidate) as MacroWriteResult.Saved).macro
+
+        assertEquals(source.id, updated.id)
+        assertEquals(source.createdAt, updated.createdAt)
+        assertEquals(source.gestures, updated.gestures)
+        assertEquals(source.kind, updated.kind)
+        assertEquals(source.playCount, updated.playCount)
+        assertEquals("Renamed", updated.name)
+        assertEquals(2f, updated.speedMultiplier)
+        assertEquals("3", updated.repeatMode)
+    }
+
+    @Test
+    fun settingsUpdateRejectsDuplicateNamesAndMissingWallLinks() = runBlocking {
+        repository.save(sampleMacro(id = 1, name = "One"))
+        val second = repository.save(sampleMacro(id = 2, name = "Two"))!!
+
+        assertTrue(
+            repository.updateSettings(second.copy(name = " one ")) is MacroWriteResult.Rejected
+        )
+        assertTrue(
+            repository.updateSettings(second.copy(linkedWallMacroId = 999)) is MacroWriteResult.Rejected
+        )
+        assertEquals("Two", repository.get(second.id)?.name)
+        assertEquals(-1L, repository.get(second.id)?.linkedWallMacroId)
     }
 
     @Test
@@ -87,6 +213,38 @@ class MacroRepositoryTest {
         assertTrue(repository.delete(first.id))
         assertNull(repository.get(first.id))
         assertNotNull(repository.get(2))
+    }
+
+    @Test
+    fun deletingAWallMacroClearsLinksSoAttackMacrosStayEditable() = runBlocking {
+        repository.save(sampleMacro(id = 10, name = "Wall").copy(kind = Macro.KIND_WALL))
+        repository.save(sampleMacro(id = 1, name = "Attack").copy(linkedWallMacroId = 10L))
+        assertEquals(10L, repository.get(1L)?.linkedWallMacroId)
+
+        assertTrue(repository.delete(10L))
+
+        assertEquals(-1L, repository.get(1L)?.linkedWallMacroId)
+        // A dangling link used to make updateSettings reject every edit, so the
+        // attack macro could not even be renamed after its wall macro was gone.
+        val renamed = repository.updateSettings(repository.get(1L)!!.copy(name = "Renamed"))
+        assertTrue(renamed is MacroWriteResult.Saved)
+        assertEquals(-1L, MacroRepository(file).load().first { it.id == 1L }.linkedWallMacroId)
+    }
+
+    @Test
+    fun deleteManyClearsLinksToEveryRemovedWallMacroOnly() = runBlocking {
+        repository.save(sampleMacro(id = 10, name = "Wall A").copy(kind = Macro.KIND_WALL))
+        repository.save(sampleMacro(id = 11, name = "Wall B").copy(kind = Macro.KIND_WALL))
+        repository.save(sampleMacro(id = 1, name = "Attack A").copy(linkedWallMacroId = 10L))
+        repository.save(sampleMacro(id = 2, name = "Attack B").copy(linkedWallMacroId = 11L))
+        repository.save(sampleMacro(id = 3, name = "Attack C").copy(linkedWallMacroId = 99L))
+
+        repository.deleteMany(setOf(10L, 11L))
+
+        assertEquals(-1L, repository.get(1L)?.linkedWallMacroId)
+        assertEquals(-1L, repository.get(2L)?.linkedWallMacroId)
+        // A link to a macro that was not part of this delete is left untouched.
+        assertEquals(99L, repository.get(3L)?.linkedWallMacroId)
     }
 
     @Test
@@ -172,6 +330,20 @@ class MacroRepositoryTest {
         assertEquals(0, repository.load().size)
         val quarantined = directory.listFiles()?.any { it.name.contains("corrupt") } ?: false
         assertTrue(quarantined)
+    }
+
+    @Test
+    fun unreadableFileIsQuarantinedNotSilentlyEmptied() = runBlocking {
+        // A directory at the macro path exists but cannot be read as text: this is the
+        // read-failure branch, distinct from the corrupt-JSON branch above. The original
+        // must be preserved aside so a later read-modify-write cannot clobber irreplaceable
+        // macros by treating an unreadable file as an empty library.
+        assertTrue(file.mkdir())
+
+        assertEquals(0, repository.load().size)
+        assertFalse("the unreadable file was left in place to be overwritten", file.exists())
+        val quarantined = directory.listFiles()?.any { it.name.contains("corrupt") } ?: false
+        assertTrue("the unreadable file was not preserved", quarantined)
     }
 
     @Test

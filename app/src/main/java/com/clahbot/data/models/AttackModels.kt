@@ -51,9 +51,27 @@ data class AttackRecord(
     val hasBonus: Boolean get() = bonusGold != null || bonusElixir != null || bonusDarkElixir != null
     val needsReview: Boolean get() = reviewReason != null
 
+    /** The one definition of a readable results screen: the optional dark and
+     * bonus panels are not required, so neither UI nor OCR may invent one. */
+    val hasMainLoot: Boolean get() = gold != null && elixir != null
+
     /** The single definition used by badges, banners, totals and re-scan. */
     val needsReviewDefinition: Boolean
         get() = confirmed && (needsReview || !complete || bonusState == BONUS_NOT_CAPTURED)
+
+    /**
+     * Why the badge is on, spelled out from the state rather than stored twice.
+     * A flag with no reason is a bug the user cannot act on, so the surfaces
+     * that show it must never have to invent a sentence.
+     */
+    val reviewExplanation: String?
+        get() = when {
+            !needsReviewDefinition -> null
+            reviewReason != null -> reviewReason
+            bonusState == BONUS_NOT_CAPTURED -> "The bonus panel appeared but was never captured."
+            !complete -> "Gold or elixir could not be read from the result screen."
+            else -> null
+        }
 
     companion object {
         const val LOOT_NONE = "none"

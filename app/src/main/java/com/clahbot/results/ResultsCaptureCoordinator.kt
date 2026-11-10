@@ -155,9 +155,14 @@ class ResultsCaptureCoordinator(
         baselineJob?.cancel()
         baselineJob = null
         current = null
+        // Safe off-main: the effect flag only writes views when it turns on.
         onEpisodeActive(false)
         gate.releaseHold()
         if (hadSession) event("watch cancelled id=${cancelledId ?: "-"}")
+    }
+
+    private suspend fun emitEpisode(active: Boolean) {
+        EpisodeEffectsBridge(Dispatchers.Main, onEpisodeActive).setActive(active)
     }
 
     private suspend fun watch(state: SessionState) {
@@ -284,7 +289,8 @@ class ResultsCaptureCoordinator(
                 }
 
                 gate.requestHold()
-                onEpisodeActive(true)
+                // Overlay views are main-thread only; the poll loop runs on Default.
+                emitEpisode(true)
                 gate.notePoll(pollStartedAt, true, null)
                 event(
                     "results detected; episode start; frame=${bitmap.width}x${bitmap.height}; " +
@@ -317,7 +323,7 @@ class ResultsCaptureCoordinator(
                 }
                 // No capture and no OCR while the recorded screen is still up.
                 delay(RECORD_COOLDOWN_MS)
-                onEpisodeActive(false)
+                emitEpisode(false)
             }
             event(
                 "watch ended reason=$endReason polls=$poll records=${state.records} " +

@@ -161,6 +161,7 @@ fun AcGameCard(
     gameStatus: String,
     gameIcon: ImageBitmap?,
     session: GameSession?,
+    sessionAttacks: List<AttackRecord>,
     now: () -> Long,
     onLaunch: () -> Unit
 ) {
@@ -230,9 +231,12 @@ fun AcGameCard(
                 Box(Modifier.size(7.dp).clip(CircleShape).background(statusColor))
                 Spacer(Modifier.width(7.dp))
                 Text(
+                    // Counted from the live records, the same list the session box
+                    // below renders: the persisted counter can lag a save and then
+                    // the header and the list disagree about how many attacks ran.
                     "Session $statusLabel · " +
                         acSpan((session.endedAt ?: now()) - session.startedAt) +
-                        " · ${Plural.attacks(session.attackCount)}",
+                        " · ${Plural.attacks(sessionAttacks.count { it.confirmed })}",
                     fontSize = 12.sp,
                     color = Muted
                 )
@@ -896,7 +900,7 @@ fun AcStatisticsSection(
     }
     if (unreadable > 0 && bannerDismissed) {
         Text(
-            Plural.needReview(unreadable) + " — excluded from totals",
+            Plural.needReview(unreadable) + " — loot read so far is counted",
             fontSize = 11.sp,
             color = Warn,
             modifier = Modifier.padding(top = 6.dp)

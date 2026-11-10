@@ -43,7 +43,8 @@ data class AppSettings(
     val playingEffect: TouchEffectConfig = TouchEffectConfig(),
     val hapticIntensity: String = "medium",
     val saveResultsScreenshots: Boolean = false,
-    val theme: ThemeMode = ThemeMode.DARK
+    val theme: ThemeMode = ThemeMode.DARK,
+    val wallsCardExpanded: Boolean = false
 )
 
 /**
@@ -89,7 +90,8 @@ class SettingsStore private constructor(private val prefs: SharedPreferences) {
             playingEffect = readEffect("play"),
             hapticIntensity = prefs.getString(KEY_HAPTIC_INTENSITY, "medium") ?: "medium",
             saveResultsScreenshots = prefs.getBoolean(KEY_SAVE_RESULTS, false),
-            theme = runCatching { ThemeMode.valueOf(themeName) }.getOrDefault(ThemeMode.DARK)
+            theme = runCatching { ThemeMode.valueOf(themeName) }.getOrDefault(ThemeMode.DARK),
+            wallsCardExpanded = prefs.getBoolean(KEY_WALLS_EXPANDED, false)
         )
     }
 
@@ -122,6 +124,7 @@ class SettingsStore private constructor(private val prefs: SharedPreferences) {
             .putString(KEY_HAPTIC_INTENSITY, normalized.hapticIntensity)
             .putBoolean(KEY_SAVE_RESULTS, normalized.saveResultsScreenshots)
             .putString(KEY_THEME, normalized.theme.name)
+            .putBoolean(KEY_WALLS_EXPANDED, normalized.wallsCardExpanded)
             .apply()
         writeEffect("rec", normalized.recordingEffect)
         writeEffect("play", normalized.playingEffect)
@@ -188,6 +191,7 @@ class SettingsStore private constructor(private val prefs: SharedPreferences) {
         private const val KEY_EFFECT_TRAIL = "touch_effect_trail_"
         private const val KEY_SAVE_RESULTS = "save_results_screenshots"
         private const val KEY_THEME = "theme"
+        private const val KEY_WALLS_EXPANDED = "walls_card_expanded"
 
         @Volatile
         private var instance: SettingsStore? = null

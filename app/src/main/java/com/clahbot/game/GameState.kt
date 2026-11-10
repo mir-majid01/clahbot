@@ -5,6 +5,14 @@ import com.clahbot.ocr.OcrBox
 /** Coarse game screen classes the watchdog and the wall upgrader act on. */
 enum class GameState {
     HOME,
+
+    /**
+     * The village with the build/upgrade side panel or an item's upgrade dialog
+     * open. This is where a wall upgrade legitimately happens, so it is neither
+     * a popup to close nor an unsafe screen — but it is not the plain village
+     * either, because the counters move while the panel is up.
+     */
+    UPGRADE_PANEL,
     ATTACK_MENU,
     SEARCHING,
     BATTLE,
@@ -39,7 +47,14 @@ data class TextLine(
 }
 
 /** A detected screen element in captured-frame pixels. */
-data class ScreenBox(val left: Int, val top: Int, val right: Int, val bottom: Int) {
+data class ScreenBox(
+    val left: Int,
+    val top: Int,
+    val right: Int,
+    val bottom: Int,
+    /** What produced the box (`gem`, `ring`, `caption:<word>`); used for refusal diagnostics. */
+    val kind: String = ""
+) {
     val width: Int get() = (right - left).coerceAtLeast(1)
     val height: Int get() = (bottom - top).coerceAtLeast(1)
     val centerX: Int get() = (left + right) / 2
@@ -54,7 +69,8 @@ data class ScreenBox(val left: Int, val top: Int, val right: Int, val bottom: In
         left = (left - marginX).coerceAtLeast(0),
         top = (top - marginY).coerceAtLeast(0),
         right = (right + marginX).coerceAtMost(frameW),
-        bottom = (bottom + marginY).coerceAtMost(frameH)
+        bottom = (bottom + marginY).coerceAtMost(frameH),
+        kind = kind
     )
 
     companion object {

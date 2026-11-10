@@ -1,5 +1,7 @@
 package com.clahbot.walls
 
+import com.google.gson.annotations.SerializedName
+
 /** Which resource the wall upgrade should come from. */
 enum class WallResourceMode {
     GOLD,
@@ -37,15 +39,15 @@ enum class WallTrigger {
  * actually measured, so the spent amounts are derived, never guessed.
  */
 data class WallRunLog(
-    val at: Long,
-    val macroName: String,
-    val resource: WallTrigger,
-    val goldBefore: Long?,
-    val goldAfter: Long?,
-    val elixirBefore: Long?,
-    val elixirAfter: Long?,
-    val status: String,
-    val detail: String = ""
+    @SerializedName("at") val at: Long,
+    @SerializedName("macroName") val macroName: String,
+    @SerializedName("resource") val resource: WallTrigger,
+    @SerializedName("goldBefore") val goldBefore: Long?,
+    @SerializedName("goldAfter") val goldAfter: Long?,
+    @SerializedName("elixirBefore") val elixirBefore: Long?,
+    @SerializedName("elixirAfter") val elixirAfter: Long?,
+    @SerializedName("status") val status: String,
+    @SerializedName("detail") val detail: String = ""
 ) {
     val spentGold: Long?
         get() = if (goldBefore != null && goldAfter != null && goldAfter <= goldBefore) {
@@ -67,26 +69,42 @@ data class WallRunLog(
  * walls cost the same in both resources, and the reserve is optional.
  */
 data class WallSettings(
-    val enabled: Boolean = false,
-    val wallMacroId: Long = -1L,
-    val resourceMode: WallResourceMode = WallResourceMode.BOTH,
-    val priority: WallPriority = WallPriority.GOLD_FIRST,
-    val costPerWall: Long = 0L,
-    val minReserve: Long = 0L,
+    @SerializedName("enabled") val enabled: Boolean = false,
+    @SerializedName("wallMacroId") val wallMacroId: Long = -1L,
+    @SerializedName("resourceMode") val resourceMode: WallResourceMode = WallResourceMode.BOTH,
+    @SerializedName("priority") val priority: WallPriority = WallPriority.GOLD_FIRST,
+    @SerializedName("costPerWall") val costPerWall: Long = 0L,
+    @SerializedName("minReserve") val minReserve: Long = 0L,
     /** Upgrade again on the same home visit when another upgrade is verified. */
-    val allowRepeatUpgrades: Boolean = false,
+    @SerializedName("allowRepeatUpgrades") val allowRepeatUpgrades: Boolean = false,
     /**
      * The wall macro the user last played to the end with Run now. A freshly
      * recorded macro is never run automatically until it appears here.
      */
-    val testedWallMacroId: Long = -1L,
-    val history: List<WallRunLog> = emptyList()
+    @SerializedName("testedWallMacroId") val testedWallMacroId: Long = -1L,
+    @SerializedName("history") val history: List<WallRunLog> = emptyList()
 ) {
     fun cost(): Long = costPerWall.coerceAtLeast(0L)
 
     fun reserve(): Long = minReserve.coerceAtLeast(0L)
 
     fun isTested(macroId: Long): Boolean = testedWallMacroId == macroId
+
+    /**
+     * Drops a selection whose wall macro no longer exists, so a deleted macro
+     * never stays "selected" against a missing id. The switch and the rest of
+     * the configuration are left alone: losing a macro is not a reason to turn
+     * Auto Walls off or forget the cost the user typed.
+     */
+    fun reconciled(availableWallMacroIds: Set<Long>): WallSettings {
+        val macroId =
+            if (wallMacroId > 0L && wallMacroId !in availableWallMacroIds) -1L else wallMacroId
+        val testedId =
+            if (testedWallMacroId > 0L && testedWallMacroId !in availableWallMacroIds) -1L
+            else testedWallMacroId
+        return if (macroId == wallMacroId && testedId == testedWallMacroId) this
+        else copy(wallMacroId = macroId, testedWallMacroId = testedId)
+    }
 
     /** One status line shared by the controller tab and the dashboard card. */
     fun summary(macroName: String?): String = when {

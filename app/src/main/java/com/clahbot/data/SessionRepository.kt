@@ -238,12 +238,20 @@ class SessionRepository(private val file: File) {
         val text = try {
             file.readText()
         } catch (_: Exception) {
+            // Preserve the unreadable original aside before treating sessions as empty, so a
+            // later write cannot clobber session history.
+            quarantine()
             return emptyList()
         }
         if (text.isBlank()) return emptyList()
-        val parsed: SessionFile = try {
-            gson.fromJson(text, SessionFile::class.java) ?: return emptyList()
+        val parsed: SessionFile? = try {
+            gson.fromJson(text, SessionFile::class.java)
         } catch (_: RuntimeException) {
+            quarantine()
+            return emptyList()
+        }
+        if (parsed == null) {
+            quarantine()
             return emptyList()
         }
         return parsed.sessions.orEmpty()
@@ -275,6 +283,14 @@ class SessionRepository(private val file: File) {
         } catch (e: Exception) {
             temp.delete()
             throw e
+        }
+    }
+
+    private fun quarantine() {
+        try {
+            file.renameTo(File(file.parentFile, "${file.name}.corrupt-${System.currentTimeMillis()}"))
+        } catch (_: Exception) {
+            // An unreadable file is treated as empty.
         }
     }
 

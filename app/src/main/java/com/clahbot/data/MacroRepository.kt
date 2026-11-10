@@ -15,6 +15,13 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
+
+sealed interface MacroWriteResult {
+    data class Saved(val macro: Macro) : MacroWriteResult
+    data class Rejected(val message: String) : MacroWriteResult
+}
 
 /**
  * Versioned JSON store for macros and the single authoritative macro list.
@@ -55,6 +62,57 @@ class MacroRepository(private val file: File) {
             writeLocked(all)
             publish(all)
             sanitized
+        }
+    }
+
+    suspend fun create(macro: Macro): MacroWriteResult = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            val all = readLocked()
+            MacroNaming.validationError(macro.name, all.map { it.name })?.let {
+                return@withLock MacroWriteResult.Rejected(it)
+            }
+            val sanitized = sanitizeMacro(macro.copy(id = nextId(all), name = macro.name.trim()))
+                ?: return@withLock MacroWriteResult.Rejected("This recording has no actions to save")
+            val updated = all + sanitized
+            writeLocked(updated)
+            publish(updated)
+            MacroWriteResult.Saved(sanitized)
+        }
+    }
+
+    suspend fun updateSettings(candidate: Macro): MacroWriteResult = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            val all = readLocked()
+            val index = all.indexOfFirst { it.id == candidate.id }
+            if (index < 0) return@withLock MacroWriteResult.Rejected("This macro no longer exists")
+            val current = all[index]
+            val otherNames = all.filterIndexed { i, _ -> i != index }.map { it.name }
+            MacroNaming.validationError(candidate.name, otherNames)?.let {
+                return@withLock MacroWriteResult.Rejected(it)
+            }
+            val linked = candidate.linkedWallMacroId
+            if (linked > 0 && all.none { it.id == linked && it.kind == Macro.KIND_WALL }) {
+                return@withLock MacroWriteResult.Rejected("The selected wall macro no longer exists")
+            }
+            val updated = current.copy(
+                name = candidate.name.trim(),
+                speedMultiplier = candidate.speedMultiplier,
+                repeatMode = candidate.repeatMode,
+                repeatDelayMs = candidate.repeatDelayMs,
+                startCountdownMs = candidate.startCountdownMs,
+                stopOnBackground = candidate.stopOnBackground,
+                stopAfterMinutes = candidate.stopAfterMinutes,
+                stopAfterAttacks = candidate.stopAfterAttacks,
+                pinned = candidate.pinned,
+                linkedWallMacroId = if (linked > 0) linked else -1L
+            )
+            val sanitized = sanitizeMacro(updated)
+                ?: return@withLock MacroWriteResult.Rejected("This macro has no actions to save")
+            val next = all.toMutableList()
+            next[index] = sanitized
+            writeLocked(next)
+            publish(next)
+            MacroWriteResult.Saved(sanitized)
         }
     }
 
@@ -115,8 +173,9 @@ class MacroRepository(private val file: File) {
             val all = readLocked().toMutableList()
             val removed = all.removeAll { it.id == id }
             if (removed) {
-                writeLocked(all)
-                publish(all)
+                val cleaned = withoutLinksTo(all, setOf(id))
+                writeLocked(cleaned)
+                publish(cleaned)
             }
             removed
         }
@@ -130,11 +189,23 @@ class MacroRepository(private val file: File) {
             val removed = all.filter { it.id in ids }
             if (removed.isEmpty()) return@withLock emptyList()
             all.removeAll { it.id in ids }
-            writeLocked(all)
-            publish(all)
+            val cleaned = withoutLinksTo(all, ids)
+            writeLocked(cleaned)
+            publish(cleaned)
             removed
         }
     }
+
+    /**
+     * A deleted wall macro must not leave a dangling link behind: updateSettings
+     * rejects every edit to a macro whose link points at a missing wall macro,
+     * so survivors would become un-renameable. Clearing the link in the same
+     * write keeps the library consistent no matter which surface deleted it.
+     */
+    private fun withoutLinksTo(macros: List<Macro>, removedIds: Set<Long>): List<Macro> =
+        macros.map {
+            if (it.linkedWallMacroId in removedIds) it.copy(linkedWallMacroId = -1L) else it
+        }
 
     /**
      * Writes the current library to a timestamped file before a bulk delete.
@@ -184,18 +255,21 @@ class MacroRepository(private val file: File) {
         }
     }
 
-    suspend fun rename(id: Long, name: String): Macro? = withContext(Dispatchers.IO) {
+    suspend fun rename(id: Long, name: String): MacroWriteResult = withContext(Dispatchers.IO) {
         mutex.withLock {
-            val trimmed = name.trim()
-            if (trimmed.isEmpty()) return@withLock null
-            val all = readLocked().toMutableList()
+            val all = readLocked()
             val index = all.indexOfFirst { it.id == id }
-            if (index < 0) return@withLock null
-            val updated = all[index].copy(name = trimmed)
-            all[index] = updated
-            writeLocked(all)
-            publish(all)
-            updated
+            if (index < 0) return@withLock MacroWriteResult.Rejected("This macro no longer exists")
+            val otherNames = all.filterIndexed { i, _ -> i != index }.map { it.name }
+            MacroNaming.validationError(name, otherNames)?.let {
+                return@withLock MacroWriteResult.Rejected(it)
+            }
+            val updated = all[index].copy(name = name.trim())
+            val next = all.toMutableList()
+            next[index] = updated
+            writeLocked(next)
+            publish(next)
+            MacroWriteResult.Saved(updated)
         }
     }
 
@@ -229,6 +303,9 @@ class MacroRepository(private val file: File) {
         val text = try {
             file.readText()
         } catch (_: Exception) {
+            // Preserve the unreadable original aside before treating the library as empty,
+            // so a later read-modify-write cannot clobber irreplaceable macros.
+            quarantine()
             return emptyList()
         }
         if (text.isBlank()) return emptyList()
@@ -254,18 +331,19 @@ class MacroRepository(private val file: File) {
             macros = macros.sortedByDescending { it.createdAt }
         )
         val text = gson.toJson(envelope)
-        val parent = file.parentFile
-        parent?.mkdirs()
-        val temp = File(parent, "${file.name}.tmp")
+        val parent = file.parentFile ?: error("Macro file has no parent directory")
+        parent.mkdirs()
+        val temp = File.createTempFile("${file.name}.", ".tmp", parent)
         try {
             temp.writeText(text)
-            if (!temp.renameTo(file)) {
-                file.writeText(text)
-                temp.delete()
-            }
-        } catch (e: Exception) {
+            Files.move(
+                temp.toPath(),
+                file.toPath(),
+                StandardCopyOption.ATOMIC_MOVE,
+                StandardCopyOption.REPLACE_EXISTING
+            )
+        } finally {
             temp.delete()
-            throw e
         }
     }
 
