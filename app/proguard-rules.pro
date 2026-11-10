@@ -7,6 +7,10 @@
 # and Auto Walls turned itself off. Keep the field names of both packages.
 -keep class com.clahbot.walls.** { *; }
 -keep class com.clahbot.recovery.** { *; }
+# Image triggers are a Gson schema too. Without this keep, R8 renamed the
+# ImageTrigger fields, Gson could not rebuild the List<ImageTrigger> (it fell
+# back to LinkedTreeMap), and the dashboard crashed casting it back on scroll.
+-keep class com.clahbot.triggers.** { *; }
 -keep class com.clahbot.data.AttackRepository$AttackFile { *; }
 -keep class com.clahbot.data.MacroRepository$MacroFile { *; }
 -keep class com.clahbot.data.SessionRepository$SessionFile { *; }

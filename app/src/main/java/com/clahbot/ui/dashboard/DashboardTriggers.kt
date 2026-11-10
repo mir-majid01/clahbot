@@ -112,32 +112,31 @@ private fun TriggerRow(
     onEdit: (ImageTrigger) -> Unit,
     onDelete: (ImageTrigger) -> Unit
 ) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .padding(vertical = 5.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Column(Modifier.weight(1f)) {
-            Text(trigger.name, fontSize = 12.5.sp, color = Color(Ds.TEXT))
-            Text(
-                trigger.lastResult ?: "never matched · ${trigger.action.type.name.lowercase().replace('_', ' ')}",
-                fontSize = 10.sp,
-                color = if (trigger.lastResult?.startsWith("refused") == true) Color(Ds.WARN) else Color(Ds.MUTED)
-            )
+    Column(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(trigger.name, fontSize = 12.5.sp, color = Color(Ds.TEXT))
+                Text(
+                    trigger.lastResult ?: "never matched · ${trigger.action.type.name.lowercase().replace('_', ' ')}",
+                    fontSize = 10.sp,
+                    color = if (trigger.lastResult?.startsWith("refused") == true) Color(Ds.WARN) else Color(Ds.MUTED)
+                )
+            }
+            Switch(checked = trigger.enabled, onCheckedChange = { onToggle(trigger, it) })
+            TextButton(onClick = { onDelete(trigger) }) {
+                Text("×", fontSize = 15.sp, color = Color(Ds.DANGER_TEXT))
+            }
         }
-        TextButton(onClick = { onPriority(trigger, trigger.priority + 1) }) {
-            Text("▲", fontSize = 12.sp, color = Color(Ds.LINK))
-        }
-        TextButton(onClick = { onPriority(trigger, trigger.priority - 1) }) {
-            Text("▼", fontSize = 12.sp, color = Color(Ds.LINK))
-        }
-        TextButton(onClick = { onEdit(trigger) }) {
-            Text("Edit", fontSize = 11.5.sp, color = Color(Ds.LINK))
-        }
-        Switch(checked = trigger.enabled, onCheckedChange = { onToggle(trigger, it) })
-        TextButton(onClick = { onDelete(trigger) }) {
-            Text("×", fontSize = 15.sp, color = Color(Ds.DANGER_TEXT))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = { onPriority(trigger, trigger.priority + 1) }) {
+                Text("▲ priority", fontSize = 11.sp, color = Color(Ds.LINK))
+            }
+            TextButton(onClick = { onPriority(trigger, trigger.priority - 1) }) {
+                Text("▼", fontSize = 11.sp, color = Color(Ds.LINK))
+            }
+            TextButton(onClick = { onEdit(trigger) }) {
+                Text("Edit", fontSize = 11.sp, color = Color(Ds.LINK))
+            }
         }
     }
 }
