@@ -6165,12 +6165,24 @@ class FloatingMenuService : Service() {
 
     private fun startRecoveryWatchdog(target: MacroPlayer) {
         recoveryWatchdog?.stop()
+        val triggerRepository = com.clahbot.triggers.TriggerRepository.get(this)
+        val triggerRuntime = com.clahbot.triggers.TriggerRuntime(
+            repository = triggerRepository,
+            stopAutomation = { target.stop() }
+        )
         val watchdog = RecoveryWatchdog(
             scope = scope,
             context = this,
             engine = gameEngine,
             reader = resultsReader,
-            captureBusy = { resultGate.isHeld() }
+            captureBusy = { resultGate.isHeld() },
+            onTriggerTick = { reading ->
+                triggerRuntime.evaluateAndRun(
+                    frame = reading.frame,
+                    observation = reading.observation,
+                    playerRunning = target.isRunning()
+                )
+            }
         ) { reason -> abortPlaybackAfterRecovery(reason) }
         recoveryWatchdog = watchdog
         watchdog.start(target)

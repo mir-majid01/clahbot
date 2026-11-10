@@ -163,6 +163,8 @@ class RecoveryWatchdog(
     reader: AppResultsReader,
     /** True while a results episode is reading: the watcher must not queue behind it. */
     private val captureBusy: () -> Boolean = { false },
+    /** Runs every tick; image triggers evaluate here. Null means no trigger work. */
+    private val onTriggerTick: (suspend (RecoveryAgent.Reading) -> Unit)? = null,
     private val onPlaybackAborted: (reason: String) -> Unit = {}
 ) {
 
@@ -268,6 +270,14 @@ class RecoveryWatchdog(
             }
             GameState.UNKNOWN -> onUnknown(reading, now)
             else -> Unit
+        }
+
+        if (onTriggerTick != null) {
+            try {
+                onTriggerTick.invoke(reading)
+            } catch (error: Exception) {
+                AppEventLog.log("trigger tick failed: ${error.message}")
+            }
         }
 
         checkFrozen(reading, now)

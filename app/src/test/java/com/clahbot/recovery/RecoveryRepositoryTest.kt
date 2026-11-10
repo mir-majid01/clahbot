@@ -1,10 +1,12 @@
 package com.clahbot.recovery
 
+import com.clahbot.game.GameState
 import java.io.File
 import java.nio.file.Files
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -73,5 +75,79 @@ class RecoveryRepositoryTest {
         assertEquals(0, repository.state.value.stats.recovered)
         val quarantined = directory.listFiles()?.any { it.name.contains("corrupt") } ?: false
         assertTrue("the corrupt recovery file was not preserved", quarantined)
+    }
+
+    @Test
+    fun `rule scope, expected state and wait flag survive a save and reload`() {
+        val repository = repository()
+        repository.saveRule(
+            RecoveryRule(
+                id = "taught_searching",
+                name = "Searching",
+                action = RecoveryActionType.WAIT,
+                expectedState = GameState.SEARCHING,
+                scope = RuleScope.ATTACK,
+                waitForTransition = true,
+                purpose = "Wait for an enemy village"
+            )
+        )
+
+        val reloaded = repository()
+        reloaded.refresh()
+        val rule = reloaded.userRules().single()
+        assertEquals(GameState.SEARCHING, rule.expectedState)
+        assertEquals(RuleScope.ATTACK, rule.appliesTo)
+        assertTrue(rule.waitForTransition)
+        assertEquals("Wait for an enemy village", rule.purpose)
+        assertTrue(rule.isEnabled)
+    }
+
+    @Test
+    fun `disabling then deleting a rule persists`() {
+        val repository = repository()
+        repository.saveRule(
+            RecoveryRule(id = "taught1", name = "Taught", action = RecoveryActionType.WAIT)
+        )
+        repository.setRuleEnabled("taught1", false)
+
+        val disabled = repository()
+        disabled.refresh()
+        assertFalse(disabled.userRules().single().isEnabled)
+
+        disabled.deleteRule("taught1")
+        val erased = repository()
+        erased.refresh()
+        assertTrue(erased.userRules().isEmpty())
+    }
+
+    @Test
+    fun `recording a match updates the last time and count`() {
+        val repository = repository()
+        repository.saveRule(
+            RecoveryRule(id = "taught1", name = "Taught", action = RecoveryActionType.WAIT)
+        )
+        repository.noteRuleMatch("taught1", at = 1234L)
+
+        val reloaded = repository()
+        reloaded.refresh()
+        val rule = reloaded.userRules().single()
+        assertEquals(1234L, rule.lastMatchedAt)
+        assertEquals(1, rule.matchCount)
+    }
+
+    @Test
+    fun `an older rule file without the new fields loads with defaults`() {
+        file.writeText(
+            """{"stats":{"recovered":0,"stopped":0,"unknown":0},"rules":[{"id":"taught1","name":"Taught","action":"TAP_CLOSE_X","matchHash":"abc"}],"unknown":[],"attempts":[]}"""
+        )
+        val repository = repository()
+        repository.refresh()
+        val rule = repository.userRules().single()
+        assertTrue(rule.isEnabled)
+        assertNull(rule.expectedState)
+        assertEquals(RuleScope.BOTH, rule.appliesTo)
+        assertFalse(rule.waitForTransition)
+        assertNull(rule.lastMatchedAt)
+        assertEquals(0, rule.matchCount)
     }
 }

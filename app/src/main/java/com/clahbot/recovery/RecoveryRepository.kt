@@ -162,6 +162,23 @@ class RecoveryRepository internal constructor(
         it.copy(rules = it.rules.filterNot { existing -> existing.id == rule.id } + rule)
     }
 
+    /** Applies an edit to one stored rule, leaving the others untouched. */
+    fun updateRule(id: String, transform: (RecoveryRule) -> RecoveryRule) = update { file ->
+        file.copy(rules = file.rules.map { rule -> if (rule.id == id) transform(rule) else rule })
+    }
+
+    fun setRuleEnabled(id: String, enabled: Boolean) =
+        updateRule(id) { it.copy(enabled = enabled) }
+
+    fun deleteRule(id: String) = update { file ->
+        file.copy(rules = file.rules.filterNot { it.id == id })
+    }
+
+    /** Records a successful recognition so the UI can show when it last ran. */
+    fun noteRuleMatch(id: String, at: Long = System.currentTimeMillis()) = updateRule(id) {
+        it.copy(lastMatchedAt = at, matchCount = it.matchCount + 1)
+    }
+
     fun userRules(): List<RecoveryRule> = mutable.value.rules
 
     fun hashDistanceFrom(bitmap: Bitmap): String = ScreenHash.fromBitmap(bitmap)

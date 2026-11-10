@@ -7,6 +7,9 @@ import com.clahbot.game.ScreenObservation
 
 enum class RecoveryActionType { TAP_TEXT, TAP_CLOSE_X, TAP_POINT, PRESS_BACK, WAIT, GO_HOME }
 
+/** Which automation runs a rule is allowed to act during. */
+enum class RuleScope { ATTACK, WALL, BOTH }
+
 /**
  * One data-driven recovery rule. Built-in rules are code constants; rules the
  * user taught (Unknown screens -> Teach) live in recovery_rules.json and are
@@ -26,10 +29,54 @@ data class RecoveryRule(
     val matchHash: String? = null,
     /** Taught tap point in frame fractions. */
     val tapX: Float? = null,
-    val tapY: Float? = null
+    val tapY: Float? = null,
+    /**
+     * The screen state this rule is expected on. `null` keeps the legacy
+     * popup-only behaviour; a non-null value lets a rule match ordinary
+     * screens such as SEARCHING, not just popups.
+     */
+    val expectedState: GameState? = null,
+    /**
+     * Attack macros, wall macros, or both. `null` means BOTH, so a rule written
+     * before this field existed keeps applying everywhere.
+     */
+    val scope: RuleScope? = null,
+    /**
+     * `null` means enabled. Gson does not apply Kotlin defaults to a field a
+     * stored file omits, so an older rule must not read as disabled just
+     * because the field is absent.
+     */
+    val enabled: Boolean? = null,
+    /** WAIT: keep waiting until the screen changes rather than acting once. */
+    val waitForTransition: Boolean = false,
+    /** Plain-language description of what the screen represents. */
+    val purpose: String? = null,
+    /** Last time this rule matched, epoch ms; null until it first matches. */
+    val lastMatchedAt: Long? = null,
+    /** How many times this rule has matched. */
+    val matchCount: Int = 0
 ) {
-    fun matches(observation: ScreenObservation, hashDistance: (String) -> Int?): Boolean {
-        if (observation.state != GameState.POPUP) return false
+    /** Scope with the legacy default applied. */
+    val appliesTo: RuleScope get() = scope ?: RuleScope.BOTH
+
+    /** Enabled with the legacy default applied. */
+    val isEnabled: Boolean get() = enabled ?: true
+    fun matches(
+        observation: ScreenObservation,
+        runScope: RuleScope = RuleScope.BOTH,
+        hashDistance: (String) -> Int?
+    ): Boolean {
+        if (!isEnabled) return false
+        val ruleScope = appliesTo
+        if (ruleScope != RuleScope.BOTH && runScope != RuleScope.BOTH && ruleScope != runScope) {
+            return false
+        }
+        val expected = expectedState
+        if (expected != null) {
+            if (observation.state != expected) return false
+        } else if (observation.state != GameState.POPUP) {
+            return false
+        }
         if (matchHash != null) {
             val distance = hashDistance(matchHash) ?: return false
             return distance <= TAUGHT_HASH_MAX_DISTANCE
@@ -67,10 +114,11 @@ object SafeActionFactory {
     data class Attempt(val action: RecoveryAction?, val refusal: String? = null)
 
     fun resolve(observation: ScreenObservation, rule: RecoveryRule): Attempt {
-        if (observation.state != GameState.POPUP) {
+        val isPopup = observation.state == GameState.POPUP
+        if (!isPopup && rule.expectedState == null) {
             return Attempt(null, "not a popup")
         }
-        if (observation.popupKind == PopupKind.GEM_SPEND &&
+        if (isPopup && observation.popupKind == PopupKind.GEM_SPEND &&
             rule.matchHash == null &&
             rule.action != RecoveryActionType.TAP_CLOSE_X
         ) {
@@ -160,6 +208,15 @@ object SafeActionFactory {
 object BuiltInRecoveryRules {
 
     val all: List<RecoveryRule> = listOf(
+        RecoveryRule(
+            id = "searching_wait",
+            name = "Searching for opponents",
+            action = RecoveryActionType.WAIT,
+            expectedState = GameState.SEARCHING,
+            scope = RuleScope.ATTACK,
+            waitForTransition = true,
+            purpose = "Wait for an enemy village instead of acting"
+        ),
         RecoveryRule(
             id = "connection_lost",
             name = "Connection lost",

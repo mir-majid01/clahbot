@@ -332,6 +332,10 @@ fun DashboardScreen(
     val sessions by sessionRepository.sessions.collectAsState()
     val recoveryFile by recoveryRepository.state.collectAsState()
     val wallsFile by wallsRepository.state.collectAsState()
+    val triggerRepository = remember { com.clahbot.triggers.TriggerRepository.get(context) }
+    val triggerFile by triggerRepository.state.collectAsState()
+    var editingTrigger by remember { mutableStateOf<com.clahbot.triggers.ImageTrigger?>(null) }
+    var triggerBitmap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
     val macros by viewModel.macros.collectAsState()
     val attackMacros = remember(macros) { macros.filter { it.kind != Macro.KIND_WALL } }
     val wallMacros = remember(macros) { macros.filter { it.kind == Macro.KIND_WALL } }
@@ -443,6 +447,37 @@ fun DashboardScreen(
                 }.getOrNull()?.let { loaded[entry.id] = it }
             }
             loaded
+        }
+    }
+
+    val triggerPickLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            scope.launch {
+                val bmp = withContext(Dispatchers.IO) {
+                    runCatching {
+                        context.contentResolver.openInputStream(uri)?.use { input ->
+                            android.graphics.BitmapFactory.decodeStream(input)
+                        }
+                    }.getOrNull()
+                }
+                if (bmp != null) {
+                    triggerBitmap = bmp
+                    editingTrigger = null
+                } else {
+                    Toast.makeText(context, "Could not read that image", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    LaunchedEffect(editingTrigger?.id) {
+        val trigger = editingTrigger ?: return@LaunchedEffect
+        triggerBitmap = withContext(Dispatchers.IO) {
+            runCatching {
+                android.graphics.BitmapFactory.decodeFile(triggerRepository.imageFile(trigger).absolutePath)
+            }.getOrNull()
         }
     }
 
@@ -772,6 +807,16 @@ fun DashboardScreen(
                 )
             }
             item {
+                com.clahbot.ui.dashboard.AcImageTriggersCard(
+                    triggers = triggerFile.triggers,
+                    onAdd = { triggerPickLauncher.launch(arrayOf("image/*")) },
+                    onToggle = { trigger, on -> triggerRepository.setEnabled(trigger.id, on) },
+                    onPriority = { trigger, value -> triggerRepository.setPriority(trigger.id, value) },
+                    onEdit = { editingTrigger = it },
+                    onDelete = { triggerRepository.deleteTrigger(it.id) }
+                )
+            }
+            item {
                 AcWallsSection(
                     settings = wallsFile.settings,
                     wallMacros = wallMacros,
@@ -1055,6 +1100,52 @@ fun DashboardScreen(
                 teachingEntry = null
             },
             onCancel = { teachingEntry = null }
+        )
+    }
+
+    if (triggerBitmap != null || editingTrigger != null) {
+        val existing = editingTrigger
+        com.clahbot.ui.dashboard.AcTriggerEditor(
+            bitmap = triggerBitmap,
+            initial = existing,
+            onSave = { name, type, point, durationMs ->
+                val bmp = triggerBitmap
+                scope.launch {
+                    val id = existing?.id ?: "trig_${System.currentTimeMillis()}"
+                    val imageFile = existing?.imageFile ?: "$id.png"
+                    if (existing == null && bmp != null) {
+                        val bytes = withContext(Dispatchers.IO) {
+                            java.io.ByteArrayOutputStream().use { baos ->
+                                bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 95, baos)
+                                baos.toByteArray()
+                            }
+                        }
+                        withContext(Dispatchers.IO) { triggerRepository.storeImage(id, bytes) }
+                    }
+                    val action = com.clahbot.triggers.TriggerAction(
+                        type = type,
+                        point = point,
+                        durationMs = durationMs
+                    )
+                    val trigger = existing?.copy(name = name, action = action)
+                        ?: com.clahbot.triggers.ImageTrigger(
+                            id = id,
+                            name = name,
+                            imageFile = imageFile,
+                            refWidth = bmp?.width ?: 0,
+                            refHeight = bmp?.height ?: 0,
+                            threshold = 0.85f,
+                            action = action
+                        )
+                    triggerRepository.saveTrigger(trigger)
+                    triggerBitmap = null
+                    editingTrigger = null
+                }
+            },
+            onCancel = {
+                triggerBitmap = null
+                editingTrigger = null
+            }
         )
     }
 
