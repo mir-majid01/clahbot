@@ -43,7 +43,8 @@ class AutoWallsRepository internal constructor(
     private val configFile: File,
     private val runFile: File,
     private val historyFile: File,
-    private val triggerFile: File = File(configFile.parentFile, TRIGGER_FILE)
+    private val triggerFile: File = File(configFile.parentFile, TRIGGER_FILE),
+    private val scanFile: File = File(configFile.parentFile, SCAN_FILE)
 ) {
 
     constructor(context: Context) : this(
@@ -164,6 +165,24 @@ class AutoWallsRepository internal constructor(
     @Synchronized
     fun clearHistory() {
         historyFile.delete()
+    }
+
+    // ---- last scan (read-only diagnostics, Phase 1 UI) ---------------------
+
+    /**
+     * The last read-only scan report. A stored report is diagnostics only: it
+     * can never turn tapping on, so [AutoWallsScanReport.allowTapping] is always
+     * false after a reload.
+     */
+    @Synchronized
+    fun loadScan(): AutoWallsScanReport? {
+        val stored = read(scanFile, StoredScan::class.java) ?: return null
+        return stored.toReport()
+    }
+
+    @Synchronized
+    fun saveScan(report: AutoWallsScanReport) {
+        write(scanFile, gson.toJson(StoredScan.from(report)))
     }
 
     // ---- restart recovery --------------------------------------------------
@@ -357,6 +376,110 @@ class AutoWallsRepository internal constructor(
         )
     }
 
+    private data class StoredScan(
+        val at: Long = 0L,
+        val foregroundPackage: String? = null,
+        val gameForeground: Boolean = false,
+        val captured: Boolean = false,
+        val frameWidth: Int = 0,
+        val frameHeight: Int = 0,
+        val lineCount: Int = 0,
+        val screenState: String? = null,
+        val screenConfidence: Float? = null,
+        val candidates: List<StoredScanCandidate>? = null,
+        val eligible: List<StoredScanCandidate>? = null,
+        val selected: StoredScanCandidate? = null,
+        val reason: String? = null,
+        val strategy: String? = null,
+        val currency: String? = null,
+        val minConfidence: Float? = null,
+        val allowTapping: Boolean = false
+    ) {
+        fun toReport(): AutoWallsScanReport = AutoWallsScanReport(
+            at = at,
+            foregroundPackage = foregroundPackage,
+            gameForeground = gameForeground,
+            captured = captured,
+            frameWidth = frameWidth.coerceAtLeast(0),
+            frameHeight = frameHeight.coerceAtLeast(0),
+            lineCount = lineCount.coerceAtLeast(0),
+            screenState = screenState.orEmpty(),
+            screenConfidence = (screenConfidence ?: 0f).coerceIn(0f, 1f),
+            candidates = candidates.orEmpty().take(MAX_SCAN_ROWS)
+                .mapNotNull { it.toCandidate() },
+            eligible = eligible.orEmpty().take(MAX_SCAN_ROWS)
+                .mapNotNull { it.toCandidate() },
+            selected = selected?.toCandidate(),
+            reason = reason,
+            strategy = strategy.enumOr(WallSelectionStrategy.CHEAPEST_FIRST),
+            currency = currency.enumOr(WallCurrency.BOTH),
+            minConfidence = (minConfidence ?: 0.6f).coerceIn(0f, 1f),
+            // A stored report must never claim it unlocked tapping.
+            allowTapping = false
+        )
+
+        companion object {
+            fun from(report: AutoWallsScanReport) = StoredScan(
+                at = report.at,
+                foregroundPackage = report.foregroundPackage,
+                gameForeground = report.gameForeground,
+                captured = report.captured,
+                frameWidth = report.frameWidth,
+                frameHeight = report.frameHeight,
+                lineCount = report.lineCount,
+                screenState = report.screenState,
+                screenConfidence = report.screenConfidence,
+                candidates = report.candidates.map { StoredScanCandidate.from(it) },
+                eligible = report.eligible.map { StoredScanCandidate.from(it) },
+                selected = report.selected?.let { StoredScanCandidate.from(it) },
+                reason = report.reason,
+                strategy = report.strategy.name,
+                currency = report.currency.name,
+                minConfidence = report.minConfidence,
+                allowTapping = report.allowTapping
+            )
+        }
+    }
+
+    private data class StoredScanCandidate(
+        val id: String? = null,
+        val level: Int? = null,
+        val price: Long? = null,
+        val currency: String? = null,
+        val listIndex: Int? = null,
+        val confidence: Float? = null,
+        val count: Int? = null
+    ) {
+        /** Unreadable identity/level/price/currency rows are dropped, never guessed. */
+        fun toCandidate(): WallCandidate? {
+            val id = id ?: return null
+            val level = level ?: return null
+            val price = price ?: return null
+            val currency = currency ?: return null
+            return WallCandidate(
+                id = id,
+                level = level.coerceAtLeast(0),
+                price = price.coerceAtLeast(0L),
+                currency = currency,
+                listIndex = (listIndex ?: 0).coerceAtLeast(0),
+                confidence = (confidence ?: 0f).coerceIn(0f, 1f),
+                count = count?.takeIf { it >= 0 }
+            )
+        }
+
+        companion object {
+            fun from(candidate: WallCandidate) = StoredScanCandidate(
+                id = candidate.id,
+                level = candidate.level,
+                price = candidate.price,
+                currency = candidate.currency,
+                listIndex = candidate.listIndex,
+                confidence = candidate.confidence,
+                count = candidate.count
+            )
+        }
+    }
+
     private data class StoredHistory(
         /** Nullable: Gson bypasses the constructor, so a missing key arrives as null. */
         val entries: List<StoredHistoryEntry>? = null
@@ -393,7 +516,9 @@ class AutoWallsRepository internal constructor(
         private const val RUN_FILE = "auto_walls_run.json"
         private const val HISTORY_FILE = "auto_walls_history.json"
         private const val TRIGGER_FILE = "auto_walls_trigger.json"
+        private const val SCAN_FILE = "auto_walls_scan.json"
         private const val MAX_HISTORY = 200
+        private const val MAX_SCAN_ROWS = 200
 
         private val PENDING_STATES = setOf(
             AutoWallsState.EVALUATING_CONDITIONS,

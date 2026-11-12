@@ -325,6 +325,7 @@ fun DashboardScreen(
     val sessionRepository = remember { SessionRepository.get(context) }
     val recoveryRepository = remember { RecoveryRepository.get(context) }
     val wallsRepository = remember { WallsRepository.get(context) }
+    val autoWalls2Repository = remember { com.clahbot.walls.AutoWallsRepository.get(context) }
     val settingsStore = remember { SettingsStore.get(context) }
     val dashboardSettings by settingsStore.settings.collectAsState()
     val attacks by attackRepository.records.collectAsState()
@@ -878,6 +879,12 @@ fun DashboardScreen(
                     onTest = { FloatingMenuService.runWall(context, test = true) },
                     onRenameMacro = { macro, name -> viewModel.rename(macro.id, name) },
                     onDeleteMacro = { macro -> viewModel.delete(macro.id) }
+                )
+            }
+            item {
+                com.clahbot.ui.dashboard.AcAutoWalls2Section(
+                    repository = autoWalls2Repository,
+                    scope = scope
                 )
             }
             item {
