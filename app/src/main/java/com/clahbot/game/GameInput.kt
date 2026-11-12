@@ -13,14 +13,15 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.resume
 
 /**
- * Injects taps and global actions into the game from the recovery watchdog
- * and the wall upgrader. Tap coordinates are frame pixels; they are mapped
- * through the captured window bounds before dispatch.
+ * Injects taps, swipes and global actions into the game from the recovery
+ * watchdog and the wall upgrader. Tap coordinates are frame pixels; they are
+ * mapped through the captured window bounds before dispatch.
  */
 object GameInput {
 
     private const val TAP_MS = 40L
     private const val TAP_TIMEOUT_MS = 1_500L
+    private const val SWIPE_TIMEOUT_MS = 2_500L
 
     fun toScreen(frameX: Int, frameY: Int, frame: ClahAccessibilityService.GameFrame): Point {
         val bounds = frame.windowBounds
@@ -73,6 +74,41 @@ object GameInput {
     suspend fun tapBox(box: ScreenBox, frame: ClahAccessibilityService.GameFrame): Boolean {
         val centre = boxCentre(box)
         return tap(centre.x, centre.y, frame)
+    }
+
+    /**
+     * A straight swipe in screen coordinates, used to scroll the wall upgrade
+     * list. Like [tap] it reports only whether the gesture completed, never
+     * whether the screen actually moved — the caller must re-scan to confirm.
+     */
+    suspend fun swipe(fromX: Int, fromY: Int, toX: Int, toY: Int, durationMs: Long): Boolean {
+        val service = ClahAccessibilityService.instance ?: return false
+        val path = Path().apply {
+            moveTo(fromX.toFloat(), fromY.toFloat())
+            lineTo(toX.toFloat(), toY.toFloat())
+        }
+        val description = try {
+            GestureDescription.Builder()
+                .addStroke(GestureDescription.StrokeDescription(path, 0L, durationMs.coerceAtLeast(1L)))
+                .build()
+        } catch (_: Exception) {
+            return false
+        }
+        return withTimeoutOrNull(SWIPE_TIMEOUT_MS) {
+            suspendCancellableCoroutine { continuation ->
+                val callback = object : AccessibilityService.GestureResultCallback() {
+                    override fun onCompleted(gestureDescription: GestureDescription?) {
+                        if (continuation.isActive) continuation.resume(true)
+                    }
+
+                    override fun onCancelled(gestureDescription: GestureDescription?) {
+                        if (continuation.isActive) continuation.resume(false)
+                    }
+                }
+                val accepted = service.dispatchGesture(description, callback, null)
+                if (!accepted && continuation.isActive) continuation.resume(false)
+            }
+        } ?: false
     }
 
     /** BACK as the least risky dismissal, only ever used on non-Clash windows. */

@@ -91,6 +91,10 @@ import com.clahbot.overlay.OverlayPoint
 import com.clahbot.overlay.OverlayPositionStore
 import com.clahbot.overlay.TouchTargets
 import com.clahbot.overlay.TouchEffectsView
+import com.clahbot.walls.AutoWallsDevice
+import com.clahbot.walls.AutoWallsRepository
+import com.clahbot.walls.AutoWallsRuntime
+import com.clahbot.walls.AutoWallsSession
 import com.clahbot.walls.WallAutomation
 import com.clahbot.walls.WallResourceMode
 import com.clahbot.walls.WallSettings
@@ -271,6 +275,8 @@ class FloatingMenuService : Service() {
     private var recoveryAgent: RecoveryAgent? = null
     private var recoveryWatchdog: RecoveryWatchdog? = null
     private var wallAutomation: WallAutomation? = null
+    /** Auto Walls 2.0 pipeline; only its completed-attack counter feed is live. */
+    private var autoWallsRuntime: AutoWallsRuntime? = null
     private var wallChromeActive = false
     private var wallPickerView: View? = null
     /** The current recording is a wall upgrade macro, not an attack macro. */
@@ -344,6 +350,7 @@ class FloatingMenuService : Service() {
                     attackRepository.refresh()
                     GameSessionTracker.ensureSession(record.startedAt)
                     GameSessionTracker.syncNow(includeIds = setOf(record.id))
+                    noteAutoWallsAttack()
                     renderStats()
                     refreshUi()
                 }
@@ -6236,6 +6243,33 @@ class FloatingMenuService : Service() {
             macroProvider = { id -> repository.get(id) },
             notify = { kind, message -> BotState.setResultToast(kind, message) }
         ).also { wallAutomation = it }
+    }
+
+    /**
+     * The Auto Walls 2.0 pipeline, built once. Only its completed-attack counter
+     * feed is live: the autonomous run() loop is intentionally NOT activated here,
+     * so it never competes with the recorded-macro WallAutomation, and tapping
+     * stays disabled until discovery + safety pass real-device testing.
+     */
+    private fun ensureAutoWallsRuntime(): AutoWallsRuntime {
+        autoWallsRuntime?.let { return it }
+        val session = AutoWallsSession(AutoWallsRepository.get(this))
+        val device = AutoWallsDevice(gameEngine, resultsReader)
+        return AutoWallsRuntime(
+            session = session,
+            device = device,
+            log = { message -> AppEventLog.log(message) }
+        ).also { autoWallsRuntime = it }
+    }
+
+    /**
+     * Feed one genuinely completed attack (a saved results record) into the Auto
+     * Walls 2.0 trigger counter. Writes only auto_walls_trigger.json — no gesture,
+     * no upgrade — and is skipped while Auto Walls 2.0 is switched off.
+     */
+    private fun noteAutoWallsAttack() {
+        if (!AutoWallsRepository.get(this).loadConfig().enabled) return
+        ensureAutoWallsRuntime().onAttackCompleted()
     }
 
     /**
