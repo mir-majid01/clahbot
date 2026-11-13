@@ -71,11 +71,11 @@ android {
 
     buildTypes {
         debug {
-            // Without credentials AGP signs debug with the default
-            // ~/.android/debug.keystore — fine for CI artifacts.
-            if (acSigningReady) {
-                signingConfig = signingConfigs.getByName("release")
-            }
+            // Debug builds use AGP's auto-generated default debug keystore
+            // (~/.android/debug.keystore, alias "AndroidDebugKey"). This is
+            // intentionally SEPARATE from the release signing identity so the
+            // release private key is never used for debug builds (DV-1).
+            signingConfig = signingConfigs.getByName("debug")
         }
         release {
             if (acSigningReady) {

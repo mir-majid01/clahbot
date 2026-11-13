@@ -64,9 +64,9 @@ android {
 
     buildTypes {
         debug {
-            if (acSigningReady) {
-                signingConfig = signingConfigs.getByName("release")
-            }
+            // Debug builds use AGP's auto-generated default debug keystore,
+            // separate from the release signing identity (DV-1 requirement).
+            signingConfig = signingConfigs.getByName("debug")
         }
         release {
             if (acSigningReady) {
