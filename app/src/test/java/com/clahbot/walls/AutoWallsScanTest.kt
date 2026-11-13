@@ -373,9 +373,9 @@ class AutoWallsScanTest {
     }
 
     @Test
-    fun `a saved config never restores tapping`() {
+    fun `a saved config restores the tapping preference`() {
         val repo = repository()
         repo.saveConfig(AutoWallsConfig(enabled = true, allowTapping = true))
-        assertFalse(repo.loadConfig().allowTapping)
+        assertTrue(repo.loadConfig().allowTapping)
     }
 }

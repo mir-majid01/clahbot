@@ -310,6 +310,7 @@ class AutoWallsRepository internal constructor(
         val currency: String? = null,
         val minConfidence: Float? = null,
         val maxScrolls: Int? = null,
+        val allowTapping: Boolean = false,
         override val schemaVersion: Int = 0
     ) : StoredFile {
         fun toConfig(): AutoWallsConfig = AutoWallsConfig(
@@ -321,8 +322,8 @@ class AutoWallsRepository internal constructor(
                 currency = currency.enumOr(WallCurrency.BOTH),
                 minConfidence = (minConfidence ?: 0.6f).coerceIn(0f, 1f)
             ),
-            // Taps never resume from disk; a build must enable them itself.
-            allowTapping = false,
+            // Persisted user preference: tapping stays as the user left it.
+            allowTapping = allowTapping,
             // Corrupt values must not turn into endless scrolling.
             maxScrolls = (maxScrolls ?: 4).coerceIn(0, 20)
         )
@@ -335,6 +336,7 @@ class AutoWallsRepository internal constructor(
                 currency = config.selection.currency.name,
                 minConfidence = config.selection.minConfidence,
                 maxScrolls = config.maxScrolls,
+                allowTapping = config.allowTapping,
                 schemaVersion = SCHEMA_VERSION
             )
         }

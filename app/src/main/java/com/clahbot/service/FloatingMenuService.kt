@@ -213,6 +213,7 @@ class FloatingMenuService : Service() {
     private var prepareJob: Job? = null
     private var prepareSource: InputEventSource? = null
     private var prepareToken = 0
+    private var tappingSwitchUpdating = false
     private var activeRecordingMode: RecordingMode? = null
 
     @Volatile
@@ -989,6 +990,7 @@ class FloatingMenuService : Service() {
         }
         view.findViewById<Switch>(R.id.wallTappingSwitch)
             .setOnCheckedChangeListener { button, checked ->
+                if (tappingSwitchUpdating) return@setOnCheckedChangeListener
                 if (checked) {
                     // Two-step confirm: the switch only turns on after the user
                     // acknowledges that the bot will start touching Clash.
@@ -1006,7 +1008,9 @@ class FloatingMenuService : Service() {
             hideTappingConfirm(view)
             val config = autoWallsRepository.loadConfig()
             autoWallsRepository.saveConfig(config.copy(allowTapping = true))
+            tappingSwitchUpdating = true
             view.findViewById<Switch>(R.id.wallTappingSwitch).isChecked = true
+            tappingSwitchUpdating = false
             AppEventLog.log("auto-walls: tapping enabled by the user")
             refreshAutoWalls()
         }
@@ -1037,12 +1041,14 @@ class FloatingMenuService : Service() {
     private fun refreshAutoWalls() {
         val view = controllerView ?: return
         val config = autoWallsRepository.loadConfig()
+        tappingSwitchUpdating = true
         view.findViewById<Switch>(R.id.wallSwitch)?.let {
             if (it.isChecked != config.enabled) it.isChecked = config.enabled
         }
         view.findViewById<Switch>(R.id.wallTappingSwitch)?.let {
             if (it.isChecked != config.allowTapping) it.isChecked = config.allowTapping
         }
+        tappingSwitchUpdating = false
         if (!config.allowTapping) hideTappingConfirm(view)
         listOf(
             R.id.btnWallModeGold to WallCurrency.GOLD,

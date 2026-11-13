@@ -97,8 +97,8 @@ class AutoWallsPersistenceTest {
         assertEquals(WallCurrency.ELIXIR, loaded.selection.currency)
         assertEquals(0.8f, loaded.selection.minConfidence, 0.0001f)
         assertEquals(6, loaded.maxScrolls)
-        // Taps are a build-time gate, never restored from disk.
-        assertFalse(loaded.allowTapping)
+        // Tapping preference round-trips with the rest of the config.
+        assertTrue(loaded.allowTapping)
     }
 
     @Test
