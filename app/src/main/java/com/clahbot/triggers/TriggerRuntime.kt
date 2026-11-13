@@ -74,21 +74,21 @@ class TriggerRuntime(
         when (action.type) {
             TriggerActionType.TAP -> {
                 val p = act.start ?: return
-                dispatchTap(p, coerceDuration(action.durationMs, 40L), frame)
-                record(act, "acted: tap")
+                val delivered = dispatchTap(p, coerceDuration(action.durationMs, 40L), frame)
+                record(act, if (delivered) "acted: tap" else "tap gesture failed")
             }
 
             TriggerActionType.LONG_PRESS -> {
                 val p = act.start ?: return
-                dispatchTap(p, coerceDuration(action.durationMs, 600L), frame)
-                record(act, "acted: long press")
+                val delivered = dispatchTap(p, coerceDuration(action.durationMs, 600L), frame)
+                record(act, if (delivered) "acted: long press" else "long press gesture failed")
             }
 
             TriggerActionType.SWIPE -> {
                 val start = act.start ?: return
                 val end = act.end ?: return
-                dispatchSwipe(start, end, coerceDuration(action.durationMs, 300L), frame)
-                record(act, "acted: swipe")
+                val delivered = dispatchSwipe(start, end, coerceDuration(action.durationMs, 300L), frame)
+                record(act, if (delivered) "acted: swipe" else "swipe gesture failed")
             }
 
             TriggerActionType.WAIT -> {
@@ -141,13 +141,13 @@ class TriggerRuntime(
         point: TriggerEngine.Point,
         durationMs: Long,
         frame: ClahAccessibilityService.GameFrame
-    ) {
+    ): Boolean {
         val screen = GameInput.toScreen(point.x.toInt(), point.y.toInt(), frame)
         val path = Path().apply {
             moveTo(screen.x.toFloat(), screen.y.toFloat())
             lineTo(screen.x.toFloat(), screen.y.toFloat())
         }
-        dispatch(path, durationMs)
+        return dispatch(path, durationMs)
     }
 
     private suspend fun dispatchSwipe(
@@ -155,40 +155,59 @@ class TriggerRuntime(
         end: TriggerEngine.Point,
         durationMs: Long,
         frame: ClahAccessibilityService.GameFrame
-    ) {
+    ): Boolean {
         val from = GameInput.toScreen(start.x.toInt(), start.y.toInt(), frame)
         val to = GameInput.toScreen(end.x.toInt(), end.y.toInt(), frame)
         val path = Path().apply {
             moveTo(from.x.toFloat(), from.y.toFloat())
             lineTo(to.x.toFloat(), to.y.toFloat())
         }
-        dispatch(path, durationMs)
+        return dispatch(path, durationMs)
     }
 
-    private suspend fun dispatch(path: Path, durationMs: Long) {
-        val service = ClahAccessibilityService.instance ?: return
+    /**
+     * Returns true only when the system confirmed the gesture completed. A
+     * cancelled, rejected or never-completed gesture is reported as a failure
+     * and logged, so the caller records the trigger honestly instead of
+     * treating an action that never happened as done.
+     */
+    private suspend fun dispatch(path: Path, durationMs: Long): Boolean {
+        val service = ClahAccessibilityService.instance
+        if (service == null) {
+            AppEventLog.log("trigger gesture dropped: accessibility service missing")
+            return false
+        }
         val description = try {
             GestureDescription.Builder()
                 .addStroke(GestureDescription.StrokeDescription(path, 0L, durationMs.coerceAtLeast(1L)))
                 .build()
         } catch (_: Exception) {
-            return
+            AppEventLog.log("trigger gesture dropped: invalid gesture description")
+            return false
         }
-        withTimeoutOrNull(DISPATCH_TIMEOUT_MS) {
+        val completed = withTimeoutOrNull(DISPATCH_TIMEOUT_MS) {
             suspendCancellableCoroutine { continuation ->
                 val callback = object : AccessibilityService.GestureResultCallback() {
                     override fun onCompleted(gestureDescription: GestureDescription?) {
-                        if (continuation.isActive) continuation.resume(Unit)
+                        if (continuation.isActive) continuation.resume(true)
                     }
 
                     override fun onCancelled(gestureDescription: GestureDescription?) {
-                        if (continuation.isActive) continuation.resume(Unit)
+                        if (continuation.isActive) continuation.resume(false)
                     }
                 }
                 val accepted = service.dispatchGesture(description, callback, null)
-                if (!accepted && continuation.isActive) continuation.resume(Unit)
+                if (!accepted && continuation.isActive) continuation.resume(false)
             }
         }
+        if (completed == true) return true
+        AppEventLog.log(
+            "trigger gesture failed: " + when (completed) {
+                null -> "no completion within ${DISPATCH_TIMEOUT_MS}ms"
+                else -> "cancelled or rejected by the system"
+            }
+        )
+        return false
     }
 
     companion object {

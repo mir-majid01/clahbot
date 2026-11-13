@@ -128,6 +128,7 @@ class MacroPlayer(
                     BotState.setStatus(runLabel)
 
                     var lastTimestamp = 0L
+                    var consecutiveDispatchFailures = 0
                     for (gesture in gestures) {
                         if (!isActive || stopped) break
                         if (!pauseIfRequested()) break
@@ -157,7 +158,29 @@ class MacroPlayer(
                             )
                         }
 
-                        if (!dispatch(service, gesture, macro.speedMultiplier) && !stopped) {
+                        val delivered = dispatch(service, gesture, macro.speedMultiplier)
+                        if (delivered) {
+                            consecutiveDispatchFailures = 0
+                        } else if (!stopped) {
+                            // A failed gesture is never silently skipped: every
+                            // later gesture assumes this one landed, so replaying
+                            // on after repeated failures would tap the wrong
+                            // screen. Log each failure and abort the run once
+                            // delivery keeps failing (system cancelling or
+                            // rejecting gestures).
+                            consecutiveDispatchFailures++
+                            AppEventLog.log(
+                                "gesture ${gesture.gestureType} at ${gesture.timestampMs}ms " +
+                                    "dispatch failed (consecutive: $consecutiveDispatchFailures)"
+                            )
+                            if (consecutiveDispatchFailures >= MAX_CONSECUTIVE_DISPATCH_FAILURES) {
+                                BotState.setState(ControllerState.ERROR)
+                                BotState.setStatus("Playback stopped: gesture delivery keeps failing")
+                                AppEventLog.log(
+                                    "playback aborted: $consecutiveDispatchFailures consecutive failed gestures"
+                                )
+                                return@launch
+                            }
                             BotState.setStatus("Gesture cancelled by system")
                         }
                         lastTimestamp = gesture.timestampMs
@@ -450,6 +473,9 @@ class MacroPlayer(
         private const val COUNTDOWN_TICK_MS = 250L
         private const val COUNTDOWN_MIN_MS = 1_000L
         private const val DISPATCH_TIMEOUT_SLACK_MS = 1_500L
+
+        /** Abort a run once this many gestures in a row fail to deliver. */
+        private const val MAX_CONSECUTIVE_DISPATCH_FAILURES = 3
         private const val LATE_TAP_WINDOW_MS = 15_000L
 
         @Volatile
