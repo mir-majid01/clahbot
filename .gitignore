@@ -26,8 +26,18 @@ supabase-pass.txt
 *-pass.txt
 *.jks
 *.keystore
-!keystore/autoclash-release.jks
 .env
 
 # Unrelated local scratch file (Steam depot script, contains account hashes)
 516750.lua
+
+# Local artifacts, logs, media and user-data backups — never commit
+.release/
+.scratch/
+device-backup/
+logs/
+newimages/
+shots/
+/WhatsApp *.zip
+/autoclash-reference-v7.zip
+/Why Stupas Were Built.pdf
