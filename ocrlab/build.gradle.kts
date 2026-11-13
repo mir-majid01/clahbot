@@ -1,6 +1,35 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+}
+
+// Same credential policy as :app: GitHub Actions env first, then gitignored
+// local.properties; keystore never committed; release fails loudly when
+// credentials are missing.
+fun acCredential(key: String): String? =
+    System.getenv(key)
+        ?: Properties().apply {
+            val lp = rootProject.file("local.properties")
+            if (lp.exists()) lp.inputStream().use { load(it) }
+        }.getProperty(key)
+
+val acStoreFile: String? = acCredential("AC_STORE_FILE")
+val acStorePassword: String? = acCredential("AC_STORE_PASSWORD")
+val acKeyAlias: String? = acCredential("AC_KEY_ALIAS")
+val acKeyPassword: String? = acCredential("AC_KEY_PASSWORD")
+val acSigningReady: Boolean =
+    acStoreFile != null && acStorePassword != null && acKeyAlias != null && acKeyPassword != null
+
+gradle.taskGraph.whenReady {
+    if (!acSigningReady && allTasks.any { it.name.contains("Release") }) {
+        throw GradleException(
+            "Release signing credentials missing: set AC_STORE_FILE, AC_STORE_PASSWORD, " +
+                "AC_KEY_ALIAS, AC_KEY_PASSWORD via GitHub Actions secrets or gitignored " +
+                "local.properties. Refusing to build an unsigned or wrong-key release."
+        )
+    }
 }
 
 android {
@@ -23,20 +52,26 @@ android {
     }
 
     signingConfigs {
-        create("release") {
-            storeFile = rootProject.file("keystore/autoclash-release.jks")
-            storePassword = "REDACTED_SIGNING_PASSWORD"
-            keyAlias = "autoclash"
-            keyPassword = "REDACTED_SIGNING_PASSWORD"
+        if (acSigningReady) {
+            create("release") {
+                storeFile = file(acStoreFile!!)
+                storePassword = acStorePassword
+                keyAlias = acKeyAlias
+                keyPassword = acKeyPassword
+            }
         }
     }
 
     buildTypes {
         debug {
-            signingConfig = signingConfigs.getByName("release")
+            if (acSigningReady) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
         release {
-            signingConfig = signingConfigs.getByName("release")
+            if (acSigningReady) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             isMinifyEnabled = false
         }
     }

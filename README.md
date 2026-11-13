@@ -108,11 +108,13 @@ SHA-256 and exact size, then opens Android's package installer through a
 
 ## Release signing
 
-`keystore/autoclash-release.jks` is committed on purpose so every APK has the
-same signature. A stable signature is required for in-place updates and for
-keeping Shizuku permission. The file and password are public; only install
-updates from this repository's Releases. See
-[keystore/README.md](keystore/README.md).
+The release keystore is **not committed** (the original was exposed in this
+public repository's history and was retired on 2026-11-12). Credentials now
+come from gitignored `local.properties` for local builds and GitHub Actions
+secrets for CI release builds; release builds fail loudly when they are
+missing. A stable signature is still required for in-place updates and for
+keeping Shizuku permission. Only install updates signed with the current
+certificate listed in [keystore/README.md](keystore/README.md).
 
 ## Architecture
 

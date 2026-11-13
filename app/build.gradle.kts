@@ -1,8 +1,40 @@
 import org.gradle.api.tasks.testing.Test
+import java.util.Properties
 
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+}
+
+// Signing credentials resolve from GitHub Actions environment variables
+// first, then from gitignored local.properties. The keystore itself is
+// NEVER committed. Debug builds fall back to AGP's auto-generated default
+// debug keystore when no credentials are present (keeps CI green); release
+// builds fail loudly instead of silently producing an unsigned or
+// wrong-key APK (see the taskGraph guard below).
+fun acCredential(key: String): String? =
+    System.getenv(key)
+        ?: Properties().apply {
+            val lp = rootProject.file("local.properties")
+            if (lp.exists()) lp.inputStream().use { load(it) }
+        }.getProperty(key)
+
+val acStoreFile: String? = acCredential("AC_STORE_FILE")
+val acStorePassword: String? = acCredential("AC_STORE_PASSWORD")
+val acKeyAlias: String? = acCredential("AC_KEY_ALIAS")
+val acKeyPassword: String? = acCredential("AC_KEY_PASSWORD")
+val acSigningReady: Boolean =
+    acStoreFile != null && acStorePassword != null && acKeyAlias != null && acKeyPassword != null
+
+// Clear, early failure only when a release variant is actually requested.
+gradle.taskGraph.whenReady {
+    if (!acSigningReady && allTasks.any { it.name.contains("Release") }) {
+        throw GradleException(
+            "Release signing credentials missing: set AC_STORE_FILE, AC_STORE_PASSWORD, " +
+                "AC_KEY_ALIAS, AC_KEY_PASSWORD via GitHub Actions secrets or gitignored " +
+                "local.properties. Refusing to build an unsigned or wrong-key release."
+        )
+    }
 }
 
 android {
@@ -25,22 +57,32 @@ android {
     }
 
     signingConfigs {
-        // Stable key: updates must keep the same signature or Android rejects
-        // them and Shizuku permission/app data are lost.
-        create("release") {
-            storeFile = rootProject.file("keystore/autoclash-release.jks")
-            storePassword = "REDACTED_SIGNING_PASSWORD"
-            keyAlias = "autoclash"
-            keyPassword = "REDACTED_SIGNING_PASSWORD"
+        if (acSigningReady) {
+            // Stable key: updates must keep the same signature or Android rejects
+            // them and Shizuku permission/app data are lost.
+            create("release") {
+                storeFile = file(acStoreFile!!)
+                storePassword = acStorePassword
+                keyAlias = acKeyAlias
+                keyPassword = acKeyPassword
+            }
         }
     }
 
     buildTypes {
         debug {
-            signingConfig = signingConfigs.getByName("release")
+            // Without credentials AGP signs debug with the default
+            // ~/.android/debug.keystore — fine for CI artifacts.
+            if (acSigningReady) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
         release {
-            signingConfig = signingConfigs.getByName("release")
+            if (acSigningReady) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+            // Missing credentials are caught by the taskGraph guard above
+            // before any release task runs.
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(

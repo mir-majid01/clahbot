@@ -32,6 +32,23 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
+      - name: Restore signing keystore from GitHub Secrets
+        env:
+          ACLASH_STORE_B64: ${{ secrets.ACLASH_STORE_B64 }}
+          ACLASH_STORE_PASSWORD: ${{ secrets.ACLASH_STORE_PASSWORD }}
+          ACLASH_KEY_ALIAS: ${{ secrets.ACLASH_KEY_ALIAS }}
+          ACLASH_KEY_PASSWORD: ${{ secrets.ACLASH_KEY_PASSWORD }}
+        run: |
+          if [ -z "$ACLASH_STORE_B64" ] || [ -z "$ACLASH_STORE_PASSWORD" ] || [ -z "$ACLASH_KEY_ALIAS" ] || [ -z "$ACLASH_KEY_PASSWORD" ]; then
+            echo "::error::Release signing secrets missing (ACLASH_STORE_B64 / ACLASH_STORE_PASSWORD / ACLASH_KEY_ALIAS / ACLASH_KEY_PASSWORD). Refusing to build an unsigned or wrong-key release."
+            exit 1
+          fi
+          echo "$ACLASH_STORE_B64" | base64 --decode > "$RUNNER_TEMP/autoclash-release.jks"
+          echo "AC_STORE_FILE=$RUNNER_TEMP/autoclash-release.jks" >> "$GITHUB_ENV"
+          echo "AC_STORE_PASSWORD=$ACLASH_STORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "AC_KEY_ALIAS=$ACLASH_KEY_ALIAS" >> "$GITHUB_ENV"
+          echo "AC_KEY_PASSWORD=$ACLASH_KEY_PASSWORD" >> "$GITHUB_ENV"
+
       - name: Read version
         id: version
         run: |
