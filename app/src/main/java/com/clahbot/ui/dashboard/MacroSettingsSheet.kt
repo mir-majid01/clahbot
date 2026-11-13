@@ -71,7 +71,6 @@ import kotlin.math.roundToInt
 @Composable
 fun MacroSettingsSheet(
     macro: Macro,
-    wallMacros: List<Macro> = emptyList(),
     onDismiss: () -> Unit,
     onSave: suspend (MacroSettingsDraft) -> MacroWriteResult,
     onDuplicate: (MacroSettingsDraft) -> Unit,
@@ -85,7 +84,6 @@ fun MacroSettingsSheet(
     var saveError by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
     var editing by remember { mutableStateOf<EditField?>(null) }
-    var pickWallMacro by remember { mutableStateOf(false) }
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     fun apply(field: EditField, text: String) {
@@ -467,16 +465,6 @@ fun MacroSettingsSheet(
                         subtitle = "Keep this macro at the top of the library.",
                         checked = draft.pinned
                     ) { draft = draft.copy(pinned = it) }
-                    SheetRow(
-                        icon = R.drawable.ic_repeat,
-                        title = "Walls after this attack",
-                        subtitle = wallMacros.firstOrNull { it.id == draft.linkedWallMacroId }?.name
-                            ?: "Global wall macro from the Walls tab"
-                    ) {
-                        TextButton(onClick = { pickWallMacro = true }) {
-                            Text("Change", color = Color(Ds.LINK), fontSize = 12.sp)
-                        }
-                    }
                     val summaryMacro = draft.toMacro(macro)
                     Box(
                         Modifier.fillMaxWidth().padding(top = 8.dp)
@@ -554,48 +542,7 @@ fun MacroSettingsSheet(
         }
     }
 
-    if (pickWallMacro) {
-        AlertDialog(
-            onDismissRequest = { pickWallMacro = false },
-            containerColor = Color(Ds.PANEL),
-            title = { Text("Walls after this attack", color = Color(Ds.TEXT)) },
-            text = {
-                Column {
-                    WallPickRow(
-                        label = "Global wall macro from the Walls tab",
-                        selected = draft.linkedWallMacroId <= 0
-                    ) {
-                        draft = draft.copy(linkedWallMacroId = -1L)
-                        pickWallMacro = false
-                    }
-                    wallMacros.forEach { option ->
-                        WallPickRow(
-                            label = option.name,
-                            selected = option.id == draft.linkedWallMacroId
-                        ) {
-                            draft = draft.copy(linkedWallMacroId = option.id)
-                            pickWallMacro = false
-                        }
-                    }
-                    if (wallMacros.isEmpty()) {
-                        Text(
-                            "No wall macros yet. Record one from the controller's Walls tab.",
-                            fontSize = 12.sp,
-                            color = Color(Ds.MUTED)
-                        )
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { pickWallMacro = false }) {
-                    Text("Close", color = Color(Ds.LINK))
-                }
-            }
-        )
-    }
-
 }
-
 @Composable
 private fun SheetDivider() {
     Box(Modifier.fillMaxWidth().height(1.dp).background(Color(Ds.DIVIDER)))
@@ -768,16 +715,3 @@ private fun formatSeconds(ms: Long): String =
     String.format(Locale.US, "%.1f", ms / 1000.0)
         .trimEnd('0')
         .trimEnd('.')
-
-@Composable
-private fun WallPickRow(label: String, selected: Boolean, onClick: () -> Unit) {
-    Text(
-        if (selected) "✓  $label" else label,
-        fontSize = 13.sp,
-        color = if (selected) Color(Ds.SUCCESS) else Color(Ds.TEXT),
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(vertical = 10.dp)
-    )
-}

@@ -175,6 +175,56 @@ class AutoWallsRuntimeTest {
         dir.deleteRecursively()
     }
 
+    // ---- manual run (controller "Run now") ---------------------------------
+
+    @Test
+    fun `a manual run discovers walls without waiting for the trigger`(): Unit = runBlocking {
+        val (session, dir) = session(allowTapping = false)
+        val device = FakeDevice()
+        // The trigger needs 10 attacks; only 2 have been completed, so an
+        // automatic run would sit waiting. Manual bypasses the counters only.
+        val state = session.loadTriggerState()
+        session.saveTriggerState(
+            state.copy(counters = state.counters.copy(attacksSinceVerified = 2))
+        )
+        device.frames.addAll(listOf(village(), list(317)))
+        device.fallback = village()
+        val outcome = runtime(session, device).run(manual = true)
+        // The trigger was bypassed; the tap gate was not: scan + select, then stop.
+        assertEquals(AutoWallsState.SAFETY_BLOCKED, outcome.state)
+        assertTrue(outcome.reason.contains("tapping is disabled"))
+        assertTrue(device.taps.isEmpty())
+        dir.deleteRecursively()
+    }
+
+    @Test
+    fun `an automatic run still waits when the attack count is short`(): Unit = runBlocking {
+        val (session, dir) = session(allowTapping = false)
+        val device = FakeDevice()
+        val state = session.loadTriggerState()
+        session.saveTriggerState(
+            state.copy(counters = state.counters.copy(attacksSinceVerified = 2))
+        )
+        device.frames.add(village())
+        device.fallback = village()
+        val outcome = runtime(session, device).run()
+        assertEquals(AutoWallsState.WAITING_FOR_TRIGGER, outcome.state)
+        assertTrue(outcome.reason.contains("attacks"))
+        assertTrue(device.taps.isEmpty())
+        dir.deleteRecursively()
+    }
+
+    @Test
+    fun `a manual run is refused while Auto Walls is switched off`(): Unit = runBlocking {
+        val (session, dir) = session(allowTapping = false)
+        session.machine?.disable()
+        val device = FakeDevice()
+        val outcome = runtime(session, device).run(manual = true)
+        assertEquals(AutoWallsState.DISABLED, outcome.state)
+        assertTrue(device.taps.isEmpty())
+        dir.deleteRecursively()
+    }
+
     // ---- full pipeline (gate opened in the fake only) ----------------------
 
     @Test

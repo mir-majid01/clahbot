@@ -17,9 +17,7 @@ data class MacroSettingsDraft(
     var stopOnBackground: Boolean,
     var stopMinutes: Int?,
     var stopAttacks: Int?,
-    var pinned: Boolean,
-    /** Wall macro to run after this attack macro; -1 uses the global wall macro. */
-    var linkedWallMacroId: Long = -1L
+    var pinned: Boolean
 ) {
 
     fun repeatMode(): String =
@@ -38,8 +36,7 @@ data class MacroSettingsDraft(
         stopOnBackground = stopOnBackground,
         stopAfterMinutes = stopMinutes,
         stopAfterAttacks = stopAttacks,
-        pinned = pinned,
-        linkedWallMacroId = if (linkedWallMacroId > 0) linkedWallMacroId else -1L
+        pinned = pinned
     )
 
     companion object {
@@ -57,8 +54,7 @@ data class MacroSettingsDraft(
             stopOnBackground = macro.stopOnBackground,
             stopMinutes = macro.effectiveStopAfterMinutes,
             stopAttacks = macro.effectiveStopAfterAttacks,
-            pinned = macro.pinned,
-            linkedWallMacroId = macro.linkedWallMacroId
+            pinned = macro.pinned
         )
 
         val DEFAULTS: MacroSettingsDraft = MacroSettingsDraft(

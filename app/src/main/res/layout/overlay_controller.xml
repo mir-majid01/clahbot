@@ -687,7 +687,7 @@
                 </LinearLayout>
             </LinearLayout>
 
-            <!-- WALLS -->
+            <!-- AUTO WALLS 2.0 -->
             <LinearLayout
                 android:id="@+id/wallsPanel"
                 android:layout_width="match_parent"
@@ -725,7 +725,7 @@
                                     android:layout_width="0dp"
                                     android:layout_height="wrap_content"
                                     android:layout_weight="1"
-                                    android:text="Auto Walls"
+                                    android:text="Auto Walls 2.0"
                                     android:textColor="#E6EBF5"
                                     android:textSize="12.5sp"
                                     android:textStyle="bold" />
@@ -742,61 +742,9 @@
                                 android:layout_height="wrap_content"
                                 android:ellipsize="end"
                                 android:maxLines="2"
-                                android:text="Record a wall upgrade macro to start"
+                                android:text="Scan the wall list while Clash is open"
                                 android:textColor="#94A3B8"
                                 android:textSize="10sp" />
-
-                            <LinearLayout
-                                android:layout_width="match_parent"
-                                android:layout_height="30dp"
-                                android:layout_marginTop="8dp"
-                                android:gravity="center_vertical"
-                                android:orientation="horizontal">
-
-                                <TextView
-                                    android:layout_width="wrap_content"
-                                    android:layout_height="wrap_content"
-                                    android:text="Macro"
-                                    android:textColor="#94A3B8"
-                                    android:textSize="10.5sp" />
-
-                                <TextView
-                                    android:id="@+id/tvWallMacroName"
-                                    android:layout_width="0dp"
-                                    android:layout_height="wrap_content"
-                                    android:layout_marginStart="6dp"
-                                    android:layout_weight="1"
-                                    android:ellipsize="end"
-                                    android:maxLines="1"
-                                    android:text="No wall macro"
-                                    android:textColor="#E6EBF5"
-                                    android:textSize="11sp" />
-
-                                <TextView
-                                    android:id="@+id/btnWallMacro"
-                                    android:layout_width="wrap_content"
-                                    android:layout_height="26dp"
-                                    android:gravity="center"
-                                    android:paddingHorizontal="8dp"
-                                    android:text="Change"
-                                    android:textColor="#60A5FA"
-                                    android:textSize="11sp"
-                                    android:textStyle="bold" />
-                            </LinearLayout>
-
-                            <Button
-                                android:id="@+id/btnWallRecord"
-                                android:layout_width="match_parent"
-                                android:layout_height="32dp"
-                                android:layout_marginTop="6dp"
-                                android:backgroundTint="#DC2626"
-                                android:insetTop="0dp"
-                                android:insetBottom="0dp"
-                                android:text="●  Record wall macro"
-                                android:textAllCaps="false"
-                                android:textColor="#FFFFFF"
-                                android:textSize="11.5sp"
-                                android:textStyle="bold" />
 
                             <LinearLayout
                                 android:layout_width="match_parent"
@@ -866,95 +814,79 @@
                                     android:layout_width="0dp"
                                     android:layout_height="wrap_content"
                                     android:layout_weight="1"
-                                    android:text="Cost per wall"
+                                    android:text="Allow tapping"
                                     android:textColor="#E6EBF5"
                                     android:textSize="11sp" />
 
-                                <EditText
-                                    android:id="@+id/etWallCost"
-                                    android:layout_width="92dp"
-                                    android:layout_height="28dp"
-                                    android:background="@drawable/bg_save_input"
-                                    android:fontFeatureSettings="tnum"
-                                    android:hint="0"
-                                    android:inputType="number"
-                                    android:maxLength="11"
-                                    android:paddingStart="8dp"
-                                    android:paddingEnd="8dp"
-                                    android:singleLine="true"
-                                    android:textColor="#E6EBF5"
-                                    android:textColorHint="#5B6B8A"
-                                    android:textSize="12sp" />
+                                <Switch
+                                    android:id="@+id/wallTappingSwitch"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="30dp" />
                             </LinearLayout>
 
                             <TextView
                                 android:layout_width="match_parent"
                                 android:layout_height="wrap_content"
-                                android:text="Walls cost the same in gold and elixir, so this one number covers both."
+                                android:text="Off = scan only, no touches are sent. On = the bot taps the wall rows it selected."
                                 android:textColor="#94A3B8"
                                 android:textSize="9.5sp" />
 
                             <LinearLayout
+                                android:id="@+id/wallTappingConfirm"
                                 android:layout_width="match_parent"
-                                android:layout_height="30dp"
-                                android:layout_marginTop="4dp"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="6dp"
                                 android:gravity="center_vertical"
-                                android:orientation="horizontal">
+                                android:orientation="horizontal"
+                                android:padding="8dp"
+                                android:visibility="gone">
 
                                 <TextView
                                     android:layout_width="0dp"
                                     android:layout_height="wrap_content"
                                     android:layout_weight="1"
-                                    android:text="Keep in reserve"
-                                    android:textColor="#E6EBF5"
-                                    android:textSize="11sp" />
-
-                                <EditText
-                                    android:id="@+id/etWallReserve"
-                                    android:layout_width="92dp"
-                                    android:layout_height="28dp"
-                                    android:background="@drawable/bg_save_input"
-                                    android:fontFeatureSettings="tnum"
-                                    android:hint="0"
-                                    android:inputType="number"
-                                    android:maxLength="11"
-                                    android:paddingStart="8dp"
-                                    android:paddingEnd="8dp"
-                                    android:singleLine="true"
-                                    android:textColor="#E6EBF5"
-                                    android:textColorHint="#5B6B8A"
-                                    android:textSize="12sp" />
-                            </LinearLayout>
-
-                            <LinearLayout
-                                android:layout_width="match_parent"
-                                android:layout_height="30dp"
-                                android:gravity="center_vertical"
-                                android:orientation="horizontal">
+                                    android:text="Tapping lets the bot touch Clash. Enable it?"
+                                    android:textColor="#FCA5A5"
+                                    android:textSize="10sp" />
 
                                 <TextView
-                                    android:layout_width="0dp"
-                                    android:layout_height="wrap_content"
-                                    android:layout_weight="1"
-                                    android:text="Upgrade again on the same visit"
-                                    android:textColor="#E6EBF5"
-                                    android:textSize="11sp" />
-
-                                <Switch
-                                    android:id="@+id/wallRepeatSwitch"
+                                    android:id="@+id/btnTappingYes"
                                     android:layout_width="wrap_content"
-                                    android:layout_height="30dp" />
-                            </LinearLayout>
-                        </LinearLayout>
+                                    android:layout_height="26dp"
+                                    android:layout_marginStart="8dp"
+                                    android:clickable="true"
+                                    android:focusable="true"
+                                    android:gravity="center"
+                                    android:paddingHorizontal="10dp"
+                                    android:text="Enable"
+                                    android:textColor="#FFFFFF"
+                                    android:textSize="10.5sp"
+                                    android:textStyle="bold" />
 
-                        <TextView
-                            android:id="@+id/tvWallHistory"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:layout_marginTop="6dp"
-                            android:textColor="#94A3B8"
-                            android:textSize="10sp"
-                            android:visibility="gone" />
+                                <TextView
+                                    android:id="@+id/btnTappingNo"
+                                    android:layout_width="wrap_content"
+                                    android:layout_height="26dp"
+                                    android:layout_marginStart="6dp"
+                                    android:clickable="true"
+                                    android:focusable="true"
+                                    android:gravity="center"
+                                    android:paddingHorizontal="10dp"
+                                    android:text="Keep off"
+                                    android:textColor="#E6EBF5"
+                                    android:textSize="10.5sp"
+                                    android:textStyle="bold" />
+                            </LinearLayout>
+
+                            <TextView
+                                android:id="@+id/tvWallReport"
+                                android:layout_width="match_parent"
+                                android:layout_height="wrap_content"
+                                android:layout_marginTop="8dp"
+                                android:text="No scan yet"
+                                android:textColor="#94A3B8"
+                                android:textSize="10sp" />
+                        </LinearLayout>
                     </LinearLayout>
                 </ScrollView>
 
@@ -965,14 +897,14 @@
                     android:orientation="horizontal">
 
                     <Button
-                        android:id="@+id/btnWallTest"
+                        android:id="@+id/btnWallScan"
                         android:layout_width="0dp"
                         android:layout_height="36dp"
                         android:layout_weight="1"
                         android:backgroundTint="#1B2742"
                         android:insetTop="0dp"
                         android:insetBottom="0dp"
-                        android:text="Test macro"
+                        android:text="Scan screen"
                         android:textAllCaps="false"
                         android:textColor="#E6EBF5"
                         android:textSize="11.5sp"
@@ -993,66 +925,6 @@
                         android:textSize="11.5sp"
                         android:textStyle="bold" />
                 </LinearLayout>
-            </LinearLayout>
-
-            <!-- WALL STRIP -->
-            <LinearLayout
-                android:id="@+id/wallStripPanel"
-                android:layout_width="match_parent"
-                android:layout_height="52dp"
-                android:background="@drawable/bg_wall_strip"
-                android:gravity="center_vertical"
-                android:orientation="horizontal"
-                android:paddingStart="14dp"
-                android:paddingEnd="6dp"
-                android:visibility="gone">
-
-                <LinearLayout
-                    android:id="@+id/wallDragBar"
-                    android:layout_width="0dp"
-                    android:layout_height="52dp"
-                    android:layout_weight="1"
-                    android:gravity="center_vertical"
-                    android:orientation="horizontal">
-
-                    <FrameLayout
-                        android:layout_width="20dp"
-                        android:layout_height="20dp"
-                        android:background="@drawable/bg_wall_dot">
-
-                        <ImageView
-                            android:layout_width="12dp"
-                            android:layout_height="12dp"
-                            android:layout_gravity="center"
-                            android:contentDescription="@null"
-                            android:src="@drawable/ic_gold" />
-                    </FrameLayout>
-
-                    <TextView
-                        android:id="@+id/tvWallStripLabel"
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_marginStart="8dp"
-                        android:layout_weight="1"
-                        android:ellipsize="end"
-                        android:maxLines="1"
-                        android:singleLine="true"
-                        android:text="Walls"
-                        android:textColor="#EAF1FF"
-                        android:textSize="13sp"
-                        android:textStyle="bold" />
-                </LinearLayout>
-
-                <ImageButton
-                    android:id="@+id/btnWallStop"
-                    android:layout_width="36dp"
-                    android:layout_height="36dp"
-                    android:layout_marginStart="8dp"
-                    android:background="@drawable/bg_play_stop"
-                    android:contentDescription="Stop wall upgrader"
-                    android:padding="9dp"
-                    android:scaleType="fitCenter"
-                    android:src="@drawable/ic_stop_square" />
             </LinearLayout>
 
             <!-- RECOVERY STRIP -->

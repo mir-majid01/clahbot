@@ -63,10 +63,11 @@ data class Macro(
     val stopAfterMinutes: Int? = null,
     /** Stop after this many completed runs; null means no limit. */
     val stopAfterAttacks: Int? = null,
-    /** "attack" or "wall". Wall macros upgrade walls and never appear in the attack library. */
+    /**
+     * "attack" or "wall". "wall" is the removed legacy kind: such entries stay
+     * in macros.json untouched and are filtered out of the attack library.
+     */
     val kind: String = KIND_ATTACK,
-    /** Wall macro run after this attack macro finishes; -1 uses the globally selected one. */
-    val linkedWallMacroId: Long = -1L,
     val lastPlayedAt: Long? = null,
     val playCount: Int = 0,
     val schemaVersion: Int = CURRENT_SCHEMA_VERSION

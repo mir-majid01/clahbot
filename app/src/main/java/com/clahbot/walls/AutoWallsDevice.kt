@@ -17,9 +17,9 @@ import kotlinx.coroutines.delay
  *
  * Production keeps [AutoWallsConfig.allowTapping] false, so the machine stops at
  * SAFETY_BLOCKED before any tap. [observe] is safe to run, but [tap] and [scroll]
- * are only reached once a future device-verified build opens the gate; the
- * autonomous [AutoWallsRuntime.run] loop is deliberately not wired into the live
- * attack boundary yet, so it never competes with the recorded-macro WallAutomation.
+ * are only reached once the user enables tapping in the controller and the
+ * OCR quality has been device-verified; the [AutoWallsRuntime.run] loop is
+ * wired only to the trigger boundary with the gate held around it.
  */
 class AutoWallsDevice(
     private val engine: GameScreenEngine,

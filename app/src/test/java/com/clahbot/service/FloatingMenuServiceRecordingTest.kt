@@ -8,12 +8,10 @@ import com.clahbot.data.SettingsStore
 import com.clahbot.data.models.GesturePoint
 import com.clahbot.data.models.Macro
 import com.clahbot.data.models.RecordedGesture
-import com.clahbot.walls.WallsRepository
 import java.io.File
 import java.nio.file.Files
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -39,19 +37,16 @@ class FloatingMenuServiceRecordingTest {
 
     private lateinit var directory: File
     private lateinit var repository: MacroRepository
-    private lateinit var wallsRepository: WallsRepository
     private lateinit var service: FloatingMenuService
 
     @Before
     fun setUp() {
         directory = Files.createTempDirectory("clahbot-controller").toFile()
         repository = MacroRepository(File(directory, "macros.json"))
-        wallsRepository = WallsRepository(File(directory, "walls.json"))
         service = Robolectric.buildService(FloatingMenuService::class.java).get()
         val settings = SettingsStore.get(RuntimeEnvironment.getApplication())
         settings.update { it.copy(hapticFeedback = false) }
         ReflectionHelpers.setField(service, "repository", repository)
-        ReflectionHelpers.setField(service, "wallsRepository", wallsRepository)
         ReflectionHelpers.setField(service, "settingsStore", settings)
         ReflectionHelpers.setField(service, "recorded", mutableListOf<RecordedGesture>())
         BotState.setState(ControllerState.READY)
@@ -77,39 +72,16 @@ class FloatingMenuServiceRecordingTest {
     }
 
     @Test
-    fun undoingASavedWallMacroRestoresTheWallRecordingAndClearsItsSelection() = runBlocking {
-        val saved = repository.save(macro(id = 1L, name = "Wall", kind = Macro.KIND_WALL))!!
-        wallsRepository.updateSettings {
-            it.copy(wallMacroId = saved.id, testedWallMacroId = saved.id)
-        }
+    fun undoingASavedMacroRestoresTheGesturesForANewName() = runBlocking {
+        val saved = repository.save(macro(id = 1L, name = "Farm loop", kind = Macro.KIND_ATTACK))!!
         ReflectionHelpers.setField(service, "savedMacro", saved)
-        ReflectionHelpers.setField(service, "recordingWallMacro", false)
 
         ReflectionHelpers.callInstanceMethod<Any?>(service, "undoSavedMacro")
         await { ReflectionHelpers.getField<Macro?>(service, "savedMacro") == null }
 
         assertNull(repository.get(saved.id))
-        assertEquals(-1L, wallsRepository.settings().wallMacroId)
-        assertEquals(-1L, wallsRepository.settings().testedWallMacroId)
-        assertTrue(ReflectionHelpers.getField<Boolean>(service, "recordingWallMacro"))
         assertTrue(ReflectionHelpers.getField<Boolean>(service, "savePending"))
         assertEquals(saved.gestures, ReflectionHelpers.getField<List<RecordedGesture>>(service, "recorded"))
-    }
-
-    @Test
-    fun undoingAWallMacroDoesNotClearADifferentSelectedWallMacro() = runBlocking {
-        val saved = repository.save(macro(id = 1L, name = "Wall", kind = Macro.KIND_WALL))!!
-        wallsRepository.updateSettings {
-            it.copy(wallMacroId = 77L, testedWallMacroId = 77L)
-        }
-        ReflectionHelpers.setField(service, "savedMacro", saved)
-
-        ReflectionHelpers.callInstanceMethod<Any?>(service, "undoSavedMacro")
-        await { ReflectionHelpers.getField<Macro?>(service, "savedMacro") == null }
-
-        assertEquals(77L, wallsRepository.settings().wallMacroId)
-        assertEquals(77L, wallsRepository.settings().testedWallMacroId)
-        assertTrue(ReflectionHelpers.getField<Boolean>(service, "recordingWallMacro"))
     }
 
     @Test
@@ -117,7 +89,6 @@ class FloatingMenuServiceRecordingTest {
         val waiter = CoroutineScope(Dispatchers.Unconfined).launch { delay(60_000) }
         ReflectionHelpers.setField(service, "saveJob", waiter)
         ReflectionHelpers.setField(service, "savePending", true)
-        ReflectionHelpers.setField(service, "recordingWallMacro", true)
         ReflectionHelpers.getField<MutableList<RecordedGesture>>(service, "recorded").add(gesture())
 
         ReflectionHelpers.callInstanceMethod<Any?>(service, "discardReviewedRecording")
@@ -129,15 +100,13 @@ class FloatingMenuServiceRecordingTest {
     }
 
     @Test
-    fun undoingADiscardRestoresTheWallRecordingKind() {
+    fun undoingADiscardRestoresTheGestures() {
         ReflectionHelpers.setField(service, "savePending", true)
-        ReflectionHelpers.setField(service, "recordingWallMacro", true)
         ReflectionHelpers.getField<MutableList<RecordedGesture>>(service, "recorded").add(gesture())
 
         ReflectionHelpers.callInstanceMethod<Any?>(service, "discardReviewedRecording")
         ReflectionHelpers.callInstanceMethod<Any?>(service, "undoDiscardedRecording")
 
-        assertTrue(ReflectionHelpers.getField<Boolean>(service, "recordingWallMacro"))
         assertTrue(ReflectionHelpers.getField<Boolean>(service, "savePending"))
         assertEquals(1, ReflectionHelpers.getField<List<RecordedGesture>>(service, "recorded").size)
     }

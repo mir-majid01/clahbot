@@ -393,7 +393,9 @@ class AutoWallsRepository internal constructor(
         val strategy: String? = null,
         val currency: String? = null,
         val minConfidence: Float? = null,
-        val allowTapping: Boolean = false
+        val allowTapping: Boolean = false,
+        val goldBalance: Long? = null,
+        val elixirBalance: Long? = null
     ) {
         fun toReport(): AutoWallsScanReport = AutoWallsScanReport(
             at = at,
@@ -415,7 +417,10 @@ class AutoWallsRepository internal constructor(
             currency = currency.enumOr(WallCurrency.BOTH),
             minConfidence = (minConfidence ?: 0.6f).coerceIn(0f, 1f),
             // A stored report must never claim it unlocked tapping.
-            allowTapping = false
+            allowTapping = false,
+            // A negative stored balance is garbage, never a real reading.
+            goldBalance = goldBalance?.takeIf { it >= 0L },
+            elixirBalance = elixirBalance?.takeIf { it >= 0L }
         )
 
         companion object {
@@ -436,7 +441,9 @@ class AutoWallsRepository internal constructor(
                 strategy = report.strategy.name,
                 currency = report.currency.name,
                 minConfidence = report.minConfidence,
-                allowTapping = report.allowTapping
+                allowTapping = report.allowTapping,
+                goldBalance = report.goldBalance,
+                elixirBalance = report.elixirBalance
             )
         }
     }

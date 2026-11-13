@@ -62,14 +62,12 @@ class MacroRepositoryTest {
     @Test
     fun createPreservesTheExactNameAndNeverReusesASuppliedId() = runBlocking {
         val existing = repository.save(sampleMacro(id = 1, name = "Existing"))!!
-        val result = repository.create(
-            sampleMacro(id = 1, name = "  Farm  LOOP  ").copy(kind = Macro.KIND_WALL)
-        )
+        val result = repository.create(sampleMacro(id = 1, name = "  Farm  LOOP  "))
         val created = (result as MacroWriteResult.Saved).macro
 
         assertTrue(created.id != existing.id)
         assertEquals("Farm  LOOP", created.name)
-        assertEquals(Macro.KIND_WALL, created.kind)
+        assertEquals(Macro.KIND_ATTACK, created.kind)
         assertEquals("Existing", repository.get(existing.id)?.name)
         assertEquals(2, repository.load().size)
     }
@@ -172,7 +170,6 @@ class MacroRepositoryTest {
             name = "Renamed",
             gestures = emptyList(),
             createdAt = 999L,
-            kind = Macro.KIND_WALL,
             playCount = 99,
             speedMultiplier = 2f,
             repeatMode = "3"
@@ -191,18 +188,14 @@ class MacroRepositoryTest {
     }
 
     @Test
-    fun settingsUpdateRejectsDuplicateNamesAndMissingWallLinks() = runBlocking {
+    fun settingsUpdateRejectsDuplicateNamesWithoutWriting() = runBlocking {
         repository.save(sampleMacro(id = 1, name = "One"))
         val second = repository.save(sampleMacro(id = 2, name = "Two"))!!
 
         assertTrue(
             repository.updateSettings(second.copy(name = " one ")) is MacroWriteResult.Rejected
         )
-        assertTrue(
-            repository.updateSettings(second.copy(linkedWallMacroId = 999)) is MacroWriteResult.Rejected
-        )
         assertEquals("Two", repository.get(second.id)?.name)
-        assertEquals(-1L, repository.get(second.id)?.linkedWallMacroId)
     }
 
     @Test
@@ -213,38 +206,6 @@ class MacroRepositoryTest {
         assertTrue(repository.delete(first.id))
         assertNull(repository.get(first.id))
         assertNotNull(repository.get(2))
-    }
-
-    @Test
-    fun deletingAWallMacroClearsLinksSoAttackMacrosStayEditable() = runBlocking {
-        repository.save(sampleMacro(id = 10, name = "Wall").copy(kind = Macro.KIND_WALL))
-        repository.save(sampleMacro(id = 1, name = "Attack").copy(linkedWallMacroId = 10L))
-        assertEquals(10L, repository.get(1L)?.linkedWallMacroId)
-
-        assertTrue(repository.delete(10L))
-
-        assertEquals(-1L, repository.get(1L)?.linkedWallMacroId)
-        // A dangling link used to make updateSettings reject every edit, so the
-        // attack macro could not even be renamed after its wall macro was gone.
-        val renamed = repository.updateSettings(repository.get(1L)!!.copy(name = "Renamed"))
-        assertTrue(renamed is MacroWriteResult.Saved)
-        assertEquals(-1L, MacroRepository(file).load().first { it.id == 1L }.linkedWallMacroId)
-    }
-
-    @Test
-    fun deleteManyClearsLinksToEveryRemovedWallMacroOnly() = runBlocking {
-        repository.save(sampleMacro(id = 10, name = "Wall A").copy(kind = Macro.KIND_WALL))
-        repository.save(sampleMacro(id = 11, name = "Wall B").copy(kind = Macro.KIND_WALL))
-        repository.save(sampleMacro(id = 1, name = "Attack A").copy(linkedWallMacroId = 10L))
-        repository.save(sampleMacro(id = 2, name = "Attack B").copy(linkedWallMacroId = 11L))
-        repository.save(sampleMacro(id = 3, name = "Attack C").copy(linkedWallMacroId = 99L))
-
-        repository.deleteMany(setOf(10L, 11L))
-
-        assertEquals(-1L, repository.get(1L)?.linkedWallMacroId)
-        assertEquals(-1L, repository.get(2L)?.linkedWallMacroId)
-        // A link to a macro that was not part of this delete is left untouched.
-        assertEquals(99L, repository.get(3L)?.linkedWallMacroId)
     }
 
     @Test

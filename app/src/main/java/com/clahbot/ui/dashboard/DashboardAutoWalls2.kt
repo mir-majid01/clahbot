@@ -386,6 +386,9 @@ fun AcAutoWalls2Section(repository: AutoWallsRepository, scope: CoroutineScope) 
                             fontSize = 10.5.sp,
                             color = Color(Ds.MUTED)
                         )
+                        balancesText(scan)?.let { balances ->
+                            Text(balances, fontSize = 10.5.sp, color = Color(Ds.TEXT))
+                        }
                     }
                     scan.reason?.let { reason ->
                         Text(reason, fontSize = 11.sp, color = Color(Ds.WARN))
@@ -451,6 +454,15 @@ fun AcAutoWalls2Section(repository: AutoWallsRepository, scope: CoroutineScope) 
 
 private fun snapConfidence(value: Float): Float =
     ((value / 0.05f).roundToInt() * 0.05f).coerceIn(0.3f, 1f)
+
+/** One line per readable counter: the balance and the walls it could pay for. */
+private fun balancesText(scan: AutoWallsScanReport): String? {
+    val parts = buildList {
+        scan.goldBalance?.let { add("Gold ${AutoWallsScan.priceLabel(it)} → ${scan.affordableGold} walls") }
+        scan.elixirBalance?.let { add("Elixir ${AutoWallsScan.priceLabel(it)} → ${scan.affordableElixir} walls") }
+    }
+    return parts.joinToString(" · ").ifEmpty { null }
+}
 
 @Composable
 private fun Ac2Label(text: String) {

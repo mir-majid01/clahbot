@@ -116,7 +116,7 @@ class AutoWallsRuntime(
         sessionUpgrades++
     }
 
-    suspend fun run(): Outcome {
+    suspend fun run(manual: Boolean = false): Outcome {
         val machine = session.machine
             ?: return Outcome(AutoWallsState.DISABLED, "session not started", verified)
         if (machine.state == AutoWallsState.DISABLED) {
@@ -130,15 +130,23 @@ class AutoWallsRuntime(
         while (true) {
             action = when (action) {
                 is AutoWallsMachine.Action.WaitForTrigger -> {
-                    val frame = device.observe()
-                        ?: return finish(machine, "no frame to evaluate the trigger")
-                    val evidence = TriggerEvidence(
-                        enabled = machine.state != AutoWallsState.DISABLED,
-                        resources = frame.counters(),
-                        now = device.now(),
-                        upgradesThisSession = sessionUpgrades
-                    )
-                    val evaluation = session.evaluateTrigger(evidence)
+                    val evaluation = if (manual) {
+                        // A manual "Run now" bypasses the trigger counters; the
+                        // machine's own enabled guard still applies above.
+                        TriggerEvaluation(
+                            listOf(TriggerCondition("manual", true, "manual run requested"))
+                        )
+                    } else {
+                        val frame = device.observe()
+                            ?: return finish(machine, "no frame to evaluate the trigger")
+                        val evidence = TriggerEvidence(
+                            enabled = machine.state != AutoWallsState.DISABLED,
+                            resources = frame.counters(),
+                            now = device.now(),
+                            upgradesThisSession = sessionUpgrades
+                        )
+                        session.evaluateTrigger(evidence)
+                    }
                     val next = machine.onTrigger(evaluation)
                     if (!evaluation.pass) {
                         return Outcome(

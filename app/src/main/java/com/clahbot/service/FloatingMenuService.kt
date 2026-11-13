@@ -94,11 +94,12 @@ import com.clahbot.overlay.TouchEffectsView
 import com.clahbot.walls.AutoWallsDevice
 import com.clahbot.walls.AutoWallsRepository
 import com.clahbot.walls.AutoWallsRuntime
+import com.clahbot.walls.AutoWallsScan
+import com.clahbot.walls.AutoWallsScanner
+import com.clahbot.walls.AutoWallsScanReport
 import com.clahbot.walls.AutoWallsSession
-import com.clahbot.walls.WallAutomation
-import com.clahbot.walls.WallResourceMode
-import com.clahbot.walls.WallSettings
-import com.clahbot.walls.WallsRepository
+import com.clahbot.walls.AutoWallsState
+import com.clahbot.walls.WallCurrency
 import com.clahbot.input.BuiltGesture
 import com.clahbot.input.GetEventDiscovery
 import com.clahbot.input.InputAccessManager
@@ -224,7 +225,6 @@ class FloatingMenuService : Service() {
     private var autoWatchEnabled = true
 
     private var macros: List<Macro> = emptyList()
-    private var wallMacros: List<Macro> = emptyList()
     private var selectedId: Long = -1L
     private var settingsView: View? = null
     private var settingsMacroId: Long = -1L
@@ -250,7 +250,6 @@ class FloatingMenuService : Service() {
     private var saveJob: Job? = null
     private var savedMacro: Macro? = null
     private var discardedGestures: List<RecordedGesture>? = null
-    private var discardedWallMacro = false
     private var saveUndoRunnable: Runnable? = null
     private var pendingRecAction: RecConfirmAction? = null
     private var confirmRevert: Runnable? = null
@@ -270,17 +269,16 @@ class FloatingMenuService : Service() {
     private lateinit var resultsReader: AppResultsReader
     private lateinit var resultsCapture: ResultsCaptureCoordinator
 
-    private lateinit var wallsRepository: WallsRepository
     private val gameEngine = GameScreenEngine()
     private var recoveryAgent: RecoveryAgent? = null
     private var recoveryWatchdog: RecoveryWatchdog? = null
-    private var wallAutomation: WallAutomation? = null
-    /** Auto Walls 2.0 pipeline; only its completed-attack counter feed is live. */
+    /** Auto Walls 2.0 runtime cached for the attack counter feed; runs start fresh. */
     private var autoWallsRuntime: AutoWallsRuntime? = null
-    private var wallChromeActive = false
-    private var wallPickerView: View? = null
-    /** The current recording is a wall upgrade macro, not an attack macro. */
-    private var recordingWallMacro = false
+    private var autoWallsScanJob: Job? = null
+    private var autoWallsRunJob: Job? = null
+
+    private val autoWallsRepository: AutoWallsRepository
+        get() = AutoWallsRepository.get(this)
     private var resultToastHide: Runnable? = null
 
     private val timerRunnable = object : Runnable {
@@ -311,7 +309,6 @@ class FloatingMenuService : Service() {
         }.getOrNull() ?: "?"
         AppEventLog.init(this, versionName)
         resultsReader = AppResultsReader(this)
-        wallsRepository = WallsRepository.get(this)
         RecoveryRepositoryHolder.init(this)
         recoveryAgent = RecoveryAgent(gameEngine, resultsReader)
         ClahAccessibilityService.overlayMaskProvider = {
@@ -339,7 +336,6 @@ class FloatingMenuService : Service() {
                 if (playbackRunActive || BotState.state.value.isPlayback) {
                     BotState.noteRunAttack()
                 }
-                wallAutomation?.noteLeftHome()
                 AppEventLog.log(
                     "record callback playerRunning=${player?.isRunning() == true} " +
                         "runAttacks=${BotState.runAttackCount.value} " +
@@ -387,8 +383,6 @@ class FloatingMenuService : Service() {
         scope.launch { attackRepository.records.collect { renderStats() } }
         scope.launch { sessionRepository.sessions.collect { renderStats() } }
         scope.launch { repository.macros.collect { onMacrosChanged(it) } }
-        // The dashboard writes the same file; the tab must follow it live.
-        scope.launch { wallsRepository.state.collect { refreshWalls() } }
         scope.launch {
             BotState.state.collect { state ->
                 if (state == ControllerState.PLAYBACK_PAUSED) {
@@ -409,7 +403,6 @@ class FloatingMenuService : Service() {
                 refreshUi()
             }
         }
-        scope.launch { BotState.wallStrip.collect { refreshUi() } }
         scope.launch { BotState.recoveryStrip.collect { refreshUi() } }
         scope.launch { BotState.resultToast.collect { applyResultToast(it) } }
         scope.launch {
@@ -514,14 +507,6 @@ class FloatingMenuService : Service() {
             }
 
             ACTION_RESET_POSITION -> resetControllerPosition()
-            ACTION_WALL_RUN -> {
-                ensureController()
-                startWallRun(manual = true)
-            }
-            ACTION_WALL_TEST -> {
-                ensureController()
-                startWallRun(manual = false)
-            }
             ACTION_OPEN -> {
                 ensureController()
                 expandController()
@@ -637,8 +622,6 @@ class FloatingMenuService : Service() {
         stopPassiveRecorder()
         removeCapture()
         removeEffectsOverlay()
-        wallAutomation?.cancel()
-        closeWallPicker()
         removeController()
         scope.cancel()
         super.onDestroy()
@@ -647,15 +630,7 @@ class FloatingMenuService : Service() {
     // ------------------------------------------------------------ macro sync
 
     private fun onMacrosChanged(list: List<Macro>) {
-        wallMacros = list.filter { it.kind == Macro.KIND_WALL }
         macros = list.filter { it.kind != Macro.KIND_WALL }
-        // A wall macro deleted here or on the dashboard must not stay selected
-        // against a missing id; clear the selection without touching the switch.
-        val wallIds = wallMacros.mapTo(mutableSetOf()) { it.id }
-        val currentWalls = wallsRepository.settings()
-        if (currentWalls.reconciled(wallIds) != currentWalls) {
-            wallsRepository.updateSettings { it.reconciled(wallIds) }
-        }
         // Adopt a selection made on the dashboard, then validate it against the
         // library so a deleted macro can never stay selected.
         val desired = if (selectedId > 0) selectedId else BotState.selectedMacroId.value
@@ -679,8 +654,6 @@ class FloatingMenuService : Service() {
 
         renderMacroList()
         refreshUi()
-        // A renamed or deleted wall macro changes what the Walls tab shows.
-        refreshWalls()
     }
 
     // ---------------------------------------------------------------- windows
@@ -981,58 +954,6 @@ class FloatingMenuService : Service() {
             BotState.setStatus("Playback stopped")
         }
 
-        bindWallsPanel(view, params)
-    }
-
-    private fun bindWallsPanel(view: View, params: WindowManager.LayoutParams) {
-        view.findViewById<Switch>(R.id.wallSwitch).setOnCheckedChangeListener { _, checked ->
-            if (!checked && wallAutomation?.isBusy() == true) stopWallRun()
-            wallsRepository.updateSettings { it.copy(enabled = checked) }
-            refreshWalls()
-        }
-        view.findViewById<Switch>(R.id.wallRepeatSwitch).setOnCheckedChangeListener { _, checked ->
-            wallsRepository.updateSettings { it.copy(allowRepeatUpgrades = checked) }
-            refreshWalls()
-        }
-        bindWallNumber(view.findViewById(R.id.etWallCost)) { value ->
-            wallsRepository.updateSettings { it.copy(costPerWall = value) }
-        }
-        bindWallNumber(view.findViewById(R.id.etWallReserve)) { value ->
-            wallsRepository.updateSettings { it.copy(minReserve = value) }
-        }
-        listOf(
-            R.id.btnWallModeGold to WallResourceMode.GOLD,
-            R.id.btnWallModeElixir to WallResourceMode.ELIXIR,
-            R.id.btnWallModeBoth to WallResourceMode.BOTH
-        ).forEach { (id, mode) ->
-            view.findViewById<TextView>(id).setOnClickListener {
-                haptic()
-                wallsRepository.updateSettings { it.copy(resourceMode = mode) }
-                refreshWalls()
-            }
-        }
-        view.findViewById<View>(R.id.btnWallMacro).setOnClickListener {
-            haptic()
-            openWallPicker()
-        }
-        view.findViewById<View>(R.id.btnWallRecord).setOnClickListener {
-            haptic()
-            startWallMacroRecording()
-        }
-        view.findViewById<View>(R.id.btnWallTest).setOnClickListener {
-            haptic()
-            startWallRun(manual = false)
-        }
-        view.findViewById<View>(R.id.btnWallRun).setOnClickListener {
-            haptic()
-            startWallRun(manual = true)
-        }
-        view.findViewById<View>(R.id.wallDragBar)
-            .setOnTouchListener(dragListener(params, PlacementKind.PLAYING, onTap = {}))
-        view.findViewById<ImageButton>(R.id.btnWallStop).setOnClickListener {
-            haptic()
-            stopWallRun()
-        }
         view.findViewById<View>(R.id.recoveryDragBar)
             .setOnTouchListener(dragListener(params, PlacementKind.PLAYING, onTap = {}))
         view.findViewById<ImageButton>(R.id.btnRecoveryStop).setOnClickListener {
@@ -1040,6 +961,236 @@ class FloatingMenuService : Service() {
             stopPlayback()
             BotState.setState(ControllerState.READY)
             BotState.setStatus("Playback stopped")
+        }
+
+        bindAutoWallsPanel(view)
+    }
+
+    private fun bindAutoWallsPanel(view: View) {
+        view.findViewById<Switch>(R.id.wallSwitch).setOnCheckedChangeListener { _, checked ->
+            if (!checked) hideTappingConfirm(view)
+            val config = autoWallsRepository.loadConfig()
+            autoWallsRepository.saveConfig(config.copy(enabled = checked))
+            refreshAutoWalls()
+        }
+        listOf(
+            R.id.btnWallModeGold to WallCurrency.GOLD,
+            R.id.btnWallModeElixir to WallCurrency.ELIXIR,
+            R.id.btnWallModeBoth to WallCurrency.BOTH
+        ).forEach { (id, currency) ->
+            view.findViewById<TextView>(id).setOnClickListener {
+                haptic()
+                val config = autoWallsRepository.loadConfig()
+                autoWallsRepository.saveConfig(
+                    config.copy(selection = config.selection.copy(currency = currency))
+                )
+                refreshAutoWalls()
+            }
+        }
+        view.findViewById<Switch>(R.id.wallTappingSwitch)
+            .setOnCheckedChangeListener { button, checked ->
+                if (checked) {
+                    // Two-step confirm: the switch only turns on after the user
+                    // acknowledges that the bot will start touching Clash.
+                    button.isChecked = false
+                    showTappingConfirm(view)
+                } else {
+                    hideTappingConfirm(view)
+                    val config = autoWallsRepository.loadConfig()
+                    autoWallsRepository.saveConfig(config.copy(allowTapping = false))
+                    refreshAutoWalls()
+                }
+            }
+        view.findViewById<View>(R.id.btnTappingYes).setOnClickListener {
+            haptic()
+            hideTappingConfirm(view)
+            val config = autoWallsRepository.loadConfig()
+            autoWallsRepository.saveConfig(config.copy(allowTapping = true))
+            view.findViewById<Switch>(R.id.wallTappingSwitch).isChecked = true
+            AppEventLog.log("auto-walls: tapping enabled by the user")
+            refreshAutoWalls()
+        }
+        view.findViewById<View>(R.id.btnTappingNo).setOnClickListener {
+            haptic()
+            hideTappingConfirm(view)
+        }
+        view.findViewById<View>(R.id.btnWallScan).setOnClickListener {
+            haptic()
+            startAutoWallsScan()
+        }
+        view.findViewById<View>(R.id.btnWallRun).setOnClickListener {
+            haptic()
+            startAutoWallsRun()
+        }
+    }
+
+    private fun showTappingConfirm(view: View) {
+        val box = view.findViewById<View>(R.id.wallTappingConfirm) ?: return
+        box.background = Ds.rounded(Ds.WARN_BG, 8, this)
+        box.visibility = View.VISIBLE
+    }
+
+    private fun hideTappingConfirm(view: View) {
+        view.findViewById<View>(R.id.wallTappingConfirm)?.visibility = View.GONE
+    }
+
+    private fun refreshAutoWalls() {
+        val view = controllerView ?: return
+        val config = autoWallsRepository.loadConfig()
+        view.findViewById<Switch>(R.id.wallSwitch)?.let {
+            if (it.isChecked != config.enabled) it.isChecked = config.enabled
+        }
+        view.findViewById<Switch>(R.id.wallTappingSwitch)?.let {
+            if (it.isChecked != config.allowTapping) it.isChecked = config.allowTapping
+        }
+        if (!config.allowTapping) hideTappingConfirm(view)
+        listOf(
+            R.id.btnWallModeGold to WallCurrency.GOLD,
+            R.id.btnWallModeElixir to WallCurrency.ELIXIR,
+            R.id.btnWallModeBoth to WallCurrency.BOTH
+        ).forEach { (id, currency) ->
+            view.findViewById<TextView>(id)?.apply {
+                background = Ds.rounded(
+                    if (currency == config.selection.currency) Ds.ACCENT else Ds.BUTTON,
+                    Ds.RADIUS_BUTTON,
+                    this@FloatingMenuService
+                )
+                setTextColor(
+                    if (currency == config.selection.currency) {
+                        android.graphics.Color.WHITE
+                    } else {
+                        Ds.MUTED
+                    }
+                )
+            }
+        }
+        view.findViewById<TextView>(R.id.tvWallStatus)?.text = when {
+            config.enabled && config.allowTapping -> "On · tapping enabled"
+            config.enabled -> "On · scan only (tapping off)"
+            else -> "Off — turn on to let Auto Walls run"
+        }
+        view.findViewById<TextView>(R.id.tvWallReport)?.text =
+            scanReportText(autoWallsRepository.loadScan())
+    }
+
+    private fun scanReportText(report: AutoWallsScanReport?): String {
+        if (report == null) {
+            return "No scan yet — open the wall list in Clash, then tap Scan screen."
+        }
+        val time = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date(report.at))
+        val head = time + " · " + (report.foregroundPackage ?: "foreground unreadable")
+        if (!report.captured) return head + "\n" + (report.reason ?: "screen not captured")
+        val picked = report.selected?.let {
+            "would pick L${it.level} ${it.currency} ${AutoWallsScan.priceLabel(it.price)}"
+        } ?: "nothing eligible"
+        val body = "${report.candidates.size} row(s) · ${report.eligible.size} eligible · $picked"
+        val balances = buildList {
+            report.goldBalance?.let {
+                add("Gold ${AutoWallsScan.priceLabel(it)} → ${report.affordableGold} walls")
+            }
+            report.elixirBalance?.let {
+                add("Elixir ${AutoWallsScan.priceLabel(it)} → ${report.affordableElixir} walls")
+            }
+        }.joinToString(" · ")
+        return head + "\n" + body +
+            (if (balances.isEmpty()) "" else "\n$balances") +
+            (report.reason?.let { "\n$it" } ?: "")
+    }
+
+    /** One read-only scan from the controller: Clash is already on screen, so no countdown. */
+    private fun startAutoWallsScan() {
+        if (autoWallsScanJob?.isActive == true) {
+            toast("A scan is already running")
+            return
+        }
+        hapticEvent()
+        toast("Scanning the wall list…")
+        autoWallsScanJob = scope.launch {
+            val result = withContext(Dispatchers.Default) {
+                try {
+                    AutoWallsScanner(
+                        repository = autoWallsRepository,
+                        device = AutoWallsDevice(gameEngine, resultsReader),
+                        log = { message -> AppEventLog.log(message) }
+                    ).scan()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    AutoWallsScan.captureFailed(
+                        foregroundPackage = null,
+                        config = autoWallsRepository.loadConfig(),
+                        detail = "scan failed: ${e.message ?: e.javaClass.simpleName}"
+                    )
+                }
+            }
+            refreshAutoWalls()
+            toast(
+                result.selected?.let { "Scan done — would pick L${it.level}" }
+                    ?: (result.reason ?: "Scan done")
+            )
+        }
+    }
+
+    /**
+     * A manual run of the Auto Walls 2.0 loop. The attack playback is parked
+     * through the same gate the taught wait screens use, the machine runs, and
+     * afterwards the attack resumes — or restarts if nothing was playing.
+     */
+    private fun startAutoWallsRun() {
+        if (autoWallsRunJob?.isActive == true) {
+            toast("A wall run is already going")
+            return
+        }
+        val config = autoWallsRepository.loadConfig()
+        if (!config.enabled) {
+            toast("Turn Auto Walls on first")
+            return
+        }
+        hapticEvent()
+        toast("Auto Walls run starting…")
+        autoWallsRunJob = scope.launch {
+            val hadPlayback = player?.isRunning() == true
+            player?.setGateHeld(true)
+            var result: AutoWallsRuntime.Outcome? = null
+            try {
+                result = withContext(Dispatchers.Default) {
+                    val session = AutoWallsSession(autoWallsRepository)
+                    session.start(allowTapping = config.allowTapping)
+                    AutoWallsRuntime(
+                        session = session,
+                        device = AutoWallsDevice(gameEngine, resultsReader),
+                        log = { message -> AppEventLog.log(message) }
+                    ).run(manual = true)
+                }
+                val outcome = result
+                AppEventLog.log(
+                    "auto-walls run: ${outcome.state} ${outcome.reason} " +
+                        "verified=${outcome.verifiedUpgrades}"
+                )
+                BotState.setStatus(
+                    if (outcome.verifiedUpgrades > 0) {
+                        "Auto Walls: ${outcome.verifiedUpgrades} upgrade(s) verified"
+                    } else {
+                        "Auto Walls: ${outcome.reason}"
+                    }
+                )
+            } finally {
+                withContext(NonCancellable) {
+                    player?.setGateHeld(false)
+                    val outcome = result
+                    val finished = when {
+                        outcome == null -> false
+                        !config.allowTapping -> false
+                        else -> outcome.verifiedUpgrades > 0 ||
+                            outcome.state == AutoWallsState.COOLDOWN
+                    }
+                    if (finished && !hadPlayback) {
+                        macros.firstOrNull { it.id == BotState.selectedMacroId.value }
+                            ?.let { startPlayback(it) }
+                    }
+                    refreshAutoWalls()
+                }
+            }
         }
     }
 
@@ -2483,16 +2634,13 @@ class FloatingMenuService : Service() {
         )
         player = newPlayer
         hapticEvent()
-        // This run leaving the village arms the next home visit for one upgrade.
-        wallAutomation?.noteLeftHome()
         newPlayer.play(
             adjusted,
             scope,
             onFinished = {
                 endAttackSession(interrupted = false)
                 onPlaybackRunEnded()
-            },
-            onLoopBoundary = { wallLoopBoundary() }
+            }
         )
         startRecoveryWatchdog(newPlayer)
         if (!newPlayer.isRunning()) {
@@ -2570,9 +2718,6 @@ class FloatingMenuService : Service() {
                 statsScope = if ((active?.attackCount ?: 0) > 0) STATS_SESSION else STATS_ALL
                 renderStats()
             }
-        }
-        if (next == PAGE_WALLS) {
-            refreshWalls()
         }
     }
 
@@ -3472,8 +3617,8 @@ class FloatingMenuService : Service() {
     private fun beginSaveToast() {
         if (recorded.isEmpty()) return
         val suggestion = MacroNaming.uniqueDefault(
-            if (recordingWallMacro) "Wall upgrade" else defaultMacroName(),
-            (if (recordingWallMacro) wallMacros else macros).map { it.name }
+            defaultMacroName(),
+            macros.map { it.name }
         )
         reviewName = ""
         savePending = true
@@ -3601,7 +3746,6 @@ class FloatingMenuService : Service() {
             return
         }
         val prefs = settingsStore.settings.value
-        val asWall = recordingWallMacro
         val macro = Macro(
             id = 0L,
             name = entered,
@@ -3613,7 +3757,7 @@ class FloatingMenuService : Service() {
             gestures = gestures,
             repeatMode = prefs.defaultRepeat,
             speedMultiplier = MacroTimeline.clampSpeed(prefs.defaultSpeed),
-            kind = if (asWall) Macro.KIND_WALL else Macro.KIND_ATTACK
+            kind = Macro.KIND_ATTACK
         )
         savePending = false
         setSaveTyping(false)
@@ -3625,7 +3769,6 @@ class FloatingMenuService : Service() {
                 when (val result = repository.create(macro)) {
                     is MacroWriteResult.Rejected -> {
                         savePending = true
-                        recordingWallMacro = asWall
                         toast(result.message)
                         BotState.setStatus(result.message)
                         input?.requestFocus()
@@ -3638,18 +3781,8 @@ class FloatingMenuService : Service() {
                         reviewName = saved.name
                         recorded.clear()
                         BotState.clearRecording()
-                        recordingWallMacro = false
-                        if (asWall) {
-                            // Newly recorded wall macros are never run automatically until
-                            // the user has tested them once.
-                            wallsRepository.updateSettings {
-                                it.copy(wallMacroId = saved.id, testedWallMacroId = -1L)
-                            }
-                            toast("Wall macro saved · test it before automating")
-                        } else {
-                            selectedId = saved.id
-                            BotState.setSelectedMacroId(saved.id)
-                        }
+                        selectedId = saved.id
+                        BotState.setSelectedMacroId(saved.id)
                         BotState.setStatus("Saved \"${saved.name}\"")
                         reviewPhase = ReviewPhase.SAVED
                         view.findViewById<TextView>(R.id.tvSavedText).text = "Saved · ${saved.name}"
@@ -3662,7 +3795,6 @@ class FloatingMenuService : Service() {
             } catch (error: Exception) {
                 AppEventLog.log("recording: save failed ${error.message}")
                 savePending = true
-                recordingWallMacro = asWall
                 toast("Could not save macro")
                 BotState.setStatus("Could not save macro")
                 input?.requestFocus()
@@ -3681,8 +3813,6 @@ class FloatingMenuService : Service() {
         saveJob = null
         savePending = false
         setSaveTyping(false)
-        discardedWallMacro = recordingWallMacro
-        recordingWallMacro = false
         discardedGestures = recorded.toList()
         recorded.clear()
         BotState.clearRecording()
@@ -3730,15 +3860,6 @@ class FloatingMenuService : Service() {
                 BotState.setStatus("Undo failed — macro still saved")
                 return@launch
             }
-            if (saved.kind == Macro.KIND_WALL) {
-                wallsRepository.updateSettings {
-                    it.copy(
-                        wallMacroId = if (it.wallMacroId == saved.id) -1L else it.wallMacroId,
-                        testedWallMacroId = if (it.testedWallMacroId == saved.id) -1L else it.testedWallMacroId
-                    )
-                }
-            }
-            recordingWallMacro = saved.kind == Macro.KIND_WALL
             savedMacro = null
             recorded.clear()
             recorded.addAll(saved.gestures)
@@ -3763,7 +3884,6 @@ class FloatingMenuService : Service() {
         discardedGestures = null
         recorded.clear()
         recorded.addAll(gestures)
-        recordingWallMacro = discardedWallMacro
         reviewPhase = ReviewPhase.SAVE
         savePending = true
         BotState.setState(ControllerState.REVIEW)
@@ -5373,9 +5493,7 @@ class FloatingMenuService : Service() {
 
     private fun restoreControllerChrome() {
         dismissRecConfirm()
-        if (!recordingChromeActive && !reviewChromeActive && !playbackChromeActive &&
-            !wallChromeActive
-        ) {
+        if (!recordingChromeActive && !reviewChromeActive && !playbackChromeActive) {
             return
         }
         val view = controllerView ?: return
@@ -5383,7 +5501,6 @@ class FloatingMenuService : Service() {
         recordingChromeActive = false
         reviewChromeActive = false
         playbackChromeActive = false
-        wallChromeActive = false
         playbackMinimized = false
         pendingPlaybackPoint = null
         stopPlaybackTicker()
@@ -5403,7 +5520,6 @@ class FloatingMenuService : Service() {
         view.findViewById<View>(R.id.recPill).visibility = View.GONE
         view.findViewById<View>(R.id.playPill).visibility = View.GONE
         view.findViewById<View>(R.id.playingPanel).visibility = View.GONE
-        view.findViewById<View>(R.id.wallStripPanel).visibility = View.GONE
         view.findViewById<View>(R.id.recoveryStripPanel).visibility = View.GONE
         applyPanelWidth(settingsView != null)
         view.requestLayout()
@@ -5675,27 +5791,18 @@ class FloatingMenuService : Service() {
                 collapsed = false
                 enterPlaybackChrome()
             }
-        } else if (BotState.wallStrip.value != null) {
-            if (!wallChromeActive) {
-                collapsed = false
-                enterWallChrome()
-            } else {
-                updateWallStripLabel()
-            }
-        } else if (recordingChromeActive || reviewChromeActive || playbackChromeActive ||
-            wallChromeActive
-        ) {
+        } else if (recordingChromeActive || reviewChromeActive || playbackChromeActive) {
             restoreControllerChrome()
         }
 
         val recovery = BotState.recoveryStrip.value
-        val statsVisible = page == PAGE_STATS && !wallChromeActive &&
+        val statsVisible = page == PAGE_STATS &&
             !showRecording && !showReview && !showPlaying
-        val wallsVisible = page == PAGE_WALLS && !wallChromeActive &&
+        val wallsVisible = page == PAGE_WALLS &&
             !showRecording && !showReview && !showPlaying
         val startCountdown = BotState.startCountdown.value
         val settingsOpen = settingsView != null
-        val readyVisible = !statsVisible && !wallsVisible && !wallChromeActive &&
+        val readyVisible = !statsVisible && !wallsVisible &&
             showReady && !settingsOpen
         view.findViewById<View>(R.id.readyFooter).visibility =
             if (readyVisible) View.VISIBLE else View.GONE
@@ -5703,8 +5810,9 @@ class FloatingMenuService : Service() {
             if (statsVisible) View.VISIBLE else View.GONE
         view.findViewById<View>(R.id.wallsPanel).visibility =
             if (wallsVisible && !settingsOpen) View.VISIBLE else View.GONE
+        if (wallsVisible && !settingsOpen) refreshAutoWalls()
         view.findViewById<View>(R.id.readyPanel).visibility =
-            if (!statsVisible && !wallsVisible && !wallChromeActive && showReady) {
+            if (!statsVisible && !wallsVisible && showReady) {
                 View.VISIBLE
             } else {
                 View.GONE
@@ -6230,27 +6338,6 @@ class FloatingMenuService : Service() {
         handler.postDelayed(hide, RESULT_TOAST_MS)
     }
 
-    private fun ensureWallAutomation(): WallAutomation {
-        wallAutomation?.let { return it }
-        val agent = recoveryAgent ?: RecoveryAgent(gameEngine, resultsReader).also {
-            recoveryAgent = it
-        }
-        return WallAutomation(
-            context = this,
-            agent = agent,
-            reader = resultsReader,
-            repository = wallsRepository,
-            macroProvider = { id -> repository.get(id) },
-            notify = { kind, message -> BotState.setResultToast(kind, message) }
-        ).also { wallAutomation = it }
-    }
-
-    /**
-     * The Auto Walls 2.0 pipeline, built once. Only its completed-attack counter
-     * feed is live: the autonomous run() loop is intentionally NOT activated here,
-     * so it never competes with the recorded-macro WallAutomation, and tapping
-     * stays disabled until discovery + safety pass real-device testing.
-     */
     private fun ensureAutoWallsRuntime(): AutoWallsRuntime {
         autoWallsRuntime?.let { return it }
         val session = AutoWallsSession(AutoWallsRepository.get(this))
@@ -6272,373 +6359,8 @@ class FloatingMenuService : Service() {
         ensureAutoWallsRuntime().onAttackCompleted()
     }
 
-    /**
-     * Attack loop boundary: this run finished, the next one has not started.
-     * The wall automation may use the village now; if it ends on an unsafe
-     * screen the loop stops instead of replaying into a dialog.
-     */
-    private suspend fun wallLoopBoundary() {
-        val attack = macros.firstOrNull { it.id == BotState.activeMacroId.value }
-        val outcome = ensureWallAutomation().onHomeVillage(attack)
-        AppEventLog.log("walls: boundary ${outcome.status} — ${outcome.detail}")
-        if (outcome.status == "stopped" && !outcome.safeToResume) {
-            handler.post {
-                stopPlayback()
-                BotState.setState(ControllerState.READY)
-                BotState.setStatus("Wall macro stopped the loop")
-            }
-        }
-    }
-
-    private fun startWallRun(manual: Boolean) {
-        if (wallAutomation?.isBusy() == true) {
-            toast("A wall run is already going")
-            return
-        }
-        if (ClahAccessibilityService.instance == null) {
-            toast(accessibilityHint())
-            return
-        }
-        hapticEvent()
-        val attack = macros.firstOrNull { it.id == BotState.activeMacroId.value }
-        scope.launch {
-            val automation = ensureWallAutomation()
-            val outcome = if (manual) automation.runManually(attack) else automation.dryRun(attack)
-            AppEventLog.log("walls: ${if (manual) "manual" else "test"} ${outcome.status}")
-            refreshWalls()
-        }
-    }
-
-    private fun stopWallRun() {
-        hapticEvent()
-        wallAutomation?.cancel()
-        toast("Stopping the wall macro")
-    }
-
     private fun syncMacroLists() {
-        val all = repository.macros.value
-        wallMacros = all.filter { it.kind == Macro.KIND_WALL }
-        macros = all.filter { it.kind != Macro.KIND_WALL }
-    }
-
-    /** Records a wall upgrade macro through the same passive recorder. */
-    private fun startWallMacroRecording() {
-        if (recording || preparingPassive || startingPassive) {
-            toast("Finish the current recording first")
-            return
-        }
-        recordingWallMacro = true
-        startRecording()
-    }
-
-    private fun bindWallNumber(field: EditText, apply: (Long) -> Unit) {
-        val commit = {
-            val value = field.text.toString().trim().toLongOrNull()?.coerceAtLeast(0L) ?: 0L
-            apply(value)
-            refreshWalls()
-        }
-        field.setOnFocusChangeListener { _, hasFocus -> if (!hasFocus) commit() }
-        field.setOnEditorActionListener { _, actionId, _ ->
-            if (actionId == EditorInfo.IME_ACTION_DONE) {
-                commit()
-                setFieldTyping(false, field)
-                true
-            } else {
-                false
-            }
-        }
-        field.setOnTouchListener { _, event ->
-            if (event.actionMasked == MotionEvent.ACTION_DOWN) setFieldTyping(true, field)
-            false
-        }
-    }
-
-    /** Mirrors setSaveTyping for the wall number fields. */
-    private fun setFieldTyping(typing: Boolean, field: EditText) {
-        val view = controllerView ?: return
-        val params = controllerParams ?: return
-        val base = WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS
-        params.flags = if (typing) base else base or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-        params.softInputMode = if (typing) {
-            WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE or
-                WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
-        } else {
-            WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN
-        }
-        try {
-            windowManager.updateViewLayout(view, params)
-        } catch (_: Exception) {
-            // Window detached.
-        }
-        val imm = getSystemService(INPUT_METHOD_SERVICE) as? InputMethodManager
-        if (typing) {
-            field.requestFocus()
-            imm?.showSoftInput(field, InputMethodManager.SHOW_IMPLICIT)
-        } else {
-            imm?.hideSoftInputFromWindow(field.windowToken, 0)
-        }
-    }
-
-    private fun refreshWalls() {
-        val view = controllerView ?: return
-        val settings = wallsRepository.settings()
-        view.findViewById<Switch>(R.id.wallSwitch)?.let {
-            if (it.isChecked != settings.enabled) it.isChecked = settings.enabled
-        }
-        view.findViewById<Switch>(R.id.wallRepeatSwitch)?.let {
-            if (it.isChecked != settings.allowRepeatUpgrades) it.isChecked = settings.allowRepeatUpgrades
-        }
-        val cost = view.findViewById<EditText>(R.id.etWallCost)
-        if (cost != null && !cost.hasFocus()) {
-            val text = if (settings.costPerWall > 0) settings.costPerWall.toString() else ""
-            if (cost.text.toString() != text) cost.setText(text)
-        }
-        val reserve = view.findViewById<EditText>(R.id.etWallReserve)
-        if (reserve != null && !reserve.hasFocus()) {
-            val text = if (settings.minReserve > 0) settings.minReserve.toString() else ""
-            if (reserve.text.toString() != text) reserve.setText(text)
-        }
-        val selected = settings.resourceMode
-        listOf(
-            R.id.btnWallModeGold to WallResourceMode.GOLD,
-            R.id.btnWallModeElixir to WallResourceMode.ELIXIR,
-            R.id.btnWallModeBoth to WallResourceMode.BOTH
-        ).forEach { (id, mode) ->
-            view.findViewById<TextView>(id)?.apply {
-                background = Ds.rounded(
-                    if (mode == selected) Ds.ACCENT else Ds.BUTTON,
-                    Ds.RADIUS_BUTTON,
-                    this@FloatingMenuService
-                )
-                setTextColor(
-                    if (mode == selected) android.graphics.Color.WHITE else Ds.MUTED
-                )
-            }
-        }
-        val macroName = wallMacros.firstOrNull { it.id == settings.wallMacroId }?.name
-        view.findViewById<TextView>(R.id.tvWallMacroName)?.text = when {
-            macroName != null -> macroName
-            settings.wallMacroId > 0L -> "Selected macro is gone"
-            else -> "No wall macro"
-        }
-        view.findViewById<TextView>(R.id.tvWallStatus)?.text =
-            settings.summary(macroName) + wallsRepository.writeError?.let { " · not saved: $it" }
-                .orEmpty()
-        val history = view.findViewById<TextView>(R.id.tvWallHistory)
-        val recent = settings.history.takeLast(3).reversed()
-        if (history != null) {
-            if (recent.isEmpty()) {
-                history.visibility = View.GONE
-            } else {
-                history.visibility = View.VISIBLE
-                history.text = recent.joinToString("\n") { entry ->
-                    val time = SimpleDateFormat("HH:mm", Locale.US).format(Date(entry.at))
-                    "$time · ${entry.status} · ${entry.detail}"
-                }
-            }
-        }
-    }
-
-    // ---------- wall macro picker (overlay, never an Activity) ----------
-
-    private fun openWallPicker() {
-        closeWallPicker()
-        val view = try {
-            LayoutInflater.from(uiContext).inflate(R.layout.overlay_wall_picker, null)
-        } catch (_: Exception) {
-            return
-        }
-        val params = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            overlayType(),
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-            PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.CENTER
-        }
-        wallPickerView = view
-        val list = view.findViewById<LinearLayout>(R.id.wallPickerList)
-        val selectedId = wallsRepository.settings().wallMacroId
-        val rows = wallMacros.sortedByDescending { it.createdAt }
-        if (rows.isEmpty()) {
-            list.addView(
-                TextView(uiContext).apply {
-                    text = "No wall macros yet. Record one from the Walls tab."
-                    setTextColor(Ds.MUTED)
-                    textSize = 12f
-                    setPadding(dp(4), dp(10), dp(4), dp(10))
-                }
-            )
-        }
-        for (macro in rows) {
-            val row = TextView(uiContext).apply {
-                text = (if (macro.id == selectedId) "✓  " else "") +
-                    macro.name + " · ${(macro.durationMs / 1000L).toInt()}s"
-                setTextColor(Ds.TEXT)
-                textSize = 12.5f
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(dp(10), 0, dp(10), 0)
-                background = Ds.rounded(
-                    if (macro.id == selectedId) Ds.SELECTED_ROW else Ds.INPUT,
-                    Ds.RADIUS_ROW,
-                    this@FloatingMenuService
-                )
-                layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    dp(38)
-                ).apply { bottomMargin = dp(5) }
-                setOnClickListener {
-                    haptic()
-                    wallsRepository.updateSettings {
-                        it.copy(
-                            wallMacroId = macro.id,
-                            testedWallMacroId = if (macro.id == it.testedWallMacroId) {
-                                macro.id
-                            } else {
-                                -1L
-                            }
-                        )
-                    }
-                    refreshWalls()
-                    closeWallPicker()
-                }
-            }
-            list.addView(row)
-        }
-        view.findViewById<View>(R.id.btnWallPickerClose).setOnClickListener {
-            haptic()
-            closeWallPicker()
-        }
-        try {
-            windowManager.addView(view, params)
-        } catch (_: Exception) {
-            wallPickerView = null
-        }
-    }
-
-    private fun closeWallPicker() {
-        val view = wallPickerView ?: return
-        wallPickerView = null
-        try {
-            windowManager.removeView(view)
-        } catch (_: Exception) {
-            // Window detached.
-        }
-    }
-
-    // ---------- wall strip ----------
-
-    private fun updateWallStripLabel() {
-        val view = controllerView ?: return
-        val label = BotState.wallStrip.value?.label ?: "Walls"
-        view.findViewById<TextView>(R.id.tvWallStripLabel)?.text = label
-    }
-
-    private fun enterWallChrome() {
-        if (wallChromeActive) return
-        val view = controllerView ?: return
-        val params = controllerParams ?: return
-        wallChromeActive = true
-        collapsed = false
-        collapseAnimator?.cancel()
-        collapseAnimator = null
-        snapAnimator?.cancel()
-        snapAnimator = null
-        recordingChromeActive = false
-        reviewChromeActive = false
-        playbackChromeActive = false
-        val panelView = view.findViewById<View>(R.id.panel)
-        panelView.scaleX = 1f
-        panelView.scaleY = 1f
-        panelView.alpha = 1f
-        val stripWidth = playbackStripWidthPx()
-        val safe = safeBounds()
-        val saved = overlayPositions?.get(positionKey(PlacementKind.PLAYING))
-        val centered = OverlayPoint(
-            safe.left + ((safe.width - stripWidth) / 2).coerceAtLeast(0),
-            safe.top + dp(8)
-        )
-        val point = pendingPlaybackPoint ?: saved ?: centered
-        pendingPlaybackPoint = null
-        applyWindowPoint(
-            params,
-            OverlayPlacement.clamp(
-                point.x,
-                point.y,
-                stripWidth,
-                playbackStripHeightPx(),
-                safe,
-                dp(8)
-            ),
-            PlacementKind.PLAYING,
-            save = false
-        )
-        val panel = view.findViewById<LinearLayout>(R.id.panel)
-        panel.visibility = View.VISIBLE
-        panel.background = null
-        panel.setPadding(0, 0, 0, 0)
-        view.findViewById<View>(R.id.bubble).visibility = View.GONE
-        view.findViewById<View>(R.id.controllerHeader).visibility = View.GONE
-        view.findViewById<View>(R.id.tvStatus).visibility = View.GONE
-        view.findViewById<View>(R.id.settingsHost).visibility = View.GONE
-        view.findViewById<View>(R.id.readyFooter).visibility = View.GONE
-        view.findViewById<View>(R.id.saveBox).visibility = View.GONE
-        view.findViewById<View>(R.id.savedBox).visibility = View.GONE
-        view.findViewById<View>(R.id.discardedBox).visibility = View.GONE
-        (view.findViewById<View>(R.id.contentFrame)?.layoutParams as? LinearLayout.LayoutParams)
-            ?.topMargin = 0
-        applyWallChrome()
-        view.requestLayout()
-        view.post {
-            clampControllerToScreen()
-            refreshControllerBoundsSnapshot()
-        }
-    }
-
-    private fun applyWallChrome() {
-        val view = controllerView ?: return
-        val panel = view.findViewById<LinearLayout>(R.id.panel)
-        val stripWidth = playbackStripWidthPx()
-        panel.visibility = View.VISIBLE
-        view.findViewById<View>(R.id.bubble).visibility = View.GONE
-        (view.findViewById<View>(R.id.contentFrame)?.layoutParams as? LinearLayout.LayoutParams)
-            ?.topMargin = 0
-        view.findViewById<View>(R.id.wallStripPanel)?.layoutParams?.apply {
-            height = LinearLayout.LayoutParams.MATCH_PARENT
-        }
-        panel.layoutParams = panel.layoutParams.apply {
-            width = stripWidth
-            height = playbackStripHeightPx()
-        }
-        view.findViewById<View>(R.id.contentFrame).visibility = View.VISIBLE
-        view.findViewById<View>(R.id.wallStripPanel).visibility = View.VISIBLE
-        view.findViewById<View>(R.id.playingPanel).visibility = View.GONE
-        view.findViewById<View>(R.id.recoveryStripPanel).visibility = View.GONE
-        view.findViewById<View>(R.id.playPill).visibility = View.GONE
-        view.findViewById<View>(R.id.recPill).visibility = View.GONE
-        controllerParams?.let { params ->
-            if (params.width != WindowManager.LayoutParams.WRAP_CONTENT ||
-                params.height != WindowManager.LayoutParams.WRAP_CONTENT
-            ) {
-                params.width = WindowManager.LayoutParams.WRAP_CONTENT
-                params.height = WindowManager.LayoutParams.WRAP_CONTENT
-                try {
-                    windowManager.updateViewLayout(view, params)
-                } catch (_: Exception) {
-                    // Window detached.
-                }
-            }
-        }
-        updateWallStripLabel()
-        view.requestLayout()
-        view.post {
-            clampControllerToScreen()
-            refreshControllerBoundsSnapshot()
-        }
+        macros = repository.macros.value.filter { it.kind != Macro.KIND_WALL }
     }
 
     private fun haptic() {
@@ -6705,8 +6427,6 @@ class FloatingMenuService : Service() {
         const val ACTION_OPEN = "com.clahbot.action.OPEN"
         const val ACTION_CLOSE = "com.clahbot.action.CLOSE"
         const val ACTION_RESET_POSITION = "com.clahbot.action.RESET_POSITION"
-        const val ACTION_WALL_RUN = "com.clahbot.action.WALL_RUN"
-        const val ACTION_WALL_TEST = "com.clahbot.action.WALL_TEST"
 
         fun show(context: Context) {
             ContextCompat.startForegroundService(
@@ -6721,15 +6441,6 @@ class FloatingMenuService : Service() {
                 putExtra(EXTRA_MACRO_ID, macroId)
             }
             ContextCompat.startForegroundService(context, intent)
-        }
-
-        /** Runs or tests the wall macro through the service that owns the overlay. */
-        fun runWall(context: Context, test: Boolean) {
-            ContextCompat.startForegroundService(
-                context,
-                Intent(context, FloatingMenuService::class.java)
-                    .setAction(if (test) ACTION_WALL_TEST else ACTION_WALL_RUN)
-            )
         }
 
         fun resetPosition(context: Context) {

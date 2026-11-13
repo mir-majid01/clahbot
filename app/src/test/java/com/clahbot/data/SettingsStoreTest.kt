@@ -22,24 +22,24 @@ class SettingsStoreTest {
         )
 
     @Test
-    fun wallsCardExpansionDefaultsCollapsedAndSurvivesARelaunch() {
+    fun aChangedSettingSurvivesARelaunch() {
         val context = RuntimeEnvironment.getApplication()
-        val prefs = context.getSharedPreferences("walls_card_test", Context.MODE_PRIVATE)
+        val prefs = context.getSharedPreferences("settings_store_test", Context.MODE_PRIVATE)
 
         val first = store(prefs)
-        assertFalse("the card must start collapsed", first.settings.value.wallsCardExpanded)
+        assertTrue("haptics default on", first.settings.value.hapticFeedback)
 
-        first.update { it.copy(wallsCardExpanded = true) }
-        assertTrue(first.settings.value.wallsCardExpanded)
+        first.update { it.copy(hapticFeedback = false) }
+        assertFalse(first.settings.value.hapticFeedback)
 
         // A fresh instance over the same preferences is what a relaunch reads.
         val relaunched = store(prefs)
-        assertTrue(
-            "expanding the card has to survive closing and reopening the app",
-            relaunched.settings.value.wallsCardExpanded
+        assertFalse(
+            "a changed setting has to survive closing and reopening the app",
+            relaunched.settings.value.hapticFeedback
         )
 
-        relaunched.update { it.copy(wallsCardExpanded = false) }
-        assertFalse(store(prefs).settings.value.wallsCardExpanded)
+        relaunched.update { it.copy(hapticFeedback = true) }
+        assertTrue(store(prefs).settings.value.hapticFeedback)
     }
 }

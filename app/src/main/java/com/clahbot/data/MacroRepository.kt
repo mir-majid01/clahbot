@@ -90,10 +90,6 @@ class MacroRepository(private val file: File) {
             MacroNaming.validationError(candidate.name, otherNames)?.let {
                 return@withLock MacroWriteResult.Rejected(it)
             }
-            val linked = candidate.linkedWallMacroId
-            if (linked > 0 && all.none { it.id == linked && it.kind == Macro.KIND_WALL }) {
-                return@withLock MacroWriteResult.Rejected("The selected wall macro no longer exists")
-            }
             val updated = current.copy(
                 name = candidate.name.trim(),
                 speedMultiplier = candidate.speedMultiplier,
@@ -103,8 +99,7 @@ class MacroRepository(private val file: File) {
                 stopOnBackground = candidate.stopOnBackground,
                 stopAfterMinutes = candidate.stopAfterMinutes,
                 stopAfterAttacks = candidate.stopAfterAttacks,
-                pinned = candidate.pinned,
-                linkedWallMacroId = if (linked > 0) linked else -1L
+                pinned = candidate.pinned
             )
             val sanitized = sanitizeMacro(updated)
                 ?: return@withLock MacroWriteResult.Rejected("This macro has no actions to save")
@@ -173,9 +168,8 @@ class MacroRepository(private val file: File) {
             val all = readLocked().toMutableList()
             val removed = all.removeAll { it.id == id }
             if (removed) {
-                val cleaned = withoutLinksTo(all, setOf(id))
-                writeLocked(cleaned)
-                publish(cleaned)
+                writeLocked(all)
+                publish(all)
             }
             removed
         }
@@ -189,23 +183,11 @@ class MacroRepository(private val file: File) {
             val removed = all.filter { it.id in ids }
             if (removed.isEmpty()) return@withLock emptyList()
             all.removeAll { it.id in ids }
-            val cleaned = withoutLinksTo(all, ids)
-            writeLocked(cleaned)
-            publish(cleaned)
+            writeLocked(all)
+            publish(all)
             removed
         }
     }
-
-    /**
-     * A deleted wall macro must not leave a dangling link behind: updateSettings
-     * rejects every edit to a macro whose link points at a missing wall macro,
-     * so survivors would become un-renameable. Clearing the link in the same
-     * write keeps the library consistent no matter which surface deleted it.
-     */
-    private fun withoutLinksTo(macros: List<Macro>, removedIds: Set<Long>): List<Macro> =
-        macros.map {
-            if (it.linkedWallMacroId in removedIds) it.copy(linkedWallMacroId = -1L) else it
-        }
 
     /**
      * Writes the current library to a timestamped file before a bulk delete.
@@ -420,7 +402,6 @@ internal fun sanitizeMacro(raw: Macro): Macro? {
             playCount = raw.playCount.coerceAtLeast(0),
             orientation = orientation,
             kind = if (raw.kind == Macro.KIND_WALL) Macro.KIND_WALL else Macro.KIND_ATTACK,
-            linkedWallMacroId = if (raw.linkedWallMacroId > 0) raw.linkedWallMacroId else -1L,
             schemaVersion = Macro.CURRENT_SCHEMA_VERSION
         )
     } catch (_: RuntimeException) {

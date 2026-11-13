@@ -72,20 +72,12 @@ object BotState {
     private val _recoveryStrip = MutableStateFlow<RecoveryStripUi?>(null)
     val recoveryStrip: StateFlow<RecoveryStripUi?> = _recoveryStrip.asStateFlow()
 
-    /** Blue wall-cycle strip: label like "Walls · Gold · 8 of 40". */
-    private val _wallStrip = MutableStateFlow<WallStripUi?>(null)
-    val wallStrip: StateFlow<WallStripUi?> = _wallStrip.asStateFlow()
-
     /** Auto-dismissing result toast (5 s) for wall/recovery outcomes. */
     private val _resultToast = MutableStateFlow<ResultToastUi?>(null)
     val resultToast: StateFlow<ResultToastUi?> = _resultToast.asStateFlow()
 
     fun setRecoveryStrip(value: RecoveryStripUi?) {
         _recoveryStrip.value = value
-    }
-
-    fun setWallStrip(value: WallStripUi?) {
-        _wallStrip.value = value
     }
 
     fun setResultToast(kind: ResultToastUi.Kind, text: String) {
@@ -160,8 +152,6 @@ object BotState {
 }
 
 data class RecoveryStripUi(val label: String, val tryIndex: Int, val tryCount: Int)
-
-data class WallStripUi(val label: String)
 
 data class ResultToastUi(
     val id: Long,

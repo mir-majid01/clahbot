@@ -87,14 +87,12 @@ import com.clahbot.data.SessionRepository
 import com.clahbot.data.SettingsStore
 import com.clahbot.session.GameSessionTracker
 import com.clahbot.ui.dashboard.AcEmptyCard
-import com.clahbot.ui.dashboard.AcWallsSection
 import com.clahbot.ui.dashboard.AcTeachSheet
 import com.clahbot.ui.dashboard.AcUnknownGallery
 import com.clahbot.ui.dashboard.taughtRule
 import com.clahbot.ui.dashboard.TeachAction
 import com.clahbot.recovery.RecoveryRepository
 import com.clahbot.recovery.UnknownScreen
-import com.clahbot.walls.WallsRepository
 import com.clahbot.ui.dashboard.AcGameCard
 import com.clahbot.ui.dashboard.AcHeader
 import com.clahbot.ui.dashboard.AcLibraryActions
@@ -324,14 +322,12 @@ fun DashboardScreen(
     val attackRepository = remember { AttackRepository.get(context) }
     val sessionRepository = remember { SessionRepository.get(context) }
     val recoveryRepository = remember { RecoveryRepository.get(context) }
-    val wallsRepository = remember { WallsRepository.get(context) }
     val autoWalls2Repository = remember { com.clahbot.walls.AutoWallsRepository.get(context) }
     val settingsStore = remember { SettingsStore.get(context) }
     val dashboardSettings by settingsStore.settings.collectAsState()
     val attacks by attackRepository.records.collectAsState()
     val sessions by sessionRepository.sessions.collectAsState()
     val recoveryFile by recoveryRepository.state.collectAsState()
-    val wallsFile by wallsRepository.state.collectAsState()
     val triggerRepository = remember { com.clahbot.triggers.TriggerRepository.get(context) }
     val triggerFile by triggerRepository.state.collectAsState()
     var editingTrigger by remember { mutableStateOf<com.clahbot.triggers.ImageTrigger?>(null) }
@@ -353,11 +349,6 @@ fun DashboardScreen(
     }
     val macros by viewModel.macros.collectAsState()
     val attackMacros = remember(macros) { macros.filter { it.kind != Macro.KIND_WALL } }
-    val wallMacros = remember(macros) { macros.filter { it.kind == Macro.KIND_WALL } }
-    val wallLinkCounts = remember(attackMacros) {
-        attackMacros.filter { it.linkedWallMacroId > 0L }
-            .groupingBy { it.linkedWallMacroId }.eachCount()
-    }
     fun wallNameFor(id: Long): String? = macros.firstOrNull { it.id == id }?.name
     val selectedId by BotState.selectedMacroId.collectAsState()
     val controllerState by BotState.state.collectAsState()
@@ -538,11 +529,6 @@ fun DashboardScreen(
         val current = BotState.selectedMacroId.value
         val reconciled = com.clahbot.data.MacroSelection.reconcile(current, attackMacros)
         if (reconciled != current) BotState.setSelectedMacroId(reconciled)
-        val wallIds = wallMacros.mapTo(mutableSetOf()) { it.id }
-        val currentWalls = wallsRepository.settings()
-        if (currentWalls.reconciled(wallIds) != currentWalls) {
-            wallsRepository.updateSettings { it.reconciled(wallIds) }
-        }
         if (selectionMode) {
             val existing = attackMacros.mapTo(mutableSetOf()) { it.id }
             val filtered = selectedMacros.filter { it in existing }.toSet()
@@ -843,45 +829,6 @@ fun DashboardScreen(
                 )
             }
             item {
-                AcWallsSection(
-                    settings = wallsFile.settings,
-                    wallMacros = wallMacros,
-                    linkCounts = wallLinkCounts,
-                    expanded = dashboardSettings.wallsCardExpanded,
-                    onExpandedChange = { open ->
-                        settingsStore.update { it.copy(wallsCardExpanded = open) }
-                    },
-                    saveError = wallsRepository.writeError,
-                    onToggle = { checked ->
-                        wallsRepository.updateSettings { it.copy(enabled = checked) }
-                    },
-                    onSelectMacro = { id ->
-                        wallsRepository.updateSettings {
-                            it.copy(
-                                wallMacroId = id,
-                                testedWallMacroId = if (id == it.testedWallMacroId) id else -1L
-                            )
-                        }
-                    },
-                    onMode = { mode ->
-                        wallsRepository.updateSettings { it.copy(resourceMode = mode) }
-                    },
-                    onCost = { value ->
-                        wallsRepository.updateSettings { it.copy(costPerWall = value) }
-                    },
-                    onReserve = { value ->
-                        wallsRepository.updateSettings { it.copy(minReserve = value) }
-                    },
-                    onRepeat = { allowed ->
-                        wallsRepository.updateSettings { it.copy(allowRepeatUpgrades = allowed) }
-                    },
-                    onRun = { FloatingMenuService.runWall(context, test = false) },
-                    onTest = { FloatingMenuService.runWall(context, test = true) },
-                    onRenameMacro = { macro, name -> viewModel.rename(macro.id, name) },
-                    onDeleteMacro = { macro -> viewModel.delete(macro.id) }
-                )
-            }
-            item {
                 com.clahbot.ui.dashboard.AcAutoWalls2Section(
                     repository = autoWalls2Repository,
                     scope = scope
@@ -933,9 +880,6 @@ fun DashboardScreen(
                         macro = macro,
                         selected = macro.id == selectedId,
                         busy = controllerState.isBusy,
-                        wallLink = macros.firstOrNull {
-                            it.id == macro.linkedWallMacroId && it.kind == Macro.KIND_WALL
-                        }?.name,
                         selectionMode = selectionMode,
                         checked = macro.id in selectedMacros,
                         onToggleChecked = {
@@ -1208,7 +1152,6 @@ fun DashboardScreen(
     settingsMacro?.let { macro ->
         MacroSettingsSheet(
             macro = macro,
-            wallMacros = wallMacros,
             onDismiss = { settingsMacro = null },
             onSave = { draft ->
                 val result = viewModel.update(draft.toMacro(macro))

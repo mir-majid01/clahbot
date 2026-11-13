@@ -94,6 +94,87 @@ class AutoWallsScanTest {
         selection = WallSelectionConfig(strategy, customOrder, currency, minConfidence)
     )
 
+    // ---- balances and affordable walls --------------------------------------
+
+    private val goldCounter = line("5 000 000", 700, 100, 1000, 160)
+    private val elixirCounter = line("2 000 000", 700, 170, 1000, 230)
+    private val counterKinds = mapOf(
+        100 to ResourceKind.GOLD,
+        170 to ResourceKind.ELIXIR
+    )
+
+    /** The four wall rows plus a readable gold (5M) and elixir (2M) counter strip. */
+    private fun villageWithWalls(): WallFrame = frame(
+        listOf(goldCounter, elixirCounter) +
+            wallRow(13, 83, "750 000", rowTops[0]) +
+            wallRow(17, 317, "2 500 000", rowTops[1]) +
+            wallRow(14, 230, "500 000", rowTops[2]) +
+            wallRow(16, 12, "1 000 000", rowTops[3]),
+        counterKinds + mapOf(
+            rowTops[0] + 110 to ResourceKind.ELIXIR,
+            rowTops[1] + 110 to ResourceKind.GOLD,
+            rowTops[2] + 110 to ResourceKind.ELIXIR,
+            rowTops[3] + 110 to ResourceKind.ELIXIR
+        )
+    )
+
+    private fun row(
+        level: Int,
+        price: Long,
+        currency: String,
+        count: Int? = null
+    ) = WallCandidate(
+        id = "row:$level", level = level, price = price, currency = currency,
+        listIndex = 0, confidence = 1f, count = count
+    )
+
+    @Test
+    fun `analyze records the gold and elixir balances from the counters`() {
+        val report = AutoWallsScan.analyze(villageWithWalls(), config(), at = 1L)
+        assertEquals(5_000_000L, report.goldBalance)
+        assertEquals(2_000_000L, report.elixirBalance)
+
+        // A frame without counter lines must not invent balances.
+        val blind = AutoWallsScan.analyze(fourWalls(), config(), at = 2L)
+        assertNull(blind.goldBalance)
+        assertNull(blind.elixirBalance)
+        assertNull(blind.affordableGold)
+        assertNull(blind.affordableElixir)
+    }
+
+    @Test
+    fun `affordable walls walk the cheapest rows first`() {
+        val gold = listOf(
+            row(17, 2_500_000L, "gold", count = 317),
+            row(15, 1_000_000L, "gold", count = 12)
+        )
+        // 5M: the 1M group buys 5, then the 2.5M group is out of reach.
+        assertEquals(5L, AutoWallsScan.affordableWalls(gold, 5_000_000L))
+        // 9M buys 9 walls from the 1M group alone, spending everything.
+        assertEquals(9L, AutoWallsScan.affordableWalls(gold, 9_000_000L))
+        // 15M: all 12 of the 1M group, then 1 wall at 2.5M, and 0.5M buys no more.
+        assertEquals(13L, AutoWallsScan.affordableWalls(gold, 15_000_000L))
+        // An unreadable balance says nothing; a balance below every price buys none.
+        assertNull(AutoWallsScan.affordableWalls(gold, null))
+        assertEquals(0L, AutoWallsScan.affordableWalls(gold, 500_000L))
+        // A row without a read count counts as a single wall.
+        assertEquals(
+            1L,
+            AutoWallsScan.affordableWalls(listOf(row(13, 750_000L, "elixir")), 2_000_000L)
+        )
+        // An invalid price never divides by zero.
+        assertEquals(0L, AutoWallsScan.affordableWalls(listOf(row(13, 0L, "elixir", 10)), 2_000_000L))
+    }
+
+    @Test
+    fun `analyze computes the affordable wall count per currency`() {
+        val report = AutoWallsScan.analyze(villageWithWalls(), config(), at = 1L)
+        // Gold 5M vs the single 2.5M gold row: 2 walls.
+        assertEquals(2L, report.affordableGold)
+        // Elixir 2M buys 4 walls from the 500k group alone.
+        assertEquals(4L, report.affordableElixir)
+    }
+
     // ---- analysis ----------------------------------------------------------
 
     @Test
@@ -255,7 +336,8 @@ class AutoWallsScanTest {
              "candidates":[{"id":"row:0","level":13,"price":-5,"currency":"elixir",
                             "listIndex":-2,"confidence":4.0,"count":-1}],
              "eligible":[],"selected":null,"reason":null,"strategy":"NOPE",
-             "currency":"NOPE","minConfidence":9.0,"allowTapping":true}
+             "currency":"NOPE","minConfidence":9.0,"allowTapping":true,
+             "goldBalance":-1,"elixirBalance":7}
             """.trimIndent()
         )
 
@@ -272,6 +354,22 @@ class AutoWallsScanTest {
         assertEquals(WallCurrency.BOTH, loaded.currency)
         assertEquals(1f, loaded.minConfidence, 0.0001f)
         assertFalse("a stored report must never claim tapping is allowed", loaded.allowTapping)
+        assertNull("a negative stored balance is garbage, not zero", loaded.goldBalance)
+        assertEquals(7L, loaded.elixirBalance)
+    }
+
+    @Test
+    fun `stored scan keeps the balances and affordable counts`() {
+        val repo = repository()
+        repo.saveScan(AutoWallsScan.analyze(villageWithWalls(), config(), at = 5L))
+
+        val loaded = repo.loadScan()
+        assertNotNull(loaded)
+        loaded!!
+        assertEquals(5_000_000L, loaded.goldBalance)
+        assertEquals(2_000_000L, loaded.elixirBalance)
+        assertEquals(2L, loaded.affordableGold)
+        assertEquals(4L, loaded.affordableElixir)
     }
 
     @Test

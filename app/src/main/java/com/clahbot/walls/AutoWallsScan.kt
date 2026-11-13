@@ -28,10 +28,25 @@ data class AutoWallsScanReport(
     val strategy: WallSelectionStrategy = WallSelectionStrategy.CHEAPEST_FIRST,
     val currency: WallCurrency = WallCurrency.BOTH,
     val minConfidence: Float = 0.6f,
-    val allowTapping: Boolean = false
+    val allowTapping: Boolean = false,
+    /** Live gold/elixir counter readings, or null when the strip was unreadable. */
+    val goldBalance: Long? = null,
+    val elixirBalance: Long? = null
 ) {
     val readableRows: Int
         get() = candidates.count { it.level > 0 && it.price > 0L && it.currency != "unknown" }
+
+    /** Walls the gold balance could pay for across the discovered gold rows. */
+    val affordableGold: Long?
+        get() = AutoWallsScan.affordableWalls(
+            candidates.filter { it.currency == "gold" }, goldBalance
+        )
+
+    /** Walls the elixir balance could pay for across the discovered elixir rows. */
+    val affordableElixir: Long?
+        get() = AutoWallsScan.affordableWalls(
+            candidates.filter { it.currency == "elixir" }, elixirBalance
+        )
 }
 
 /**
@@ -77,7 +92,9 @@ object AutoWallsScan {
             strategy = config.selection.strategy,
             currency = config.selection.currency,
             minConfidence = config.selection.minConfidence,
-            allowTapping = config.allowTapping
+            allowTapping = config.allowTapping,
+            goldBalance = frame.counters().gold,
+            elixirBalance = frame.counters().elixir
         )
     }
 
@@ -141,4 +158,25 @@ object AutoWallsScan {
         String.format(Locale.US, "%.2f", value.coerceIn(0f, 1f))
 
     fun priceLabel(value: Long): String = String.format(Locale.US, "%,d", value)
+
+    /**
+     * How many wall upgrades [balance] could pay for across [rows]: the cheapest
+     * rows first, at most each row's read wall count (a row without one counts
+     * as a single wall), stopping when nothing more is affordable. Rows with an
+     * unreadable price are skipped. A null balance (unreadable counter) says
+     * nothing, so the result is null too.
+     */
+    fun affordableWalls(rows: List<WallCandidate>, balance: Long?): Long? {
+        balance ?: return null
+        var remaining = balance
+        var total = 0L
+        for (candidate in rows.filter { it.price > 0L }.sortedBy { it.price }) {
+            if (remaining < candidate.price) break
+            val wallsInRow = (candidate.count ?: 1).coerceAtLeast(1).toLong()
+            val affordable = minOf(wallsInRow, remaining / candidate.price)
+            total += affordable
+            remaining -= affordable * candidate.price
+        }
+        return total
+    }
 }
