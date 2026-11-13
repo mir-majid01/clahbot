@@ -431,4 +431,66 @@ class AutoWallsPersistenceTest {
         assertNull(state.config.maxUpgradesPerRun)
         assertEquals(0, state.counters.attacksSinceVerified)
     }
+
+    // ---- run-start counter reset (PRD §5.4) --------------------------------
+
+    @Test
+    fun `session start resets the per-run upgrade counter and keeps verified-upgrade counters`() {
+        val repo = repository()
+        repo.saveTrigger(
+            WallTriggerState(
+                counters = WallTriggerCounters(
+                    attacksSinceVerified = 7,
+                    upgradesThisRun = 3,
+                    lastVerifiedAt = 123L
+                )
+            )
+        )
+
+        AutoWallsSession(repo).start()
+
+        val state = repo.loadTrigger()
+        assertEquals(0, state.counters.upgradesThisRun)
+        // The per-run limit is the only run-scoped counter; the attack and
+        // cooldown state belongs to the last verified upgrade, not to a run.
+        assertEquals(7, state.counters.attacksSinceVerified)
+        assertEquals(123L, state.counters.lastVerifiedAt)
+
+        // A second start stays at zero instead of growing or resetting others.
+        AutoWallsSession(repo).start()
+        val again = repo.loadTrigger()
+        assertEquals(0, again.counters.upgradesThisRun)
+        assertEquals(7, again.counters.attacksSinceVerified)
+    }
+
+    // ---- schema versioning --------------------------------------------------
+
+    @Test
+    fun `pre-versioning files load with their defaults`() {
+        configFile.writeText("""{"enabled":true,"strategy":"CHEAPEST_FIRST"}""")
+        val config = repository().loadConfig()
+        assertTrue(config.enabled)
+        assertEquals(WallSelectionStrategy.CHEAPEST_FIRST, config.selection.strategy)
+    }
+
+    @Test
+    fun `files written by a newer build are quarantined and treated as absent`() {
+        configFile.writeText("""{"schemaVersion":99,"enabled":true}""")
+        val config = repository().loadConfig()
+        assertFalse(config.enabled)
+        assertFalse(configFile.exists())
+        assertTrue(
+            directory.listFiles().orEmpty().any { it.name.startsWith("auto_walls_config.json.corrupt-") }
+        )
+    }
+
+    @Test
+    fun `saved walls files carry the current schema version`() {
+        val repo = repository()
+        repo.saveTrigger(WallTriggerState())
+        assertTrue(triggerFile.readText().contains("\"schemaVersion\":1"))
+        // A current-version file reloads normally instead of being quarantined.
+        assertEquals(WallTriggerState(), repo.loadTrigger())
+        assertTrue(triggerFile.exists())
+    }
 }

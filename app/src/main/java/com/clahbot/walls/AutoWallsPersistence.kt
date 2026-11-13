@@ -1,6 +1,7 @@
 package com.clahbot.walls
 
 import android.content.Context
+import com.clahbot.data.AppEventLog
 import com.google.gson.Gson
 import java.io.File
 
@@ -29,10 +30,10 @@ data class WallHistoryEntry(
 )
 
 /**
- * Persists Auto Walls 2.0 configuration, the live run snapshot and the upgrade
- * history (PRD §11). All three files use the same atomic-write +
- * corrupt-quarantine pattern as the other repositories, so a crash mid-write
- * never destroys the previous copy.
+ * Persists Auto Walls 2.0 configuration, the live run snapshot, the trigger
+ * state, the last scan and the upgrade history (PRD §11). All five files use
+ * the same atomic-write + corrupt-quarantine pattern as the other
+ * repositories, so a crash mid-write never destroys the previous copy.
  *
  * A run snapshot is written on every transition. [recover] never resumes an
  * interrupted run: it records the interruption in history, clears the run file
@@ -60,7 +61,7 @@ class AutoWallsRepository internal constructor(
 
     @Synchronized
     fun loadConfig(): AutoWallsConfig {
-        val stored = read(configFile, StoredConfig::class.java) ?: StoredConfig()
+        val stored = readChecked(configFile, StoredConfig::class.java) ?: StoredConfig()
         return stored.toConfig()
     }
 
@@ -73,7 +74,7 @@ class AutoWallsRepository internal constructor(
 
     @Synchronized
     fun loadTrigger(): WallTriggerState {
-        val stored = read(triggerFile, StoredTrigger::class.java) ?: return WallTriggerState()
+        val stored = readChecked(triggerFile, StoredTrigger::class.java) ?: return WallTriggerState()
         return WallTriggerState(
             config = stored.config?.toConfig() ?: WallTriggerConfig(),
             counters = stored.counters?.toCounters() ?: WallTriggerCounters()
@@ -89,7 +90,7 @@ class AutoWallsRepository internal constructor(
 
     @Synchronized
     fun loadRun(): AutoWallsSnapshot? {
-        val stored = read(runFile, StoredRun::class.java) ?: return null
+        val stored = readChecked(runFile, StoredRun::class.java) ?: return null
         val state = stored.state?.let { runCatching { AutoWallsState.valueOf(it) }.getOrNull() }
         if (state == null) {
             quarantine(runFile)
@@ -135,7 +136,8 @@ class AutoWallsRepository internal constructor(
                     confidence = c?.confidence,
                     count = c?.count,
                     scrolls = snapshot.scrolls,
-                    updatedAt = at
+                    updatedAt = at,
+                    schemaVersion = SCHEMA_VERSION
                 )
             )
         )
@@ -151,7 +153,7 @@ class AutoWallsRepository internal constructor(
     /** Newest first, bounded to [MAX_HISTORY] entries. */
     @Synchronized
     fun history(): List<WallHistoryEntry> {
-        val stored = read(historyFile, StoredHistory::class.java) ?: return emptyList()
+        val stored = readChecked(historyFile, StoredHistory::class.java) ?: return emptyList()
         return stored.entries.orEmpty().mapNotNull { it.toEntry() }.asReversed()
     }
 
@@ -176,7 +178,7 @@ class AutoWallsRepository internal constructor(
      */
     @Synchronized
     fun loadScan(): AutoWallsScanReport? {
-        val stored = read(scanFile, StoredScan::class.java) ?: return null
+        val stored = readChecked(scanFile, StoredScan::class.java) ?: return null
         return stored.toReport()
     }
 
@@ -224,13 +226,13 @@ class AutoWallsRepository internal constructor(
     // ---- file helpers ------------------------------------------------------
 
     private fun appendHistory(entry: WallHistoryEntry) {
-        val current = read(historyFile, StoredHistory::class.java)?.entries.orEmpty()
+        val current = readChecked(historyFile, StoredHistory::class.java)?.entries.orEmpty()
         val next = (current + StoredHistoryEntry.from(entry)).takeLast(MAX_HISTORY)
-        write(historyFile, gson.toJson(StoredHistory(next)))
+        write(historyFile, gson.toJson(StoredHistory(next, SCHEMA_VERSION)))
     }
 
     private fun readRunTime(): Long {
-        val stored = read(runFile, StoredRun::class.java) ?: return 0L
+        val stored = readChecked(runFile, StoredRun::class.java) ?: return 0L
         return stored.updatedAt
     }
 
@@ -267,6 +269,38 @@ class AutoWallsRepository internal constructor(
         }
     }
 
+    /**
+     * Root marker for the persisted walls files: every stored root carries the
+     * schema version it was written with, so an older build can recognize a
+     * file it cannot fully interpret instead of silently dropping fields.
+     */
+    private interface StoredFile {
+        val schemaVersion: Int
+    }
+
+    /**
+     * Reads a stored file and quarantines anything written by a newer build:
+     * loading it here would drop its unknown fields on the next save, so the
+     * bytes are preserved as `.corrupt-…` and the state is treated as absent.
+     * A missing or older version (0 = the pre-versioning files) is accepted:
+     * missing keys fall back to their stored defaults, and the next save
+     * rewrites the file at the current version.
+     */
+    private fun <T : StoredFile> readChecked(file: File, type: Class<T>): T? {
+        val parsed = read(file, type) ?: return null
+        if (parsed.schemaVersion > SCHEMA_VERSION) {
+            AppEventLog.log(
+                "auto walls ${file.name}: schema ${parsed.schemaVersion} > $SCHEMA_VERSION, quarantined"
+            )
+            quarantine(file)
+            return null
+        }
+        if (parsed.schemaVersion < SCHEMA_VERSION) {
+            AppEventLog.log("auto walls ${file.name}: legacy schema ${parsed.schemaVersion}, upgraded on next save")
+        }
+        return parsed
+    }
+
     // ---- stored (Gson-safe) shapes ----------------------------------------
 
     private data class StoredConfig(
@@ -275,8 +309,9 @@ class AutoWallsRepository internal constructor(
         val customOrder: List<String>? = null,
         val currency: String? = null,
         val minConfidence: Float? = null,
-        val maxScrolls: Int? = null
-    ) {
+        val maxScrolls: Int? = null,
+        override val schemaVersion: Int = 0
+    ) : StoredFile {
         fun toConfig(): AutoWallsConfig = AutoWallsConfig(
             enabled = enabled,
             selection = WallSelectionConfig(
@@ -299,7 +334,8 @@ class AutoWallsRepository internal constructor(
                 customOrder = config.selection.customOrder.map { it.name },
                 currency = config.selection.currency.name,
                 minConfidence = config.selection.minConfidence,
-                maxScrolls = config.maxScrolls
+                maxScrolls = config.maxScrolls,
+                schemaVersion = SCHEMA_VERSION
             )
         }
     }
@@ -314,13 +350,15 @@ class AutoWallsRepository internal constructor(
         val confidence: Float? = null,
         val count: Int? = null,
         val scrolls: Int = 0,
-        val updatedAt: Long = 0L
-    )
+        val updatedAt: Long = 0L,
+        override val schemaVersion: Int = 0
+    ) : StoredFile
 
     private data class StoredTrigger(
         val config: StoredTriggerConfig? = null,
-        val counters: StoredTriggerCounters? = null
-    ) {
+        val counters: StoredTriggerCounters? = null,
+        override val schemaVersion: Int = 0
+    ) : StoredFile {
         companion object {
             fun from(state: WallTriggerState) = StoredTrigger(
                 config = StoredTriggerConfig(
@@ -337,7 +375,8 @@ class AutoWallsRepository internal constructor(
                     attacksSinceVerified = state.counters.attacksSinceVerified,
                     upgradesThisRun = state.counters.upgradesThisRun,
                     lastVerifiedAt = state.counters.lastVerifiedAt
-                )
+                ),
+                schemaVersion = SCHEMA_VERSION
             )
         }
     }
@@ -395,8 +434,9 @@ class AutoWallsRepository internal constructor(
         val minConfidence: Float? = null,
         val allowTapping: Boolean = false,
         val goldBalance: Long? = null,
-        val elixirBalance: Long? = null
-    ) {
+        val elixirBalance: Long? = null,
+        override val schemaVersion: Int = 0
+    ) : StoredFile {
         fun toReport(): AutoWallsScanReport = AutoWallsScanReport(
             at = at,
             foregroundPackage = foregroundPackage,
@@ -443,7 +483,8 @@ class AutoWallsRepository internal constructor(
                 minConfidence = report.minConfidence,
                 allowTapping = report.allowTapping,
                 goldBalance = report.goldBalance,
-                elixirBalance = report.elixirBalance
+                elixirBalance = report.elixirBalance,
+                schemaVersion = SCHEMA_VERSION
             )
         }
     }
@@ -489,8 +530,9 @@ class AutoWallsRepository internal constructor(
 
     private data class StoredHistory(
         /** Nullable: Gson bypasses the constructor, so a missing key arrives as null. */
-        val entries: List<StoredHistoryEntry>? = null
-    )
+        val entries: List<StoredHistoryEntry>? = null,
+        override val schemaVersion: Int = 0
+    ) : StoredFile
 
     private data class StoredHistoryEntry(
         val at: Long = 0L,
@@ -524,6 +566,8 @@ class AutoWallsRepository internal constructor(
         private const val HISTORY_FILE = "auto_walls_history.json"
         private const val TRIGGER_FILE = "auto_walls_trigger.json"
         private const val SCAN_FILE = "auto_walls_scan.json"
+        private const val SCHEMA_VERSION = 1
+
         private const val MAX_HISTORY = 200
         private const val MAX_SCAN_ROWS = 200
 
@@ -575,6 +619,18 @@ class AutoWallsSession(
         recovery = recovered
         // The tap gate is supplied by the build/runner, never restored from disk.
         val config = recovered.config.copy(allowTapping = allowTapping)
+        // A run boundary resets the per-run upgrade counter (PRD §5.4). Without
+        // this the persisted count would survive into the next run and
+        // maxUpgradesPerRun would silently behave like a per-install limit.
+        // Attacks-since-verified and cooldown counters are intentionally kept:
+        // only a verified upgrade resets those.
+        val trigger = repository.loadTrigger()
+        if (trigger.counters.upgradesThisRun != 0) {
+            repository.saveTrigger(trigger.copy(counters = trigger.counters.onRunStarted()))
+            AppEventLog.log(
+                "auto walls run start: upgradesThisRun reset (was ${trigger.counters.upgradesThisRun})"
+            )
+        }
         return AutoWallsMachine(config, this).also { machine = it }
     }
 
