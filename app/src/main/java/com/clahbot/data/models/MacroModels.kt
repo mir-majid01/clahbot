@@ -68,6 +68,11 @@ data class Macro(
      * in macros.json untouched and are filtered out of the attack library.
      */
     val kind: String = KIND_ATTACK,
+    /**
+     * The wall-upgrade macro this attack macro is bound to (Phase 5B association).
+     * Null while unassociated; only wall macros (kind = KIND_WALL) may be bound.
+     */
+    val associatedWallMacroId: Long? = null,
     val lastPlayedAt: Long? = null,
     val playCount: Int = 0,
     val schemaVersion: Int = CURRENT_SCHEMA_VERSION

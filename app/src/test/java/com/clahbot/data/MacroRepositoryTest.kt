@@ -419,6 +419,67 @@ class MacroRepositoryTest {
         assertEquals(1, repository.load().size)
     }
 
+    // ---- Phase 5B: wall macro association ----------------------------------------
+
+    @Test
+    fun associatesAttackMacroWithWallMacro() = runBlocking {
+        val attack = repository.save(sampleMacro(id = 1, name = "Attack Farm"))!!
+        val wall = repository.save(sampleMacro(id = 2, name = "Wall Up").copy(kind = Macro.KIND_WALL))!!
+
+        val result = repository.associateWallMacro(attackId = attack.id, wallMacroId = wall.id)
+
+        assertTrue(result is MacroWriteResult.Saved)
+        val reloaded = repository.load().first { it.id == attack.id }
+        assertEquals(Macro.KIND_ATTACK, reloaded.kind)
+        assertEquals(wall.id, reloaded.associatedWallMacroId)
+        assertEquals(wall.id, repository.associatedWallMacroFor(attack.id)?.id)
+    }
+
+    @Test
+    fun associationRejectsMissingWallMacroWithoutWriting() = runBlocking {
+        val attack = repository.save(sampleMacro(id = 1, name = "Attack Farm"))!!
+
+        val result = repository.associateWallMacro(attackId = attack.id, wallMacroId = 999L)
+
+        assertTrue(result is MacroWriteResult.Rejected)
+        assertNull(repository.associatedWallMacroFor(attack.id))
+    }
+
+    @Test
+    fun associationCanBeChangedAndCleared() = runBlocking {
+        val attack = repository.save(sampleMacro(id = 1, name = "Attack Farm"))!!
+        val wallOne = repository.save(sampleMacro(id = 2, name = "Wall One").copy(kind = Macro.KIND_WALL))!!
+        val wallTwo = repository.save(sampleMacro(id = 3, name = "Wall Two").copy(kind = Macro.KIND_WALL))!!
+
+        assertTrue(repository.associateWallMacro(attackId = attack.id, wallMacroId = wallOne.id) is MacroWriteResult.Saved)
+        assertEquals(wallOne.id, repository.associatedWallMacroFor(attack.id)?.id)
+
+        assertTrue(repository.associateWallMacro(attackId = attack.id, wallMacroId = wallTwo.id) is MacroWriteResult.Saved)
+        assertEquals(wallTwo.id, repository.associatedWallMacroFor(attack.id)?.id)
+
+        assertTrue(repository.clearWallAssociation(attack.id))
+        assertNull(repository.associatedWallMacroFor(attack.id))
+    }
+
+    @Test
+    fun deletingWallMacroClearsDanglingAssociation() = runBlocking {
+        val attack = repository.save(sampleMacro(id = 1, name = "Attack Farm"))!!
+        val wall = repository.save(sampleMacro(id = 2, name = "Wall Up").copy(kind = Macro.KIND_WALL))!!
+        assertTrue(repository.associateWallMacro(attackId = attack.id, wallMacroId = wall.id) is MacroWriteResult.Saved)
+
+        assertTrue(repository.delete(wall.id))
+
+        val reloaded = repository.load().first { it.id == attack.id }
+        assertNull(reloaded.associatedWallMacroId)
+    }
+
+    @Test
+    fun savesWallMacroWithKindWall() = runBlocking {
+        val saved = repository.save(sampleMacro(id = 2, name = "Wall Up").copy(kind = Macro.KIND_WALL))
+        assertEquals(Macro.KIND_WALL, saved?.kind)
+        assertEquals(Macro.KIND_WALL, repository.load().first { it.id == 2L }.kind)
+    }
+
     private fun sampleMacro(
         id: Long = 1,
         name: String = "Test macro",

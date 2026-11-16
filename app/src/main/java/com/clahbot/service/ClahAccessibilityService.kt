@@ -2,9 +2,11 @@ package com.clahbot.service
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
+import android.accessibilityservice.GestureDescription
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Path
 import android.graphics.Rect
 import android.os.Build
 import android.util.Log
@@ -13,6 +15,8 @@ import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityWindowInfo
 import androidx.annotation.RequiresApi
 import com.clahbot.data.AppEventLog
+import com.clahbot.gesture.GestureAuthority
+import com.clahbot.gesture.GestureTrace
 import com.clahbot.session.GameSessionTracker
 import kotlin.coroutines.resume
 import kotlinx.coroutines.CancellationException
@@ -35,7 +39,9 @@ class ClahAccessibilityService : AccessibilityService() {
     data class GameFrame(
         val bitmap: Bitmap,
         val windowBounds: Rect?,
-        val windowPackage: String?
+        val windowPackage: String?,
+        /** System.currentTimeMillis() when this frame was captured. */
+        val capturedAtMillis: Long = System.currentTimeMillis()
     )
 
     private fun gameWindowBounds(): Rect? {
@@ -53,6 +59,11 @@ class ClahAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         instance = this
         AppEventLog.log("accessibility connected")
+        // Bind the ONE shared gesture authority to this accessibility service.
+        // Until this happens the authority has no way to dispatch anything, so
+        // every gesture path must go through it.
+        runCatching { GestureAuthority.shared().bind(this) }
+            .onFailure { Log.w(TAG, "Could not bind shared gesture authority", it) }
         runCatching { clearTouchExploration() }
             .onFailure { Log.w(TAG, "Could not clear touch exploration", it) }
         runCatching { GameSessionTracker.start(this) }
@@ -80,12 +91,16 @@ class ClahAccessibilityService : AccessibilityService() {
 
     override fun onUnbind(intent: android.content.Intent?): Boolean {
         instance = null
+        // The shared authority must not keep dispatching into a service that
+        // is gone; unbinding also cancels everything still pending.
+        runCatching { GestureAuthority.shared().unbind() }
         AppEventLog.log("accessibility unbound")
         return super.onUnbind(intent)
     }
 
     override fun onDestroy() {
         instance = null
+        runCatching { GestureAuthority.shared().unbind() }
         AppEventLog.log("accessibility destroyed")
         super.onDestroy()
     }
@@ -234,7 +249,15 @@ class ClahAccessibilityService : AccessibilityService() {
          * Reads the focused application window right now. Our own overlay is a
          * TYPE_SYSTEM window, so filtering to TYPE_APPLICATION skips the
          * controller instead of mistaking it for the foreground app.
+         *
+         * Some devices still surface the overlay as an application window; on
+         * those the focused app resolved to `com.clahbot` and scans were
+         * refused with "Clash of Clans must be on screen" while the game was
+         * visibly open. Any window rooted in our own package is therefore
+         * ignored: it can never be the game the scanner needs.
          */
+        private const val SELF_PACKAGE = "com.clahbot"
+
         fun currentForegroundPackage(): String? {
             val service = instance ?: return null
             val windows = try {
@@ -243,6 +266,13 @@ class ClahAccessibilityService : AccessibilityService() {
                 null
             } ?: return null
             val apps = windows.filter { it.type == AccessibilityWindowInfo.TYPE_APPLICATION }
+                .filter { app ->
+                    try {
+                        app.root?.packageName?.toString() != SELF_PACKAGE
+                    } catch (_: Exception) {
+                        true
+                    }
+                }
             val window = apps.firstOrNull { it.isActive }
                 ?: apps.firstOrNull { it.isFocused }
                 ?: apps.firstOrNull()
@@ -335,6 +365,81 @@ class ClahAccessibilityService : AccessibilityService() {
         }
 
         suspend fun captureScreenshot(): Bitmap? = captureShot()?.bitmap
+
+        /**
+         * One controlled vertical swipe on the live game window, used by the
+         * read-only wall-list scanner. It is deliberately separate from
+         * GestureAuthority so the scanner can move the list without enabling
+         * wall-upgrade taps: no tap path calls this. Returns false when the
+         * service is gone or the system refuses the gesture.
+         */
+        suspend fun swipeOnScreen(
+            fromX: Int,
+            fromY: Int,
+            toX: Int,
+            toY: Int,
+            durationMs: Long,
+            owner: String = "ClahAccessibilityService",
+            reason: String = "swipe"
+        ): Boolean {
+            val service = instance
+            if (service == null) {
+                GestureTrace.logDirect(
+                    component = owner,
+                    reason = reason,
+                    type = "swipe",
+                    coords = "($fromX,$fromY)->($toX,$toY) ${durationMs}ms",
+                    result = "failed:service unavailable"
+                )
+                return false
+            }
+            val safeDuration = durationMs.coerceAtLeast(1L)
+            val startedAt = System.currentTimeMillis()
+            val result = withContext(Dispatchers.Main.immediate) {
+                withTimeoutOrNull(safeDuration + 2_000L) {
+                    suspendCancellableCoroutine<Boolean> { continuation ->
+                        val path = Path().apply {
+                            moveTo(fromX.toFloat(), fromY.toFloat())
+                            lineTo(toX.toFloat(), toY.toFloat())
+                        }
+                        val gesture = try {
+                            GestureDescription.Builder()
+                                .addStroke(
+                                    GestureDescription.StrokeDescription(path, 0L, safeDuration)
+                                )
+                                .build()
+                        } catch (_: Exception) {
+                            if (continuation.isActive) continuation.resume(false)
+                            return@suspendCancellableCoroutine
+                        }
+                        val callback = object : AccessibilityService.GestureResultCallback() {
+                            override fun onCompleted(gestureDescription: GestureDescription?) {
+                                if (continuation.isActive) continuation.resume(true)
+                            }
+
+                            override fun onCancelled(gestureDescription: GestureDescription?) {
+                                if (continuation.isActive) continuation.resume(false)
+                            }
+                        }
+                        val accepted = runCatching {
+                            service.dispatchGesture(gesture, callback, null)
+                        }.getOrDefault(false)
+                        if (!accepted && continuation.isActive) continuation.resume(false)
+                    }
+                } ?: false
+            }
+            // This path bypasses GestureAuthority on purpose, so it must log its
+            // own GESTURE line: a scan scroll is a screen touch too.
+            GestureTrace.logDirect(
+                component = owner,
+                reason = reason,
+                type = "swipe",
+                coords = "($fromX,$fromY)->($toX,$toY) ${safeDuration}ms",
+                result = if (result) "completed" else "failed:not accepted",
+                elapsedMs = System.currentTimeMillis() - startedAt
+            )
+            return result
+        }
 
         /**
          * The frame the recovery watchdog and the wall upgrader act on: the

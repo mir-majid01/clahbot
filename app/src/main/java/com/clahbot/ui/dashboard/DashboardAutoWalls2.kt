@@ -26,8 +26,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
@@ -42,6 +45,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.app.NotificationCompat
@@ -50,11 +54,13 @@ import androidx.core.content.ContextCompat
 import com.clahbot.R
 import com.clahbot.data.AppEventLog
 import com.clahbot.game.GameScreenEngine
+import com.clahbot.gesture.GestureAuthority
 import com.clahbot.results.AppResultsReader
 import com.clahbot.ui.MainActivity
 import com.clahbot.ui.design.Ds
 import com.clahbot.walls.AutoWallsConfig
 import com.clahbot.walls.AutoWallsDevice
+import com.clahbot.walls.AutoWallsDryRun
 import com.clahbot.walls.AutoWallsRepository
 import com.clahbot.walls.AutoWallsScan
 import com.clahbot.walls.AutoWallsScanReport
@@ -62,6 +68,7 @@ import com.clahbot.walls.AutoWallsScanner
 import com.clahbot.walls.WallCandidate
 import com.clahbot.walls.WallCriterion
 import com.clahbot.walls.WallCurrency
+import com.clahbot.walls.WallRowState
 import com.clahbot.walls.WallSelectionStrategy
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -95,6 +102,9 @@ fun AcAutoWalls2Section(repository: AutoWallsRepository, scope: CoroutineScope) 
     var expanded by remember { mutableStateOf(true) }
     var countdown by remember { mutableStateOf(0) }
     var scanning by remember { mutableStateOf(false) }
+    // Reserves live in the trigger state, which already persists them; the card
+    // only surfaces them (display-only until execution exists).
+    var trigger by remember { mutableStateOf(repository.loadTrigger()) }
     val timeFormat = remember { SimpleDateFormat("HH:mm:ss", Locale.US) }
 
     fun persist(next: AutoWallsConfig) {
@@ -126,6 +136,22 @@ fun AcAutoWalls2Section(repository: AutoWallsRepository, scope: CoroutineScope) 
         persist(config.copy(selection = config.selection.copy(customOrder = order)))
     }
 
+    /**
+     * Saves a reserve the user typed. The value is only read by the display-only
+     * dry-run line; nothing here authorizes a tap. The trigger counters are
+     * preserved because the whole state is written back.
+     */
+    fun persistReserve(gold: Boolean, text: String) {
+        val amount = (AutoWallsDryRun.parseAmount(text) ?: 0L).coerceAtLeast(0L)
+        val next = if (gold) {
+            trigger.copy(config = trigger.config.copy(goldReserve = amount))
+        } else {
+            trigger.copy(config = trigger.config.copy(elixirReserve = amount))
+        }
+        trigger = next
+        repository.saveTrigger(next)
+    }
+
     fun startScan() {
         if (scanning || countdown > 0) return
         scope.launch {
@@ -142,7 +168,14 @@ fun AcAutoWalls2Section(repository: AutoWallsRepository, scope: CoroutineScope) 
                 try {
                     AutoWallsScanner(
                         repository = repository,
-                        device = AutoWallsDevice(GameScreenEngine(), reader),
+                        // The shared gesture authority: the scan's list scroll
+                        // goes through the same single dispatch point as every
+                        // other automation surface.
+                        device = AutoWallsDevice(
+                            GameScreenEngine(),
+                            reader,
+                            GestureAuthority.shared()
+                        ),
                         log = { message -> AppEventLog.log(message) }
                     ).scan()
                 } finally {
@@ -160,6 +193,12 @@ fun AcAutoWalls2Section(repository: AutoWallsRepository, scope: CoroutineScope) 
             report = result
             history = repository.history()
             scanning = false
+            result?.let { scan ->
+                AppEventLog.log(
+                    "auto-walls-2.0 dryrun " +
+                        AutoWallsDryRun.decide(scan, repository.loadTrigger().config).text
+                )
+            }
             notifyScanResult(context, result)
         }
     }
@@ -334,6 +373,47 @@ fun AcAutoWalls2Section(repository: AutoWallsRepository, scope: CoroutineScope) 
                     )
                 )
 
+                Ac2Label("RESERVES — DISPLAY ONLY")
+                Text(
+                    "What must remain after paying. These values only feed the dry-run " +
+                        "line; no upgrade is ever sent.",
+                    fontSize = 10.sp,
+                    color = Color(Ds.MUTED)
+                )
+                Spacer(Modifier.height(6.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    OutlinedTextField(
+                        value = AutoWallsDryRun.formatAmount(trigger.config.goldReserve),
+                        onValueChange = { persistReserve(gold = true, text = it) },
+                        label = { Text("Gold reserve", fontSize = 11.sp) },
+                        placeholder = { Text("0", fontSize = 11.sp, color = Color(Ds.MUTED)) },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = Color(Ds.TEXT),
+                            unfocusedTextColor = Color(Ds.TEXT),
+                            focusedBorderColor = Color(Ds.ACCENT),
+                            unfocusedBorderColor = Color(Ds.PANEL_BORDER)
+                        ),
+                        modifier = Modifier.weight(1f)
+                    )
+                    OutlinedTextField(
+                        value = AutoWallsDryRun.formatAmount(trigger.config.elixirReserve),
+                        onValueChange = { persistReserve(gold = false, text = it) },
+                        label = { Text("Elixir reserve", fontSize = 11.sp) },
+                        placeholder = { Text("0", fontSize = 11.sp, color = Color(Ds.MUTED)) },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = Color(Ds.TEXT),
+                            unfocusedTextColor = Color(Ds.TEXT),
+                            focusedBorderColor = Color(Ds.ACCENT),
+                            unfocusedBorderColor = Color(Ds.PANEL_BORDER)
+                        ),
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+
                 Box(Modifier.fillMaxWidth().height(1.dp).background(Color(Ds.DIVIDER)))
                 Ac2Label("SCAN GAME SCREEN")
                 Text(
@@ -381,7 +461,10 @@ fun AcAutoWalls2Section(repository: AutoWallsRepository, scope: CoroutineScope) 
                             color = Color(Ds.MUTED)
                         )
                         Text(
-                            "${scan.candidates.size} wall row(s) · ${scan.eligible.size} eligible · " +
+                            "${scan.candidates.size} wall row(s) · " +
+                                "${scan.identifiedRows} identified · " +
+                                "${scan.partialRows} partial · ${scan.uncertainRows} uncertain · " +
+                                "${scan.eligible.size} eligible · " +
                                 "min conf ${AutoWallsScan.confidenceLabel(scan.minConfidence)}",
                             fontSize = 10.5.sp,
                             color = Color(Ds.MUTED)
@@ -389,6 +472,14 @@ fun AcAutoWalls2Section(repository: AutoWallsRepository, scope: CoroutineScope) 
                         balancesText(scan)?.let { balances ->
                             Text(balances, fontSize = 10.5.sp, color = Color(Ds.TEXT))
                         }
+                        val decision = AutoWallsDryRun.decide(scan, trigger.config)
+                        Ac2Label("DRY RUN — NO TAP")
+                        Text(
+                            decision.text,
+                            fontSize = 11.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (decision.wouldUpgrade) Color(Ds.SUCCESS) else Color(Ds.WARN)
+                        )
                     }
                     scan.reason?.let { reason ->
                         Text(reason, fontSize = 11.sp, color = Color(Ds.WARN))
@@ -442,8 +533,9 @@ fun AcAutoWalls2Section(repository: AutoWallsRepository, scope: CoroutineScope) 
 
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "Trigger, reserve, repeat and speed are Phase 2 — their logic exists " +
-                        "but nothing here is wired to a gesture.",
+                    "Trigger, repeat and speed are Phase 2 — their logic exists but nothing " +
+                        "here is wired to a gesture. The reserve fields and the dry-run line " +
+                        "are display-only.",
                     fontSize = 9.5.sp,
                     color = Color(Ds.MUTED)
                 )
@@ -524,11 +616,21 @@ private fun Ac2ReportRow(candidate: WallCandidate, selected: Boolean, minConfide
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
-            "L${candidate.level}",
-            fontSize = 11.5.sp,
+            // Only a fully identified row can show a wall level; a partial or
+            // uncertain read says so instead of pretending to be "L0".
+            if (candidate.state == WallRowState.IDENTIFIED) {
+                "L${candidate.level}"
+            } else {
+                candidate.state.label
+            },
+            fontSize = 10.5.sp,
             fontWeight = FontWeight.Bold,
-            color = Color(Ds.TEXT),
-            modifier = Modifier.width(42.dp)
+            color = if (candidate.state == WallRowState.IDENTIFIED) {
+                Color(Ds.TEXT)
+            } else {
+                Color(Ds.WARN)
+            },
+            modifier = Modifier.width(62.dp)
         )
         Text(
             currencyText(candidate.currency),
@@ -624,7 +726,7 @@ private fun notifyScanResult(context: Context, report: AutoWallsScanReport) {
         .setContentText(summary)
         .setStyle(
             NotificationCompat.BigTextStyle().bigText(
-                summary + "\nNo taps or scrolls were sent (allowTapping=false)."
+                summary + "\nNo upgrade taps were sent; the list may have been scrolled to inspect it."
             )
         )
         .setContentIntent(open)

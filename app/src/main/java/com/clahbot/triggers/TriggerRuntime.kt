@@ -1,34 +1,39 @@
 package com.clahbot.triggers
 
-import android.accessibilityservice.AccessibilityService
-import android.accessibilityservice.GestureDescription
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.graphics.Path
 import com.clahbot.data.AppEventLog
 import com.clahbot.game.GameInput
 import com.clahbot.game.GameState
+import com.clahbot.game.ScreenBox
 import com.clahbot.game.ScreenObservation
+import com.clahbot.gesture.GestureAuthority
+import com.clahbot.gesture.CancelToken
+import com.clahbot.gesture.GestureCommand
+import com.clahbot.gesture.GesturePriority
+import com.clahbot.gesture.GestureResult
+import com.clahbot.gesture.ScreenOwnership
 import com.clahbot.service.ClahAccessibilityService
-import kotlin.coroutines.resume
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * The device half of image triggers: loads each reference PNG, matches it
  * against the live frame off the main thread, and dispatches the chosen
- * gesture. It only ever acts on a [TriggerEngine.Decision.Act]; refusals and
- * unmatched screens are recorded, never executed. Trigger evaluation is skipped
- * while a popup or unknown screen is up, because recovery owns those.
+ * gesture through [GestureAuthority]. It only ever acts on a
+ * [TriggerEngine.Decision.Act]; refusals and unmatched screens are recorded,
+ * never executed. Trigger evaluation is skipped while a popup or unknown screen
+ * is up, because recovery owns those.
  */
 class TriggerRuntime(
     private val repository: TriggerRepository,
-    private val stopAutomation: () -> Unit
+    private val stopAutomation: () -> Unit,
+    private val gestureAuthority: GestureAuthority,
+    private val sessionId: Long = System.currentTimeMillis()
 ) {
 
+    private var transactionId: Long = 0L
     private val templateCache = HashMap<String, TemplateMatcher.Frame>()
 
     /** Called from the watchdog each tick. Returns true when a trigger acted. */
@@ -55,7 +60,7 @@ class TriggerRuntime(
         }
         return when (decision) {
             is TriggerEngine.Decision.Act -> {
-                execute(decision, frame)
+                execute(decision, frame, observation)
                 true
             }
 
@@ -69,25 +74,38 @@ class TriggerRuntime(
         }
     }
 
-    private suspend fun execute(act: TriggerEngine.Decision.Act, frame: ClahAccessibilityService.GameFrame) {
+    private suspend fun execute(
+        act: TriggerEngine.Decision.Act,
+        frame: ClahAccessibilityService.GameFrame,
+        observation: ScreenObservation
+    ) {
         val action = act.action
         when (action.type) {
             TriggerActionType.TAP -> {
                 val p = act.start ?: return
-                val delivered = dispatchTap(p, coerceDuration(action.durationMs, 40L), frame)
+                val delivered = dispatchTap(
+                    p, coerceDuration(action.durationMs, 40L), frame, observation,
+                    reason = "trigger:${act.trigger.id}:tap"
+                )
                 record(act, if (delivered) "acted: tap" else "tap gesture failed")
             }
 
             TriggerActionType.LONG_PRESS -> {
                 val p = act.start ?: return
-                val delivered = dispatchTap(p, coerceDuration(action.durationMs, 600L), frame)
+                val delivered = dispatchTap(
+                    p, coerceDuration(action.durationMs, 600L), frame, observation,
+                    reason = "trigger:${act.trigger.id}:long-press"
+                )
                 record(act, if (delivered) "acted: long press" else "long press gesture failed")
             }
 
             TriggerActionType.SWIPE -> {
                 val start = act.start ?: return
                 val end = act.end ?: return
-                val delivered = dispatchSwipe(start, end, coerceDuration(action.durationMs, 300L), frame)
+                val delivered = dispatchSwipe(
+                    start, end, coerceDuration(action.durationMs, 300L), frame, observation,
+                    reason = "trigger:${act.trigger.id}:swipe"
+                )
                 record(act, if (delivered) "acted: swipe" else "swipe gesture failed")
             }
 
@@ -140,77 +158,59 @@ class TriggerRuntime(
     private suspend fun dispatchTap(
         point: TriggerEngine.Point,
         durationMs: Long,
-        frame: ClahAccessibilityService.GameFrame
+        frame: ClahAccessibilityService.GameFrame,
+        observation: ScreenObservation,
+        reason: String
     ): Boolean {
         val screen = GameInput.toScreen(point.x.toInt(), point.y.toInt(), frame)
-        val path = Path().apply {
-            moveTo(screen.x.toFloat(), screen.y.toFloat())
-            lineTo(screen.x.toFloat(), screen.y.toFloat())
-        }
-        return dispatch(path, durationMs)
+        transactionId++
+        val command = GestureCommand(
+            kind = GestureCommand.Kind.Tap(
+                ScreenBox(
+                    left = screen.x - 10, top = screen.y - 10,
+                    right = screen.x + 10, bottom = screen.y + 10
+                )
+            ),
+            sessionId = sessionId,
+            transactionId = transactionId,
+            frameHash = observation.hash,
+            captureTimestampMillis = frame.capturedAtMillis,
+            expiresAtMillis = System.currentTimeMillis() + 5_000,
+            priority = GesturePriority.TRIGGER,
+            screenOwnership = ScreenOwnership.SHARED,
+            cancelToken = CancelToken(),
+            owner = "TriggerRuntime",
+            reason = reason
+        )
+        val result = gestureAuthority.enqueueAndAwait(command)
+        return result == GestureResult.Completed
     }
 
     private suspend fun dispatchSwipe(
         start: TriggerEngine.Point,
         end: TriggerEngine.Point,
         durationMs: Long,
-        frame: ClahAccessibilityService.GameFrame
+        frame: ClahAccessibilityService.GameFrame,
+        observation: ScreenObservation,
+        reason: String
     ): Boolean {
         val from = GameInput.toScreen(start.x.toInt(), start.y.toInt(), frame)
         val to = GameInput.toScreen(end.x.toInt(), end.y.toInt(), frame)
-        val path = Path().apply {
-            moveTo(from.x.toFloat(), from.y.toFloat())
-            lineTo(to.x.toFloat(), to.y.toFloat())
-        }
-        return dispatch(path, durationMs)
-    }
-
-    /**
-     * Returns true only when the system confirmed the gesture completed. A
-     * cancelled, rejected or never-completed gesture is reported as a failure
-     * and logged, so the caller records the trigger honestly instead of
-     * treating an action that never happened as done.
-     */
-    private suspend fun dispatch(path: Path, durationMs: Long): Boolean {
-        val service = ClahAccessibilityService.instance
-        if (service == null) {
-            AppEventLog.log("trigger gesture dropped: accessibility service missing")
-            return false
-        }
-        val description = try {
-            GestureDescription.Builder()
-                .addStroke(GestureDescription.StrokeDescription(path, 0L, durationMs.coerceAtLeast(1L)))
-                .build()
-        } catch (_: Exception) {
-            AppEventLog.log("trigger gesture dropped: invalid gesture description")
-            return false
-        }
-        val completed = withTimeoutOrNull(DISPATCH_TIMEOUT_MS) {
-            suspendCancellableCoroutine { continuation ->
-                val callback = object : AccessibilityService.GestureResultCallback() {
-                    override fun onCompleted(gestureDescription: GestureDescription?) {
-                        if (continuation.isActive) continuation.resume(true)
-                    }
-
-                    override fun onCancelled(gestureDescription: GestureDescription?) {
-                        if (continuation.isActive) continuation.resume(false)
-                    }
-                }
-                val accepted = service.dispatchGesture(description, callback, null)
-                if (!accepted && continuation.isActive) continuation.resume(false)
-            }
-        }
-        if (completed == true) return true
-        AppEventLog.log(
-            "trigger gesture failed: " + when (completed) {
-                null -> "no completion within ${DISPATCH_TIMEOUT_MS}ms"
-                else -> "cancelled or rejected by the system"
-            }
+        transactionId++
+        val command = GestureCommand(
+            kind = GestureCommand.Kind.Swipe(from.x, from.y, to.x, to.y, durationMs),
+            sessionId = sessionId,
+            transactionId = transactionId,
+            frameHash = observation.hash,
+            captureTimestampMillis = frame.capturedAtMillis,
+            expiresAtMillis = System.currentTimeMillis() + 5_000,
+            priority = GesturePriority.TRIGGER,
+            screenOwnership = ScreenOwnership.SHARED,
+            cancelToken = CancelToken(),
+            owner = "TriggerRuntime",
+            reason = reason
         )
-        return false
-    }
-
-    companion object {
-        private const val DISPATCH_TIMEOUT_MS = 2_000L
+        val result = gestureAuthority.enqueueAndAwait(command)
+        return result == GestureResult.Completed
     }
 }

@@ -437,6 +437,20 @@ class AutoWallsRepository internal constructor(
         val allowTapping: Boolean = false,
         val goldBalance: Long? = null,
         val elixirBalance: Long? = null,
+        val goldStale: Boolean = false,
+        val elixirStale: Boolean = false,
+        val viewports: Int = 0,
+        val bottomReached: Boolean = false,
+        val scanNote: String? = null,
+        val builderDetected: Boolean = false,
+        val builderStatus: String? = null,
+        val builderFree: Int? = null,
+        val builderTotal: Int? = null,
+        val builderBusy: Int? = null,
+        val builderGoblinOffer: Boolean = false,
+        /** True when the stored frame actually answered the Goblin-offer question. */
+        val builderGoblinKnown: Boolean = false,
+        val builderConfidence: Float? = null,
         override val schemaVersion: Int = 0
     ) : StoredFile {
         fun toReport(): AutoWallsScanReport = AutoWallsScanReport(
@@ -462,7 +476,21 @@ class AutoWallsRepository internal constructor(
             allowTapping = false,
             // A negative stored balance is garbage, never a real reading.
             goldBalance = goldBalance?.takeIf { it >= 0L },
-            elixirBalance = elixirBalance?.takeIf { it >= 0L }
+            elixirBalance = elixirBalance?.takeIf { it >= 0L },
+            // Stale is only believable when there is a value to carry.
+            goldStale = goldStale && goldBalance != null && goldBalance >= 0L,
+            elixirStale = elixirStale && elixirBalance != null && elixirBalance >= 0L,
+            viewports = viewports.coerceAtLeast(0),
+            bottomReached = bottomReached,
+            scanNote = scanNote,
+            builderDetected = builderDetected,
+            builderStatus = builderStatus.orEmpty(),
+            builderFree = builderFree?.takeIf { it >= 0 },
+            builderTotal = builderTotal?.takeIf { it >= 0 },
+            builderBusy = builderBusy?.takeIf { it >= 0 },
+            builderGoblinOffer = builderGoblinOffer,
+            builderGoblinKnown = builderGoblinKnown,
+            builderConfidence = (builderConfidence ?: 0f).coerceIn(0f, 1f)
         )
 
         companion object {
@@ -486,6 +514,19 @@ class AutoWallsRepository internal constructor(
                 allowTapping = report.allowTapping,
                 goldBalance = report.goldBalance,
                 elixirBalance = report.elixirBalance,
+                goldStale = report.goldStale,
+                elixirStale = report.elixirStale,
+                viewports = report.viewports,
+                bottomReached = report.bottomReached,
+                scanNote = report.scanNote,
+                builderDetected = report.builderDetected,
+                builderStatus = report.builderStatus,
+                builderFree = report.builderFree,
+                builderTotal = report.builderTotal,
+                builderBusy = report.builderBusy,
+                builderGoblinOffer = report.builderGoblinOffer,
+                builderGoblinKnown = report.builderGoblinKnown,
+                builderConfidence = report.builderConfidence,
                 schemaVersion = SCHEMA_VERSION
             )
         }
@@ -498,7 +539,11 @@ class AutoWallsRepository internal constructor(
         val currency: String? = null,
         val listIndex: Int? = null,
         val confidence: Float? = null,
-        val count: Int? = null
+        val count: Int? = null,
+        /** The OCR title this row was anchored on ("Wall x 317"). */
+        val title: String? = null,
+        /** IDENTIFIED / PARTIAL / UNCERTAIN; absent in files written before it existed. */
+        val state: String? = null
     ) {
         /** Unreadable identity/level/price/currency rows are dropped, never guessed. */
         fun toCandidate(): WallCandidate? {
@@ -506,14 +551,26 @@ class AutoWallsRepository internal constructor(
             val level = level ?: return null
             val price = price ?: return null
             val currency = currency ?: return null
+            val confidence = (confidence ?: 0f).coerceIn(0f, 1f)
             return WallCandidate(
                 id = id,
                 level = level.coerceAtLeast(0),
                 price = price.coerceAtLeast(0L),
                 currency = currency,
                 listIndex = (listIndex ?: 0).coerceAtLeast(0),
-                confidence = (confidence ?: 0f).coerceIn(0f, 1f),
-                count = count?.takeIf { it >= 0 }
+                confidence = confidence,
+                count = count?.takeIf { it >= 0 },
+                title = title,
+                // A file written before row states existed still carries the
+                // old confidence: only a strong reading may be treated as a
+                // full identity, everything else stays explicitly uncertain.
+                state = state?.let { name ->
+                    runCatching { WallRowState.valueOf(name) }.getOrNull()
+                } ?: if (confidence >= LEGACY_IDENTIFIED_CONFIDENCE) {
+                    WallRowState.IDENTIFIED
+                } else {
+                    WallRowState.UNCERTAIN
+                }
             )
         }
 
@@ -525,8 +582,13 @@ class AutoWallsRepository internal constructor(
                 currency = candidate.currency,
                 listIndex = candidate.listIndex,
                 confidence = candidate.confidence,
-                count = candidate.count
+                count = candidate.count,
+                title = candidate.title,
+                state = candidate.state.name
             )
+
+            /** Confidence the old detector used for a fully read wall row. */
+            private const val LEGACY_IDENTIFIED_CONFIDENCE = 0.6f
         }
     }
 

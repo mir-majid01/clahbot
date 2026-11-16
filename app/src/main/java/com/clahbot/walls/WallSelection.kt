@@ -1,5 +1,27 @@
 package com.clahbot.walls
 
+/**
+ * How completely one visual row was read. Only [IDENTIFIED] rows carry a whole
+ * identity (title, level, price and currency) and may be selected; the other
+ * states are surfaced separately so an unreadable row is never mistaken for a
+ * cheap wall or for "the bottom of the list".
+ */
+enum class WallRowState {
+    /** Title + level + single price + currency were all read from the same row. */
+    IDENTIFIED,
+    /** The wall row was read but a price or currency is missing. */
+    PARTIAL,
+    /** The title was read but the level or the price is ambiguous. */
+    UNCERTAIN;
+
+    val label: String
+        get() = when (this) {
+            IDENTIFIED -> "identified"
+            PARTIAL -> "partial"
+            UNCERTAIN -> "uncertain"
+        }
+}
+
 /** One detected wall-upgrade candidate from the Buildings & Heroes list (PRD §3.3). */
 data class WallCandidate(
     /** Stable identity for this list entry (row key), not a screen coordinate. */
@@ -15,7 +37,11 @@ data class WallCandidate(
     /** Recognition confidence for identity + price, 0..1. */
     val confidence: Float,
     /** Walls in this level group ("Wall x N"); null when the label is unreadable. */
-    val count: Int? = null
+    val count: Int? = null,
+    /** The OCR title this row was anchored on ("Wall x 317"). */
+    val title: String? = null,
+    /** How completely this row was read; only IDENTIFIED rows are selectable. */
+    val state: WallRowState = WallRowState.IDENTIFIED
 )
 
 /** How eligible walls are prioritised (PRD §2.2). Default is Cheapest first. */
@@ -54,7 +80,11 @@ object WallSelection {
 
     fun eligibleCandidates(candidates: List<WallCandidate>, config: WallSelectionConfig): List<WallCandidate> =
         candidates.filter {
-            it.confidence >= config.minConfidence && matchesCurrency(it.currency, config.currency)
+            it.state == WallRowState.IDENTIFIED &&
+                it.level > 0 &&
+                it.price > 0L &&
+                it.confidence >= config.minConfidence &&
+                matchesCurrency(it.currency, config.currency)
         }
 
     /** Unknown/other currencies are never selected — only the chosen gold/elixir. */

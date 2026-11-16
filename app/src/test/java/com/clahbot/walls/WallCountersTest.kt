@@ -5,6 +5,7 @@ import com.clahbot.ocr.OcrLine
 import com.clahbot.ocr.ResourceKind
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -146,5 +147,136 @@ class WallCountersTest {
 
         val both = WallCounters.Reading(gold = 1_500_000L, elixir = 2_000_000L)
         assertEquals("gold 1M · elixir 2M", both.describe())
+    }
+
+    @Test
+    fun `a panel price in a right-hand column is never read as a counter`() {
+        val page = listOf(
+            line("4 501 599", 0.55f, 0.06f),
+            line("16 000 000", 0.82f, 0.10f)
+        )
+
+        val reading = WallCounters.read(
+            page, width, height,
+            classifier(ResourceKind.GOLD, ResourceKind.GOLD)
+        )
+
+        assertEquals(4_501_599L, reading.gold)
+    }
+
+    @Test
+    fun `two digit noise is rejected instead of shown as a balance`() {
+        val page = listOf(
+            line("90", 0.55f, 0.06f),
+            line("56", 0.55f, 0.12f)
+        )
+
+        val reading = WallCounters.read(
+            page, width, height,
+            classifier(ResourceKind.GOLD, ResourceKind.ELIXIR)
+        )
+
+        assertFalse(reading.anything)
+        assertEquals(2, reading.rows)
+        assertEquals("counters unreadable", reading.describe())
+    }
+
+    @Test
+    fun `the previous balance is kept only with a stale marker`() {
+        val previous = WallCounters.Reading(gold = 1_500_000L, elixir = 2_000_000L)
+        val page = listOf(line("90", 0.55f, 0.06f))
+
+        val reading = WallCounters.read(
+            page, width, height,
+            classifier(ResourceKind.GOLD),
+            previous = previous
+        )
+
+        assertEquals(1_500_000L, reading.gold)
+        assertEquals(2_000_000L, reading.elixir)
+        assertTrue(reading.goldStale)
+        assertTrue(reading.elixirStale)
+        assertTrue(reading.describe(), reading.describe().contains("(stale)"))
+    }
+
+    @Test
+    fun `a fresh valid reading is never marked stale`() {
+        val previous = WallCounters.Reading(gold = 2_000_000L)
+        val page = listOf(line("1 250 000", 0.55f, 0.06f))
+
+        val reading = WallCounters.read(
+            page, width, height,
+            classifier(ResourceKind.GOLD),
+            previous = previous
+        )
+
+        assertEquals(1_250_000L, reading.gold)
+        assertFalse(reading.goldStale)
+    }
+
+    @Test
+    fun `a value above any real storage is rejected`() {
+        val page = listOf(line("9 999 999 999", 0.55f, 0.06f))
+
+        val reading = WallCounters.read(page, width, height, classifier(ResourceKind.GOLD))
+
+        assertFalse(reading.anything)
+    }
+
+    // ---- 2-of-3 agreement across captures of the same screen --------------
+
+    @Test
+    fun `two of three agreeing samples accept the balance`() {
+        val readings = listOf(
+            WallCounters.Reading(gold = 1_000_000L, elixir = 2_000_000L),
+            WallCounters.Reading(gold = 1_000_000L, elixir = 9L),
+            WallCounters.Reading(gold = 7L, elixir = 2_000_000L)
+        )
+
+        val agreed = WallCounters.agree(readings)
+
+        assertEquals(1_000_000L, agreed.gold)
+        assertEquals(2_000_000L, agreed.elixir)
+        assertFalse(agreed.goldStale)
+        assertFalse(agreed.elixirStale)
+    }
+
+    @Test
+    fun `three different samples agree on nothing`() {
+        val readings = listOf(
+            WallCounters.Reading(gold = 1_000_000L),
+            WallCounters.Reading(gold = 2_000_000L),
+            WallCounters.Reading(gold = 3_000_000L)
+        )
+
+        val agreed = WallCounters.agree(readings)
+
+        assertNull("a lone value is not an agreement", agreed.gold)
+    }
+
+    @Test
+    fun `a value seen once is not accepted as a balance`() {
+        val readings = listOf(
+            WallCounters.Reading(gold = 1_000_000L),
+            WallCounters.Reading(gold = null),
+            WallCounters.Reading(gold = null)
+        )
+
+        assertNull(WallCounters.agree(readings).gold)
+    }
+
+    @Test
+    fun `a balance that never agrees falls back to the previous value as stale`() {
+        val readings = listOf(
+            WallCounters.Reading(gold = 1_000_000L),
+            WallCounters.Reading(gold = 2_000_000L),
+            WallCounters.Reading(gold = 3_000_000L)
+        )
+        val previous = WallCounters.Reading(gold = 500_000L)
+
+        val agreed = WallCounters.agree(readings, previous = previous)
+
+        assertEquals(500_000L, agreed.gold)
+        assertTrue("a carried value must be marked stale", agreed.goldStale)
     }
 }

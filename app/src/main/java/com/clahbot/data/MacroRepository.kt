@@ -168,8 +168,11 @@ class MacroRepository(private val file: File) {
             val all = readLocked().toMutableList()
             val removed = all.removeAll { it.id == id }
             if (removed) {
-                writeLocked(all)
-                publish(all)
+                // Phase 5B: deleting a wall macro must not leave a dangling attack
+                // association behind.
+                val remaining = all.map { if (it.associatedWallMacroId == id) it.copy(associatedWallMacroId = null) else it }
+                writeLocked(remaining)
+                publish(remaining)
             }
             removed
         }
@@ -183,9 +186,56 @@ class MacroRepository(private val file: File) {
             val removed = all.filter { it.id in ids }
             if (removed.isEmpty()) return@withLock emptyList()
             all.removeAll { it.id in ids }
+            val remaining = all.map { if (it.associatedWallMacroId in ids) it.copy(associatedWallMacroId = null) else it }
+            writeLocked(remaining)
+            publish(remaining)
+            removed
+        }
+    }
+
+    /**
+     * Phase 5B — binds an attack macro to a wall-upgrade macro. The target must
+     * exist and be a wall macro; associations are metadata only and are not
+     * executed here (execution integration is Stage 5C).
+     */
+    suspend fun associateWallMacro(attackId: Long, wallMacroId: Long): MacroWriteResult? = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            val attack = readLocked().firstOrNull { it.id == attackId }
+                ?: return@withLock MacroWriteResult.Rejected("Attack macro no longer exists")
+            val wall = readLocked().firstOrNull { it.id == wallMacroId }
+                ?: return@withLock MacroWriteResult.Rejected("Wall macro no longer exists")
+            if (wall.kind != Macro.KIND_WALL) {
+                return@withLock MacroWriteResult.Rejected("Target macro is not a wall macro")
+            }
+            val all = readLocked().toMutableList()
+            val index = all.indexOfFirst { it.id == attackId }
+            all[index] = attack.copy(associatedWallMacroId = wallMacroId)
             writeLocked(all)
             publish(all)
-            removed
+            return@withLock MacroWriteResult.Saved(attack.copy(associatedWallMacroId = wallMacroId))
+        }
+    }
+
+    /** Phase 5B — clears the wall-macro association of an attack macro. */
+    suspend fun clearWallAssociation(attackId: Long): Boolean = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            val all = readLocked().toMutableList()
+            val index = all.indexOfFirst { it.id == attackId }
+            if (index < 0) return@withLock false
+            if (all[index].associatedWallMacroId == null) return@withLock false
+            all[index] = all[index].copy(associatedWallMacroId = null)
+            writeLocked(all)
+            publish(all)
+            return@withLock true
+        }
+    }
+
+    /** Phase 5B — resolves the wall macro an attack macro is bound to, if still valid. */
+    suspend fun associatedWallMacroFor(attackId: Long): Macro? = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            val attack = readLocked().firstOrNull { it.id == attackId } ?: return@withLock null
+            val wallId = attack.associatedWallMacroId ?: return@withLock null
+            readLocked().firstOrNull { it.id == wallId && it.kind == Macro.KIND_WALL }
         }
     }
 

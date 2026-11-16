@@ -29,6 +29,18 @@ object AppEventLog {
         log("app start version=$version")
     }
 
+    /**
+     * Makes sure the log file exists without writing a second "app start"
+     * banner. Used by callers that may run before the service initialised the
+     * log (for example the first gesture dispatched from a background thread).
+     */
+    fun ensureInitialised(context: Context) {
+        if (file != null) return
+        synchronized(lock) {
+            if (file == null) file = File(context.filesDir, FILE_NAME)
+        }
+    }
+
     fun log(message: String) {
         val target = file
         // Mirrored to logcat so a release build stays diagnosable: the private

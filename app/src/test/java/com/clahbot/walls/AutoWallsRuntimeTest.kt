@@ -3,15 +3,22 @@ package com.clahbot.walls
 import com.clahbot.game.GameState
 import com.clahbot.game.ScreenBox
 import com.clahbot.game.ScreenObservation
+import com.clahbot.ocr.BuilderFaceKind
 import com.clahbot.ocr.OcrBox
 import com.clahbot.ocr.OcrLine
 import com.clahbot.ocr.ResourceKind
+import com.clahbot.walls.BuilderValidationGate
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Before
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.Timeout
 import java.io.File
 import java.nio.file.Files
 
@@ -25,6 +32,22 @@ import java.nio.file.Files
  */
 class AutoWallsRuntimeTest {
 
+    /**
+     * Every test here drives a fake device, so anything that runs longer than
+     * this is a deadlock, not slowness. Without the rule a wedged coroutine
+     * hangs the whole Gradle test task and no result XML is written.
+     */
+    @get:Rule
+    val timeout: Timeout = Timeout.seconds(60)
+
+    @Before
+    fun setUp() {
+        // Enable builder validation gate for tests that exercise the full
+        // upgrade flow. Real-world authorization stays OFF until device
+        // evidence is manually validated.
+        BuilderValidationGate.realFrameValidationEnabled = true
+    }
+
     // ---- fake device -------------------------------------------------------
 
     private class FakeDevice : WallDevice {
@@ -36,9 +59,27 @@ class AutoWallsRuntimeTest {
         var scrolls = 0
         var clock = 1_000L
         val waits = mutableListOf<Long>()
+        /** If > 0, wait() actually suspends for this many ms, allowing cancellation windows. */
+        var waitDelayMs: Long = 0
 
-        override suspend fun observe(): WallFrame? =
-            if (frames.isNotEmpty()) frames.removeFirst() else fallback
+        override var scanOwnerId: Long = 0L
+
+        /** The frame the last [observe] served; re-reads return this same screen. */
+        private var lastServed: WallFrame? = null
+
+        override suspend fun observe(): WallFrame? {
+            val next = if (frames.isNotEmpty()) frames.removeFirst() else fallback
+            if (next != null) lastServed = next
+            return next
+        }
+
+        /**
+         * A field re-read captures the screen that is already showing again. It
+         * must NOT consume the scripted queue: `frames` models successive
+         * screens across scrolls, and a builder re-capture would otherwise eat
+         * the next screen and make every later assertion lie.
+         */
+        override suspend fun observeAgain(): WallFrame? = lastServed ?: fallback
 
         override suspend fun tap(box: ScreenBox): Boolean {
             taps += box
@@ -53,9 +94,14 @@ class AutoWallsRuntimeTest {
         override suspend fun wait(ms: Long) {
             waits += ms
             clock += ms
+            if (waitDelayMs > 0) delay(waitDelayMs)
         }
 
         override fun now(): Long = clock
+
+        override fun endWallTxn() {
+            // No-op for fake device; ownership tracking is in GestureAuthority.
+        }
     }
 
     // ---- frame builders ----------------------------------------------------
@@ -72,18 +118,34 @@ class AutoWallsRuntimeTest {
         width: Int = 1080,
         height: Int = 2400
     ): WallFrame {
+        val allLines = lines + listOf(line("Builder 3", 100, 100, 200, 120))
         val observation = ScreenObservation(
             state = state, confidence = 0.9f, frameWidth = width, frameHeight = height,
             confirmButton = confirmButton, forbidden = forbidden
         )
-        return WallFrame(observation, lines, width, height, classify)
+        return WallFrame(observation, allLines, width, height, System.currentTimeMillis(), classify)
     }
 
     private val goldCounter = line("5 000 000", 700, 100, 1000, 160)
     private val classifyVillage: (OcrBox) -> ResourceKind? =
         { box -> if (box.top in 100..160) ResourceKind.GOLD else null }
 
-    private fun village() = frame(GameState.HOME, listOf(goldCounter), classifyVillage)
+    /**
+     * A real village frame: the gold counter up top and a regular builder strip
+     * at the bottom right whose left-most slot reads `6/6` with a regular face.
+     * The builder evidence gate is fail-closed, so a village fixture without a
+     * genuine fraction+face could never authorize an upgrade — and a test that
+     * reaches the tap path must model that evidence honestly.
+     */
+    private fun village(): WallFrame {
+        val frame = frame(
+            GameState.HOME,
+            listOf(goldCounter, line("6/6", 820, 1700, 900, 1760)),
+            classifyVillage
+        )
+        frame.builderFaceAt = { BuilderFaceKind.REGULAR }
+        return frame
+    }
 
     /** One wall-level group row: badge level, "Wall x N" label, gold price. */
     private fun wallRow(level: Int, count: Int, price: String, top: Int = 300): List<OcrLine> = listOf(
@@ -145,6 +207,24 @@ class AutoWallsRuntimeTest {
         maxRepeats: Int = 5,
         speed: Float = 1f
     ) = AutoWallsRuntime(session, device, speed = speed, allowRepeat = allowRepeat, maxRepeats = maxRepeats)
+
+    // ---- fixture sanity ----------------------------------------------------
+
+    @Test
+    fun `the wall-list fixture yields one identified candidate`() {
+        // If this fails, the runtime tests below can only ever fail downstream:
+        // a fixture that does not parse cannot be selected or tapped.
+        val rows = list(317).candidates()
+        assertEquals(
+            "fixture must produce exactly one identified wall: $rows",
+            1,
+            rows.count { it.state == WallRowState.IDENTIFIED }
+        )
+        assertEquals(17, rows.first().level)
+        assertEquals(2_500_000L, rows.first().price)
+        assertEquals("gold", rows.first().currency)
+        assertEquals(WallRowState.IDENTIFIED, rows.first().state)
+    }
 
     // ---- production gate ---------------------------------------------------
 
@@ -242,6 +322,34 @@ class AutoWallsRuntimeTest {
         assertEquals(ScreenBox(40, 350, 400, 400), device.taps[0])
         assertEquals(confirmBox, device.taps[1])
         assertTrue(session.machine!!.statuses().contains(WallEventStatus.VERIFIED))
+        dir.deleteRecursively()
+    }
+
+    @Test
+    fun `Stop before confirm tap cancels the pending confirmation`(): Unit = runBlocking {
+        val (session, dir) = session(allowTapping = true)
+        val device = FakeDevice()
+        device.frames.addAll(listOf(village(), list(317), confirmation(), confirmation(), list(316)))
+        device.fallback = village()
+        // Give the runtime a cancellation window between row tap and confirm tap.
+        device.waitDelayMs = 100
+
+        val job = launch {
+            runtime(session, device).run()
+        }
+
+        // Wait for the row tap to complete.
+        while (device.taps.isEmpty()) {
+            delay(10)
+        }
+
+        // Stop is pressed: cancel the runtime job.
+        job.cancel()
+        job.join()
+
+        // Only the row tap must have happened; the confirm tap must NOT occur.
+        assertTrue("Confirm tap must not execute after Stop",
+            device.taps.size == 1)
         dir.deleteRecursively()
     }
 

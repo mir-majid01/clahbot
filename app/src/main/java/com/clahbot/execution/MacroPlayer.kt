@@ -12,6 +12,15 @@ import com.clahbot.data.models.Macro
 import com.clahbot.data.models.RecordedGesture
 import com.clahbot.results.ResultCaptureGate
 import com.clahbot.service.ClahAccessibilityService
+import com.clahbot.game.GameState
+import com.clahbot.game.ScreenBox
+import com.clahbot.game.ScreenObservation
+import com.clahbot.gesture.CancelToken
+import com.clahbot.gesture.GestureCommand
+import com.clahbot.gesture.GesturePriority
+import com.clahbot.gesture.GestureResult
+import com.clahbot.gesture.GestureTrace
+import com.clahbot.gesture.ScreenOwnership
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -32,7 +41,17 @@ class MacroPlayer(
     private val screenWidth: Int,
     private val screenHeight: Int,
     private val resultGate: ResultCaptureGate? = null,
-    private val onGesturePath: ((List<GesturePoint>, Long, Long) -> Unit)? = null
+    private val onGesturePath: ((List<GesturePoint>, Long, Long) -> Unit)? = null,
+    /** OCR reader for live frame inspection during wall-macro playback. */
+    private val resultsReader: com.clahbot.results.AppResultsReader? = null,
+    /** Game screen engine for inspecting live frames during wall-macro playback. */
+    private val gameEngine: com.clahbot.game.GameScreenEngine? = null,
+    /** Test hook: when set, dispatch() uses this observation instead of
+     * capturing a fresh frame via ClahAccessibilityService.captureGameFrame().
+     * Set to null (default) for normal operation. */
+    internal var testScreenObservation: com.clahbot.game.ScreenObservation? = null,
+    /** Shared gesture authority used for wall-macro dispatch (ownership + preflight). */
+    private val gestureAuthority: com.clahbot.gesture.GestureAuthority? = null
 ) {
 
     private var job: Job? = null
@@ -57,6 +76,12 @@ class MacroPlayer(
 
     @Volatile
     private var gateHeld = false
+
+    /** Stable session id shared by every gesture of this playback. */
+    private val sessionId: Long = System.currentTimeMillis()
+
+    /** Per-gesture transaction counter. */
+    private var transactionId: Long = 0L
 
     fun play(
         macro: Macro,
@@ -158,7 +183,12 @@ class MacroPlayer(
                             )
                         }
 
-                        val delivered = dispatch(service, gesture, macro.speedMultiplier)
+                        val delivered = dispatch(
+                            service,
+                            gesture,
+                            macro.speedMultiplier,
+                            isWallMacro = macro.kind == Macro.KIND_WALL
+                        )
                         if (delivered) {
                             consecutiveDispatchFailures = 0
                         } else if (!stopped) {
@@ -225,6 +255,7 @@ class MacroPlayer(
             } catch (_: CancellationException) {
                 // Stopping is a normal exit path.
             } finally {
+                gestureAuthority?.endWallTxn()
                 AppEventLog.log("macro loop exit iteration=$iteration stopped=$stopped")
                 BotState.setPlaybackRunLabel(null)
                 BotState.setPlaybackElapsed(0L)
@@ -354,10 +385,11 @@ class MacroPlayer(
         return !stopped
     }
 
-    private suspend fun dispatch(
-        service: ClahAccessibilityService,
+    internal suspend fun dispatch(
+        service: ClahAccessibilityService?,
         gesture: RecordedGesture,
-        speed: Float
+        speed: Float,
+        isWallMacro: Boolean = false
     ): Boolean {
         val paths = MacroTimeline.playbackPaths(
             gesture,
@@ -367,6 +399,61 @@ class MacroPlayer(
         )
         if (paths.isEmpty()) return false
 
+        // Wall macros: validate against the live screen before every gesture.
+        if (isWallMacro) {
+            // Start exclusive ownership for this wall transaction. Reject if
+            // another transaction already owns the screen.
+            if (gestureAuthority?.startWallTxn(sessionId) != true) return false
+
+            // Obtain a fresh observation before every wall-macro gesture.
+            val observation = freshScreenObservation() ?: return false
+
+            // Reject POPUP / UNKNOWN / inappropriate screen states.
+            if (observation.state == GameState.POPUP ||
+                observation.state == GameState.UNKNOWN) {
+                return false
+            }
+
+            // Check the gesture against fresh forbidden regions.
+            // A valid empty list is accepted only when inspection succeeded
+            // (observation != null). Never fall back to cached forbidden boxes.
+            val targetBox = targetBox(paths.first())
+            if (observation.forbidden.any { it.intersects(targetBox) }) {
+                AppEventLog.log(
+                    "wall macro: skipped forbidden gesture at ${gesture.timestampMs}ms " +
+                        "type=${gesture.gestureType}"
+                )
+                return false
+            }
+
+            // Route wall-macro dispatch through the shared GestureAuthority so
+            // ownership and preflight (frame hash, forbidden overlap) are enforced.
+            gestureAuthority ?: return false
+            transactionId++
+            val command = GestureCommand(
+                kind = GestureCommand.Kind.Tap(targetBox),
+                sessionId = sessionId,
+                transactionId = transactionId,
+                frameHash = observation.hash,
+                captureTimestampMillis = System.currentTimeMillis(),
+                expiresAtMillis = System.currentTimeMillis() + 5_000,
+                priority = GesturePriority.WALL_UPGRADE,
+                screenOwnership = ScreenOwnership.EXCLUSIVE,
+                cancelToken = CancelToken(),
+                owner = "MacroPlayer",
+                reason = "wall-macro-tap"
+            )
+            val result = gestureAuthority.enqueueAndAwait(command, observation)
+            return result == GestureResult.Completed
+        }
+
+        // Non-wall (attack) macros: preserve the existing direct dispatch path.
+        // A wall-list scan owns the screen while it scrolls the list; a
+        // competing macro stroke would move rows between capture and reading.
+        if (com.clahbot.gesture.ScanGate.isActive()) {
+            AppEventLog.log("macro gesture blocked: wall-list scan owns the screen")
+            return false
+        }
         val description = try {
             val builder = GestureDescription.Builder()
             for (path in paths) {
@@ -390,6 +477,7 @@ class MacroPlayer(
         }
 
         // A cancelled or never-answered dispatch must not stall the loop forever.
+        val dispatchStartedAt = System.currentTimeMillis()
         val result = withTimeoutOrNull(totalDuration + DISPATCH_TIMEOUT_SLACK_MS) {
             suspendCancellableCoroutine<Boolean> { continuation ->
                 val callback = object : AccessibilityService.GestureResultCallback() {
@@ -401,11 +489,59 @@ class MacroPlayer(
                         if (continuation.isActive) continuation.resume(false)
                     }
                 }
-                val accepted = service.dispatchGesture(description, callback, null)
+                val accepted = service?.dispatchGesture(description, callback, null) ?: false
                 if (!accepted && continuation.isActive) continuation.resume(false)
             }
         }
-        return result ?: false
+        val delivered = result ?: false
+        // This macro stroke bypasses GestureAuthority, so it logs its own
+        // GESTURE line with the same fields the authority path uses.
+        GestureTrace.logDirect(
+            component = "MacroPlayer",
+            reason = "macro-playback",
+            type = gesture.gestureType,
+            coords = run {
+                val first = paths.first().points
+                val start = first.first()
+                val end = first.last()
+                "(${start.x.toInt()},${start.y.toInt()})->(${end.x.toInt()},${end.y.toInt()})" +
+                    " paths=${paths.size}"
+            },
+            result = if (delivered) "completed" else "failed:not-delivered",
+            elapsedMs = System.currentTimeMillis() - dispatchStartedAt
+        )
+        return delivered
+    }
+
+    /**
+     * Captures a fresh screen observation (OCR + inspect) for wall-macro validation.
+     * Returns null when capture, OCR, or inspection fails — never falls back to
+     * cached/stale forbidden regions. Uses [testScreenObservation] when set (tests).
+     */
+    private suspend fun freshScreenObservation(): ScreenObservation? {
+        return try {
+            testScreenObservation ?: run {
+                val frame = ClahAccessibilityService.captureGameFrame() ?: return@run null
+                val page = runCatching { resultsReader?.page(frame.bitmap) }.getOrNull()
+                page?.let { pg ->
+                    runCatching { gameEngine?.inspect(frame.bitmap, pg, null) }.getOrNull()
+                }
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /** Builds the screen box covered by the first playback path. */
+    private fun targetBox(path: MacroTimeline.PlaybackPath): ScreenBox {
+        val first = path.points.first()
+        val last = path.points.last()
+        return ScreenBox(
+            left = (first.x * screenWidth).toInt(),
+            top = (first.y * screenHeight).toInt(),
+            right = (last.x * screenWidth).toInt(),
+            bottom = (last.y * screenHeight).toInt()
+        )
     }
 
     private fun buildPath(points: List<GesturePoint>, type: String): Path {

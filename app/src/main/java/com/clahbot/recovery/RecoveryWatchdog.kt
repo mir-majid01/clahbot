@@ -14,6 +14,7 @@ import com.clahbot.game.GameScreenEngine
 import com.clahbot.game.GameState
 import com.clahbot.game.PopupKind
 import com.clahbot.game.ScreenObservation
+import com.clahbot.gesture.GestureAuthority
 import com.clahbot.results.AppResultsReader
 import com.clahbot.results.ScreenHash
 import com.clahbot.service.ClahAccessibilityService
@@ -29,7 +30,9 @@ import kotlinx.coroutines.launch
  */
 class RecoveryAgent(
     private val engine: GameScreenEngine,
-    private val reader: AppResultsReader
+    private val reader: AppResultsReader,
+    /** Shared gesture authority. Falls back to a standalone instance if null. */
+    private val gestureAuthority: GestureAuthority? = null
 ) {
 
     data class Reading(val frame: ClahAccessibilityService.GameFrame, val observation: ScreenObservation)
@@ -44,6 +47,21 @@ class RecoveryAgent(
         )
         return Reading(frame, observation)
     }
+
+    private val gi: GameInput
+        get() = GameInput(
+            // The shared authority is the app-wide singleton: the watchdog must
+            // never create a second one, or the recovery gestures would bypass
+            // the single dispatch point.
+            gestureAuthority ?: GestureAuthority.shared(),
+            System.currentTimeMillis()
+        )
+
+    /** Global BACK through the shared GestureAuthority. */
+    suspend fun globalBack(
+        owner: String = "RecoveryWatchdog",
+        reason: String = "recovery-back"
+    ): Boolean = gi.globalBack(owner = owner, reason = reason)
 
     /**
      * Clears a popup with the data-driven rules and the never-press guard.
@@ -107,13 +125,14 @@ class RecoveryAgent(
         val target = action.target
         if (target == null) {
             when (action.type) {
-                RecoveryActionType.PRESS_BACK -> GameInput.globalBack()
+                RecoveryActionType.PRESS_BACK ->
+                    gi.globalBack(owner = "RecoveryWatchdog", reason = "recovery-back")
                 RecoveryActionType.GO_HOME -> goHome()
                 else -> Unit
             }
             return
         }
-        GameInput.tapBox(target, frame)
+        gi.tapBox(target, frame, owner = "RecoveryWatchdog", reason = "recovery-tap")
     }
 
     /** Return Home on the results / searching screens by caption. */
@@ -132,7 +151,7 @@ class RecoveryAgent(
             reading.frame.bitmap.width,
             reading.frame.bitmap.height
         )
-        GameInput.tapBox(box, reading.frame)
+        gi.tapBox(box, reading.frame, owner = "RecoveryWatchdog", reason = "recovery-go-home")
     }
 
     companion object {
@@ -166,6 +185,8 @@ class RecoveryWatchdog(
     private val context: Context,
     engine: GameScreenEngine,
     reader: AppResultsReader,
+    /** The single shared GestureAuthority instance used by the whole app. */
+    private val gestureAuthority: GestureAuthority,
     /** True while a results episode is reading: the watcher must not queue behind it. */
     private val captureBusy: () -> Boolean = { false },
     /** Runs every tick; image triggers evaluate here. Null means no trigger work. */
@@ -173,7 +194,7 @@ class RecoveryWatchdog(
     private val onPlaybackAborted: (reason: String) -> Unit = {}
 ) {
 
-    private val agent = RecoveryAgent(engine, reader)
+    private val agent = RecoveryAgent(engine, reader, gestureAuthority)
     private var job: Job? = null
 
     @Volatile
@@ -388,7 +409,9 @@ class RecoveryWatchdog(
         val foreground = ClahAccessibilityService.currentForegroundPackage() ?: return
         if (foreground.startsWith(GameScreenEngine.CLASH_PACKAGE_PREFIX)) return
         AppEventLog.log("watchdog: not clash ($foreground)")
-        GameInput.globalBack()
+        // Use the shared GameInput (and therefore GestureAuthority) so global
+        // BACK respects exclusive wall-upgrade ownership and manual Stop.
+        agent.globalBack(owner = "RecoveryWatchdog", reason = "not-clash-back")
         delay(NOT_CLASH_BACK_WAIT_MS)
         val again = ClahAccessibilityService.currentForegroundPackage()
         if (again == null || !again.startsWith(GameScreenEngine.CLASH_PACKAGE_PREFIX)) {

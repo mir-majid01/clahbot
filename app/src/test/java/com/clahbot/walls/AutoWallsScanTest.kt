@@ -2,6 +2,7 @@ package com.clahbot.walls
 
 import com.clahbot.game.GameState
 import com.clahbot.game.ScreenObservation
+import com.clahbot.ocr.BuilderFaceKind
 import com.clahbot.ocr.OcrBox
 import com.clahbot.ocr.OcrLine
 import com.clahbot.ocr.ResourceKind
@@ -52,21 +53,28 @@ class AutoWallsScanTest {
     private fun line(text: String, left: Int, top: Int, right: Int, bottom: Int) =
         OcrLine(text, OcrBox(left, top, right, bottom), emptyList())
 
-    /** One wall-level group row: badge level, "Wall x N" label, price. */
+    /** One wall-level group row: badge level, "Wall x N" label, price on one line. */
     private fun wallRow(level: Int, count: Int, price: String, top: Int): List<OcrLine> = listOf(
         line("$level", 40, top, 120, top + 40),
-        line("Wall x $count", 40, top + 50, 400, top + 100),
-        line(price, 40, top + 110, 400, top + 160)
+        line("Wall x $count", 200, top, 500, top + 40),
+        line(price, 700, top, 1000, top + 40)
     )
 
-    private fun frame(lines: List<OcrLine>, kinds: Map<Int, ResourceKind> = emptyMap()): WallFrame {
+    private fun frame(
+        lines: List<OcrLine>,
+        kinds: Map<Int, ResourceKind> = emptyMap(),
+        /** Face the stub sees above a fraction badge; null means unclassifiable. */
+        face: BuilderFaceKind? = null
+    ): WallFrame {
         val observation = ScreenObservation(
             state = GameState.UPGRADE_PANEL,
             confidence = 0.9f,
             frameWidth = 1080,
             frameHeight = 2400
         )
-        return WallFrame(observation, lines, 1080, 2400) { box -> kinds[box.top] }
+        val wallFrame = WallFrame(observation, lines, 1080, 2400) { box -> kinds[box.top] }
+        wallFrame.builderFaceAt = { face }
+        return wallFrame
     }
 
     private val rowTops = listOf(300, 520, 740, 960)
@@ -78,10 +86,10 @@ class AutoWallsScanTest {
             wallRow(14, 230, "500 000", rowTops[2]) +
             wallRow(16, 12, "1 000 000", rowTops[3]),
         mapOf(
-            rowTops[0] + 110 to ResourceKind.ELIXIR,
-            rowTops[1] + 110 to ResourceKind.GOLD,
-            rowTops[2] + 110 to ResourceKind.ELIXIR,
-            rowTops[3] + 110 to ResourceKind.ELIXIR
+            rowTops[0] to ResourceKind.ELIXIR,
+            rowTops[1] to ResourceKind.GOLD,
+            rowTops[2] to ResourceKind.ELIXIR,
+            rowTops[3] to ResourceKind.ELIXIR
         )
     )
 
@@ -111,10 +119,10 @@ class AutoWallsScanTest {
             wallRow(14, 230, "500 000", rowTops[2]) +
             wallRow(16, 12, "1 000 000", rowTops[3]),
         counterKinds + mapOf(
-            rowTops[0] + 110 to ResourceKind.ELIXIR,
-            rowTops[1] + 110 to ResourceKind.GOLD,
-            rowTops[2] + 110 to ResourceKind.ELIXIR,
-            rowTops[3] + 110 to ResourceKind.ELIXIR
+            rowTops[0] to ResourceKind.ELIXIR,
+            rowTops[1] to ResourceKind.GOLD,
+            rowTops[2] to ResourceKind.ELIXIR,
+            rowTops[3] to ResourceKind.ELIXIR
         )
     )
 
@@ -218,7 +226,7 @@ class AutoWallsScanTest {
         val mixed = frame(
             wallRow(13, 83, "750 000", rowTops[0]) +
                 line("Wall x 50", 40, rowTops[1] + 50, 400, rowTops[1] + 100),
-            mapOf(rowTops[0] + 110 to ResourceKind.ELIXIR)
+            mapOf(rowTops[0] to ResourceKind.ELIXIR)
         )
         val report = AutoWallsScan.analyze(mixed, config(), at = 1L)
         assertEquals(2, report.candidates.size)
@@ -377,5 +385,137 @@ class AutoWallsScanTest {
         val repo = repository()
         repo.saveConfig(AutoWallsConfig(enabled = true, allowTapping = true))
         assertTrue(repo.loadConfig().allowTapping)
+    }
+
+    // ---- builders in the report --------------------------------------------
+
+    /** The real `free/total` badge in the bottom-right corner of the frame. */
+    private val builderBadge = line("1/5", 900, 2200, 1000, 2260)
+
+    @Test
+    fun `a frame without builder evidence reports uncertain builders`() {
+        val report = AutoWallsScan.analyze(fourWalls(), config(), at = 1L)
+
+        assertFalse("no builder fraction on the frame", report.builderDetected)
+        assertEquals("UNCERTAIN", report.builderStatus)
+        assertNull(report.builderFree)
+        assertNull(report.builderTotal)
+        assertFalse(report.builderGoblinOffer)
+        assertEquals(0f, report.builderConfidence, 0.0001f)
+    }
+
+    @Test
+    fun `analyzeScan reports viewport coverage and the regular builder fraction`() {
+        val first = frame(
+            listOf(builderBadge) + wallRow(17, 317, "2 500 000", rowTops[0]),
+            mapOf(rowTops[0] to ResourceKind.GOLD),
+            face = BuilderFaceKind.REGULAR
+        )
+        val report = AutoWallsScan.analyzeScan(
+            rows = listOf(row(17, 2_500_000L, "gold", count = 317)),
+            frame = first,
+            config = config(),
+            counters = first.counters(),
+            builder = BuilderDetection.detect(
+                first.lines, first.width, first.height, first.builderFaceAt
+            ),
+            viewports = 3,
+            bottomReached = true,
+            scanNote = null,
+            at = 42L
+        )
+
+        assertEquals(3, report.viewports)
+        assertTrue(report.bottomReached)
+        assertNull(report.scanNote)
+        assertTrue(report.builderDetected)
+        assertEquals("AVAILABLE", report.builderStatus)
+        assertEquals(1, report.builderFree)
+        assertEquals(5, report.builderTotal)
+        assertEquals(4, report.builderBusy)
+        assertFalse(report.builderGoblinOffer)
+        assertEquals(0.90f, report.builderConfidence, 0.0001f)
+    }
+
+    @Test
+    fun `analyzeScan keeps a carried balance marked stale`() {
+        val carried = WallCounters.Reading(gold = 1_500_000L, goldStale = true)
+        val report = AutoWallsScan.analyzeScan(
+            rows = emptyList(),
+            frame = fourWalls(),
+            config = config(),
+            counters = carried,
+            builder = BuilderDetection.Reading(BuilderDetection.Status.UNCERTAIN),
+            viewports = 1,
+            bottomReached = false,
+            scanNote = "could not scroll the list; scanned 1 viewport(s)",
+            at = 43L
+        )
+
+        assertEquals(1_500_000L, report.goldBalance)
+        assertTrue(report.goldStale)
+        assertNull(report.elixirBalance)
+        assertFalse(report.elixirStale)
+        assertEquals(1, report.viewports)
+        assertFalse(report.bottomReached)
+        assertNotNull(report.scanNote)
+    }
+
+    @Test
+    fun `a missing wall list is refused instead of scanned blindly`() {
+        val report = AutoWallsScan.listNotDetected(
+            AutoWallsScan.GAME_PACKAGE,
+            config(),
+            at = 44L
+        )
+
+        assertTrue(report.gameForeground)
+        assertTrue(report.captured)
+        assertTrue(report.candidates.isEmpty())
+        assertNull(report.selected)
+        assertNotNull(report.reason)
+        assertTrue(report.reason!!.contains("Buildings & Heroes"))
+        assertEquals(0, report.viewports)
+        assertFalse(report.bottomReached)
+        assertFalse(report.allowTapping)
+    }
+
+    @Test
+    fun `scan coverage and builder state survive the disk round trip`() {
+        val repo = repository()
+        val first = frame(
+            listOf(builderBadge) + wallRow(17, 317, "2 500 000", rowTops[0]),
+            mapOf(rowTops[0] to ResourceKind.GOLD),
+            face = BuilderFaceKind.REGULAR
+        )
+        val report = AutoWallsScan.analyzeScan(
+            rows = listOf(row(17, 2_500_000L, "gold", count = 317)),
+            frame = first,
+            config = config(),
+            counters = WallCounters.Reading(gold = 2_500_000L, goldStale = true),
+            builder = BuilderDetection.detect(
+                first.lines, first.width, first.height, first.builderFaceAt
+            ),
+            viewports = 4,
+            bottomReached = true,
+            scanNote = null,
+            at = 45L
+        )
+        repo.saveScan(report)
+
+        val loaded = repo.loadScan()
+        assertNotNull(loaded)
+        loaded!!
+        assertEquals(4, loaded.viewports)
+        assertTrue(loaded.bottomReached)
+        assertNull(loaded.scanNote)
+        assertTrue(loaded.goldStale)
+        assertEquals(2_500_000L, loaded.goldBalance)
+        assertTrue(loaded.builderDetected)
+        assertEquals("AVAILABLE", loaded.builderStatus)
+        assertEquals(1, loaded.builderFree)
+        assertEquals(5, loaded.builderTotal)
+        assertEquals(4, loaded.builderBusy)
+        assertEquals(0.90f, loaded.builderConfidence, 0.0001f)
     }
 }

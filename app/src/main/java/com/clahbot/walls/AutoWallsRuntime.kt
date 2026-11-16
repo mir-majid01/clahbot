@@ -1,8 +1,12 @@
 package com.clahbot.walls
 
 import com.clahbot.execution.MacroTimeline
+import com.clahbot.game.GameState
 import com.clahbot.game.ScreenBox
 import com.clahbot.game.ScreenObservation
+import com.clahbot.gesture.GestureAuthority
+import com.clahbot.gesture.ScanGate
+import com.clahbot.ocr.BuilderFaceKind
 import com.clahbot.ocr.OcrBox
 import com.clahbot.ocr.OcrLine
 import com.clahbot.ocr.ResourceKind
@@ -18,8 +22,24 @@ class WallFrame(
     val lines: List<OcrLine>,
     val width: Int,
     val height: Int,
+    /** System.currentTimeMillis() when the source frame was captured. */
+    val capturedAtMillis: Long = 0L,
     val classify: (OcrBox) -> ResourceKind?
 ) {
+    /**
+     * Reads the builder face above a fraction badge. The real adapter installs
+     * a bitmap sampler; tests can pass a stub. The default returns null, which
+     * makes [BuilderDetection] report UNCERTAIN rather than guess a slot.
+     */
+    var builderFaceAt: (OcrBox) -> BuilderFaceKind? = { null }
+
+    /**
+     * Optional diagnostic of the face sampler (template scores and geometry).
+     * Only the Android adapter installs it; it is used for the persistent scan
+     * log so a wrong builder count can be explained from the log alone.
+     */
+    var builderFaceDetail: () -> String = { "" }
+
     /** Currency of a price box, derived from the same icon classifier. */
     val currencyAt: (OcrBox) -> String? = { box ->
         when (classify(box)) {
@@ -30,10 +50,32 @@ class WallFrame(
         }
     }
 
-    fun counters(): WallCounters.Reading = WallCounters.read(lines, width, height, classify)
+    fun counters(previous: WallCounters.Reading? = null): WallCounters.Reading {
+        // The gold/elixir counters are in the fixed HUD above the list. On the
+        // Buildings & Heroes screen the header marks where the rows begin;
+        // otherwise the HUD strip at the very top is the only place a balance
+        // can be. Without this cut the first list rows' prices — which sit high
+        // on a tall frame — could be read as balances (the 16,000,000 bug).
+        val menuTop = WallMenu.inspect(lines, height)
+            .takeIf { it.headerDetected }
+            ?.listTop
+            ?.takeIf { it > 0 }
+            ?: (height * COUNTER_STRIP_FRACTION).toInt()
+        val scoped = if (menuTop <= 0) {
+            lines
+        } else {
+            lines.filter { (it.box?.bottom ?: 0) <= menuTop }
+        }
+        return WallCounters.read(scoped, width, height, classify, previous)
+    }
 
     fun candidates(): List<WallCandidate> =
         WallDiscovery.discover(lines, height, currencyAt = currencyAt)
+
+    private companion object {
+        /** Share of the frame height the top resource HUD can occupy. */
+        const val COUNTER_STRIP_FRACTION = 0.12f
+    }
 }
 
 /**
@@ -43,10 +85,54 @@ class WallFrame(
  */
 interface WallDevice {
     suspend fun observe(): WallFrame?
+
+    /**
+     * Captures the SAME screen again, for a re-read of a field that did not come
+     * out cleanly (the builder strip's fraction, a level badge, a price).
+     *
+     * A re-read is a fresh screenshot of the frame already on screen: it must not
+     * advance a scripted sequence of screens. That is why it is a separate seam —
+     * a JVM fake serves a queue of screens to model the scan, and a re-read that
+     * silently consumed the next entry would make every scripted test lie about
+     * what the scanner saw.
+     */
+    suspend fun observeAgain(): WallFrame? = observe()
+
     suspend fun tap(box: ScreenBox): Boolean
     suspend fun scroll(): Boolean
+
+    /**
+     * Scrolls the list back up by at most [steps] controlled swipes to restore
+     * the position the scan started from. Returns how many reverse swipes were
+     * actually performed. Cancellation-safe callers invoke this from a
+     * NonCancellable finally block.
+     */
+    suspend fun scrollBack(steps: Int): Int = 0
+
+    /**
+     * One corrective upward swipe inside the list panel, used when the
+     * post-restore signature does not match the pre-scan top signature.
+     * Returns false when the gesture could not be dispatched.
+     *
+     * The scanner goes through this seam instead of calling the accessibility
+     * service directly, so the JVM tests can drive the restore path.
+     */
+    suspend fun scrollUp(): Boolean = scrollBack(1) > 0
+
     suspend fun wait(ms: Long)
     fun now(): Long
+    /** Release exclusive wall-upgrade ownership, if any. Safe to call when idle. */
+    fun endWallTxn()
+
+    /**
+     * Id of the scan that currently owns the screen.
+     *
+     * The scanner sets it right after it takes the [ScanGate]; the device uses
+     * it as the gesture session id so the shared [GestureAuthority] recognises
+     * the scan's own swipe while the gate is held and refuses every other
+     * automation surface.
+     */
+    var scanOwnerId: Long
 }
 
 /**
@@ -126,6 +212,7 @@ class AutoWallsRuntime(
         var action: AutoWallsMachine.Action = AutoWallsMachine.Action.WaitForTrigger
         var lastScan: WallFrame? = null
         var beforeResources: WallCounters.Reading? = null
+        var lastBuilderEvidence: BuilderEvidence? = null
 
         while (true) {
             action = when (action) {
@@ -139,6 +226,21 @@ class AutoWallsRuntime(
                     } else {
                         val frame = device.observe()
                             ?: return finish(machine, "no frame to evaluate the trigger")
+                        // Phase 5C: capture builder evidence on the village (HOME)
+                        // screen before any upgrade attempt begins.
+                        if (frame.observation.state == GameState.HOME) {
+                            val reading = BuilderDetection.detect(
+                                frame.lines,
+                                frame.width,
+                                frame.height,
+                                frame.builderFaceAt
+                            )
+                            lastBuilderEvidence = BuilderEvidence.Validated.fromFrame(
+                                reading = reading,
+                                wallFrame = frame,
+                                screenState = frame.observation.state
+                            )
+                        }
                         val evidence = TriggerEvidence(
                             enabled = machine.state != AutoWallsState.DISABLED,
                             resources = frame.counters(),
@@ -149,6 +251,7 @@ class AutoWallsRuntime(
                     }
                     val next = machine.onTrigger(evaluation)
                     if (!evaluation.pass) {
+                        device.endWallTxn()
                         return Outcome(
                             AutoWallsState.WAITING_FOR_TRIGGER,
                             machine.waitingReason ?: "waiting for the trigger",
@@ -162,6 +265,9 @@ class AutoWallsRuntime(
                     val frame = device.observe() ?: return finish(machine, "no frame to scan")
                     lastScan = frame
                     beforeResources = frame.counters()
+                    // Builder evidence is captured on the HOME screen in
+                    // WaitForTrigger; do not overwrite it here (this may be the
+                    // wall-list screen). Keep existing evidence for TapRow.
                     machine.onRows(frame.candidates())
                 }
 
@@ -171,6 +277,8 @@ class AutoWallsRuntime(
                     val frame = device.observe() ?: return finish(machine, "no frame after scroll")
                     lastScan = frame
                     beforeResources = frame.counters()
+                    // Builder evidence already captured on HOME screen in
+                    // WaitForTrigger; keep it for TapRow.
                     machine.onRows(frame.candidates())
                 }
 
@@ -178,6 +286,11 @@ class AutoWallsRuntime(
                     val frame = lastScan ?: return finish(machine, "no scan to locate the wall")
                     if (WallLogic.unsafeDuringRun(frame.observation.state)) {
                         return finish(machine, "screen changed before the row tap")
+                    }
+                    // Phase 5C: builder availability re-check right before the tap.
+                    // Fail-closed: if the gate is off or evidence is stale/uncertain, stop.
+                    if (lastBuilderEvidence == null || !lastBuilderEvidence.authorizesUpgrade()) {
+                        return finish(machine, "builder not available or validation disabled")
                     }
                     val box = WallDiscovery.tapBox(
                         action.candidate, frame.lines, frame.height, currencyAt = frame.currencyAt
@@ -249,7 +362,10 @@ class AutoWallsRuntime(
                     }
                 }
 
-                is AutoWallsMachine.Action.Stop -> return Outcome(action.state, action.reason, verified)
+                is AutoWallsMachine.Action.Stop -> {
+                    device.endWallTxn()
+                    return Outcome(action.state, action.reason, verified)
+                }
             }
         }
     }
@@ -263,6 +379,7 @@ class AutoWallsRuntime(
     }
 
     private fun finish(machine: AutoWallsMachine, reason: String): Outcome {
+        device.endWallTxn()
         val stop = machine.onTimeout(reason)
         val state = (stop as? AutoWallsMachine.Action.Stop)?.state ?: machine.state
         log("auto-walls stop: $reason")

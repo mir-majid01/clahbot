@@ -81,6 +81,8 @@ import com.clahbot.data.models.GesturePoint
 import com.clahbot.data.models.Macro
 import com.clahbot.data.models.MacroSettingsDraft
 import com.clahbot.data.models.RecordedGesture
+import com.clahbot.gesture.GestureAuthority
+import com.clahbot.gesture.GestureTrace
 import com.clahbot.execution.MacroPlayer
 import com.clahbot.execution.MacroTimeline
 import com.clahbot.execution.StopSummary
@@ -99,6 +101,7 @@ import com.clahbot.walls.AutoWallsScanner
 import com.clahbot.walls.AutoWallsScanReport
 import com.clahbot.walls.AutoWallsSession
 import com.clahbot.walls.AutoWallsState
+import com.clahbot.walls.BuilderDetection
 import com.clahbot.walls.WallCurrency
 import com.clahbot.input.BuiltGesture
 import com.clahbot.input.GetEventDiscovery
@@ -158,6 +161,11 @@ import kotlin.math.roundToLong
  */
 @SuppressLint("SetTextI18n")
 class FloatingMenuService : Service() {
+
+    /** Shared GestureAuthority: created once and passed to MacroPlayer, TriggerRuntime,
+     *  RecoveryWatchdog and AutoWallsDevice so all gesture dispatch goes through one
+     *  serialisation point and one clearance check. */
+    private var sharedGestureAuthority: GestureAuthority? = null
 
     private enum class PlacementKind(val key: String) {
         CONTROLLER("controller"),
@@ -309,6 +317,14 @@ class FloatingMenuService : Service() {
             packageManager.getPackageInfo(packageName, 0).versionName
         }.getOrNull() ?: "?"
         AppEventLog.init(this, versionName)
+        GestureTrace.init(this)
+        // ONE shared GestureAuthority for the whole app: macro playback, image
+        // triggers, the recovery watchdog and the wall scanner all receive this
+        // instance, so there is a single dispatch point, a single mutex and a
+        // single Allow-Tapping gate. The accessibility service binds itself to
+        // it when it connects.
+        sharedGestureAuthority = GestureAuthority.shared()
+        ClahAccessibilityService.instance?.let { sharedGestureAuthority?.bind(it) }
         resultsReader = AppResultsReader(this)
         RecoveryRepositoryHolder.init(this)
         recoveryAgent = RecoveryAgent(gameEngine, resultsReader)
@@ -1039,8 +1055,14 @@ class FloatingMenuService : Service() {
     }
 
     private fun refreshAutoWalls() {
-        val view = controllerView ?: return
         val config = autoWallsRepository.loadConfig()
+        // Mirror the switch into the single dispatch point. Doing it here (the
+        // one place every Auto Walls change funnels through) means the gate can
+        // never disagree with the switch the user sees. Runs before the view
+        // guard so a detached panel cannot leave a stale gate behind.
+        (sharedGestureAuthority ?: GestureAuthority.shared())
+            .setAllowWallTapping(config.allowTapping)
+        val view = controllerView ?: return
         tappingSwitchUpdating = true
         view.findViewById<Switch>(R.id.wallSwitch)?.let {
             if (it.isChecked != config.enabled) it.isChecked = config.enabled
@@ -1072,11 +1094,30 @@ class FloatingMenuService : Service() {
         }
         view.findViewById<TextView>(R.id.tvWallStatus)?.text = when {
             config.enabled && config.allowTapping -> "On · tapping enabled"
-            config.enabled -> "On · scan only (tapping off)"
+            config.enabled -> "On · scan only (list scroll, tapping off)"
             else -> "Off — turn on to let Auto Walls run"
         }
         view.findViewById<TextView>(R.id.tvWallReport)?.text =
             scanReportText(autoWallsRepository.loadScan())
+        view.findViewById<TextView>(R.id.tvWallBuilders)?.text =
+            builderReportText(autoWallsRepository.loadScan())
+    }
+
+    /**
+     * Builder state in the floating panel. Delegates to
+     * [BuilderDetection.panelLine] so the panel, the log and the tests share one
+     * format: `Builders: X/Y free · Z busy · Goblin offer: yes/no/unknown`.
+     */
+    private fun builderReportText(report: AutoWallsScanReport?): String {
+        if (report == null) return "Builders: not detected - scan the wall list first"
+        return BuilderDetection.panelLine(
+            detected = report.builderDetected,
+            free = report.builderFree,
+            total = report.builderTotal,
+            busy = report.builderBusy,
+            goblinOffer = report.builderGoblinOffer,
+            goblinKnown = report.builderGoblinKnown
+        )
     }
 
     private fun scanReportText(report: AutoWallsScanReport?): String {
@@ -1085,22 +1126,50 @@ class FloatingMenuService : Service() {
         }
         val time = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date(report.at))
         val head = time + " · " + (report.foregroundPackage ?: "foreground unreadable")
-        if (!report.captured) return head + "\n" + (report.reason ?: "screen not captured")
+        // Gold and Elixir are rendered on EVERY path, including a refused scan,
+        // so the panel can never show one currency and silently omit the other.
+        val balances = balanceLine(report)
+        if (!report.captured) {
+            return head + "\n" + (report.reason ?: "screen not captured") + "\n" + balances
+        }
         val picked = report.selected?.let {
             "would pick L${it.level} ${it.currency} ${AutoWallsScan.priceLabel(it.price)}"
         } ?: "nothing eligible"
-        val body = "${report.candidates.size} row(s) · ${report.eligible.size} eligible · $picked"
-        val balances = buildList {
-            report.goldBalance?.let {
-                add("Gold ${AutoWallsScan.priceLabel(it)} → ${report.affordableGold} walls")
-            }
-            report.elixirBalance?.let {
-                add("Elixir ${AutoWallsScan.priceLabel(it)} → ${report.affordableElixir} walls")
-            }
-        }.joinToString(" · ")
+        // A refused scan (header not detected) is a different state from a
+        // partial scan of an open list; both differ from rows we could not
+        // fully read, so every state gets its own words.
+        val listState = when {
+            report.viewports <= 0 -> "list not detected"
+            report.bottomReached -> "bottom reached"
+            else -> "partial scan"
+        }
+        val body = "$listState · ${report.candidates.size} row(s) " +
+            "(${report.identifiedRows} identified · ${report.partialRows} partial · " +
+            "${report.uncertainRows} uncertain)" + scanCoverageText(report) +
+            " · ${report.eligible.size} eligible · $picked"
         return head + "\n" + body +
-            (if (balances.isEmpty()) "" else "\n$balances") +
+            "\n" + balances +
+            (report.scanNote?.let { "\n$it" } ?: "") +
             (report.reason?.let { "\n$it" } ?: "")
+    }
+
+    /**
+     * The Gold/Elixir line. Both currencies are always present; a currency the
+     * scan could not read says so instead of disappearing from the panel.
+     */
+    private fun balanceLine(report: AutoWallsScanReport): String {
+        val gold = report.goldBalance?.let { AutoWallsScan.priceLabel(it) } ?: "unreadable"
+        val elixir = report.elixirBalance?.let { AutoWallsScan.priceLabel(it) } ?: "unreadable"
+        return "Gold $gold" + (if (report.goldStale) " (stale)" else "") +
+            " → ${report.affordableGold} walls · " +
+            "Elixir $elixir" + (if (report.elixirStale) " (stale)" else "") +
+            " → ${report.affordableElixir} walls"
+    }
+
+    /** How many list viewports the last scan actually captured. */
+    private fun scanCoverageText(report: AutoWallsScanReport): String {
+        if (report.viewports <= 0) return ""
+        return " · ${report.viewports} view(s)"
     }
 
     /** One read-only scan from the controller: Clash is already on screen, so no countdown. */
@@ -1109,6 +1178,11 @@ class FloatingMenuService : Service() {
             toast("A scan is already running")
             return
         }
+        // Defensive mirror: the panel may not have been refreshed since the user
+        // last changed the switch. The scan's own swipes are the only wall
+        // gesture that survives either way.
+        (sharedGestureAuthority ?: GestureAuthority.shared())
+            .setAllowWallTapping(autoWallsRepository.loadConfig().allowTapping)
         hapticEvent()
         toast("Scanning the wall list…")
         autoWallsScanJob = scope.launch {
@@ -1116,7 +1190,7 @@ class FloatingMenuService : Service() {
                 try {
                     AutoWallsScanner(
                         repository = autoWallsRepository,
-                        device = AutoWallsDevice(gameEngine, resultsReader),
+                        device = AutoWallsDevice(gameEngine, resultsReader, sharedGestureAuthority),
                         log = { message -> AppEventLog.log(message) }
                     ).scan()
                 } catch (e: CancellationException) {
@@ -1152,6 +1226,8 @@ class FloatingMenuService : Service() {
             toast("Turn Auto Walls on first")
             return
         }
+        (sharedGestureAuthority ?: GestureAuthority.shared())
+            .setAllowWallTapping(config.allowTapping)
         hapticEvent()
         toast("Auto Walls run starting…")
         autoWallsRunJob = scope.launch {
@@ -1164,7 +1240,7 @@ class FloatingMenuService : Service() {
                     session.start(allowTapping = config.allowTapping)
                     AutoWallsRuntime(
                         session = session,
-                        device = AutoWallsDevice(gameEngine, resultsReader),
+                        device = AutoWallsDevice(gameEngine, resultsReader, sharedGestureAuthority),
                         log = { message -> AppEventLog.log(message) }
                     ).run(manual = true)
                 }
@@ -2630,10 +2706,14 @@ class FloatingMenuService : Service() {
         )
         captureSession = capture
         resultsCapture.begin(capture)
+        val ga = sharedGestureAuthority ?: GestureAuthority.shared()
         val newPlayer = MacroPlayer(
-            screenWidth,
-            screenHeight,
-            resultGate,
+            screenWidth = screenWidth,
+            screenHeight = screenHeight,
+            resultGate = resultGate,
+            resultsReader = resultsReader,
+            gameEngine = gameEngine,
+            gestureAuthority = ga,
             onGesturePath = { pathPoints, delayMs, durationMs ->
                 effectsView?.playPath(pathPoints, delayMs, durationMs)
             }
@@ -6287,15 +6367,18 @@ class FloatingMenuService : Service() {
     private fun startRecoveryWatchdog(target: MacroPlayer) {
         recoveryWatchdog?.stop()
         val triggerRepository = com.clahbot.triggers.TriggerRepository.get(this)
+        val ga = sharedGestureAuthority ?: GestureAuthority.shared()
         val triggerRuntime = com.clahbot.triggers.TriggerRuntime(
             repository = triggerRepository,
-            stopAutomation = { target.stop() }
+            stopAutomation = { target.stop() },
+            gestureAuthority = ga
         )
         val watchdog = RecoveryWatchdog(
             scope = scope,
             context = this,
             engine = gameEngine,
             reader = resultsReader,
+            gestureAuthority = ga,
             captureBusy = { resultGate.isHeld() },
             onTriggerTick = { reading ->
                 triggerRuntime.evaluateAndRun(
@@ -6347,7 +6430,7 @@ class FloatingMenuService : Service() {
     private fun ensureAutoWallsRuntime(): AutoWallsRuntime {
         autoWallsRuntime?.let { return it }
         val session = AutoWallsSession(AutoWallsRepository.get(this))
-        val device = AutoWallsDevice(gameEngine, resultsReader)
+        val device = AutoWallsDevice(gameEngine, resultsReader, sharedGestureAuthority)
         return AutoWallsRuntime(
             session = session,
             device = device,
